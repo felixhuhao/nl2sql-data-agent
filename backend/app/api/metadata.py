@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.dataspace.analysis_space import get_default_analysis_space
 from backend.app.dataspace.verified_queries import list_verified_queries
-from backend.app.metadata.service import build_schema_context, list_columns, list_tables
+from backend.app.metadata.service import build_explainability_context, build_schema_context, list_columns, list_tables
 from backend.app.metadata.sync import sync_metadata
 
 router = APIRouter(prefix="/api/metadata", tags=["metadata"])
@@ -29,6 +29,11 @@ def list_columns_endpoint(table_name: str) -> list[dict]:
 @router.get("/schema-context")
 def schema_context_endpoint() -> dict[str, str]:
     return {"schema_context": build_schema_context()}
+
+
+@router.get("/explainability-context")
+def explainability_context_endpoint() -> dict:
+    return build_explainability_context()
 
 
 @router.get("/analysis-space")
