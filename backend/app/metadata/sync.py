@@ -5,14 +5,14 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.db import get_duckdb_connection, get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
-from backend.app.metadata.static import (
-    COLUMN_DESCRIPTIONS,
+from backend.app.metadata.semantic_overlay import (
+    COLUMN_SEMANTICS,
+    CONFIRMED_RELATIONSHIPS,
     DIMENSION_COLUMNS,
-    FIXED_RELATIONSHIPS,
     METRIC_COLUMNS,
-    TABLE_COLUMN_DESCRIPTIONS,
-    TABLE_METADATA,
-    sample_values_json as static_sample_values_json,
+    TABLE_COLUMN_SEMANTICS,
+    TABLE_SEMANTICS,
+    sample_value_fallbacks_json,
 )
 
 
@@ -52,7 +52,7 @@ def _read_duckdb_columns() -> dict[str, list[dict[str, str]]]:
 
 def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dict[str, str]]]) -> int:
     for table_name, columns in duckdb_tables.items():
-        display_name, description, domain = TABLE_METADATA.get(table_name, (table_name, None, None))
+        display_name, description, domain = TABLE_SEMANTICS.get(table_name, (table_name, None, None))
         table = session.scalar(select(MetaTable).where(MetaTable.table_name == table_name))
         if table is None:
             table = MetaTable(table_name=table_name)
@@ -81,8 +81,8 @@ def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dic
                 session.add(meta_column)
             column_name = column["column_name"]
             meta_column.data_type = column["data_type"]
-            meta_column.description = TABLE_COLUMN_DESCRIPTIONS.get(
-                (table_name, column_name), COLUMN_DESCRIPTIONS.get(column_name)
+            meta_column.description = TABLE_COLUMN_SEMANTICS.get(
+                (table_name, column_name), COLUMN_SEMANTICS.get(column_name)
             )
             meta_column.is_dimension = column_name in DIMENSION_COLUMNS
             meta_column.is_metric = column_name in METRIC_COLUMNS
@@ -92,7 +92,7 @@ def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dic
 
 def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str, str]]]) -> int:
     relationships = _infer_relationships(duckdb_tables)
-    for relationship in _overlay_relationships().values():
+    for relationship in _overlay_relationships(duckdb_tables).values():
         relationships[(relationship["source_table"], relationship["source_column"], relationship["target_table"], relationship["target_column"])] = relationship
 
     for relationship in relationships.values():
@@ -126,9 +126,17 @@ def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str
     return len(relationships)
 
 
-def _overlay_relationships() -> dict[tuple[str, str, str, str], dict]:
+def _overlay_relationships(duckdb_tables: dict[str, list[dict[str, str]]]) -> dict[tuple[str, str, str, str], dict]:
     relationships = {}
-    for source_table, source_column, target_table, target_column, relationship_type, description in FIXED_RELATIONSHIPS:
+    for source_table, source_column, target_table, target_column, relationship_type, description in CONFIRMED_RELATIONSHIPS:
+        if not _relationship_exists_in_schema(
+            duckdb_tables,
+            source_table,
+            source_column,
+            target_table,
+            target_column,
+        ):
+            continue
         relationships[(source_table, source_column, target_table, target_column)] = {
             "source_table": source_table,
             "source_column": source_column,
@@ -141,6 +149,23 @@ def _overlay_relationships() -> dict[tuple[str, str, str, str], dict]:
             "description": description,
         }
     return relationships
+
+
+def _relationship_exists_in_schema(
+    duckdb_tables: dict[str, list[dict[str, str]]],
+    source_table: str,
+    source_column: str,
+    target_table: str,
+    target_column: str,
+) -> bool:
+    table_columns = {
+        table_name: {column["column_name"] for column in columns}
+        for table_name, columns in duckdb_tables.items()
+    }
+    return (
+        source_column in table_columns.get(source_table, set())
+        and target_column in table_columns.get(target_table, set())
+    )
 
 
 def _infer_relationships(duckdb_tables: dict[str, list[dict[str, str]]]) -> dict[tuple[str, str, str, str], dict]:
@@ -229,7 +254,7 @@ def _profile_sample_values_json(table_name: str, column_name: str, limit: int = 
         ).fetchall()
     values = [row[0] for row in rows]
     if not values:
-        return static_sample_values_json(column_name)
+        return sample_value_fallbacks_json(column_name)
     return json.dumps(values, ensure_ascii=False, default=str)
 
 

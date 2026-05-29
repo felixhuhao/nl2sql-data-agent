@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
+from backend.app.dataspace.analysis_space import get_default_analysis_space
+from backend.app.dataspace.verified_queries import list_verified_queries
 from backend.app.metadata.models import MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
 
 
@@ -76,18 +78,31 @@ def list_relationships() -> list[dict]:
 def build_schema_context() -> str:
     _ensure_schema()
     settings = get_settings()
+    analysis_space = get_default_analysis_space()
+    allowed_tables = set(analysis_space.tables)
     with sqlite_session() as session:
         tables = session.scalars(
-            select(MetaTable).where(MetaTable.enabled.is_(True)).order_by(MetaTable.table_name)
+            select(MetaTable)
+            .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+            .order_by(MetaTable.table_name)
         ).all()
         relationships = session.scalars(
-            select(MetaRelationship).order_by(
-                MetaRelationship.source_table,
-                MetaRelationship.target_table,
+            select(MetaRelationship)
+            .where(
+                MetaRelationship.source_table.in_(allowed_tables),
+                MetaRelationship.target_table.in_(allowed_tables),
             )
+            .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
         ).all()
         lines = [
             "# Schema Context",
+            "",
+            "## Analysis Space",
+            f"name = {analysis_space.name}",
+            f"datasource = {analysis_space.datasource}",
+            f"allowed_operations = {', '.join(analysis_space.allowed_operations)}",
+            f"enabled_metrics = {', '.join(analysis_space.enabled_metrics)}",
+            f"allowed_tables = {', '.join(analysis_space.tables)}",
             "",
             f"dataset_current_date = {settings.dataset_current_date}",
             "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31",
@@ -128,6 +143,18 @@ def build_schema_context() -> str:
                 "- 客单价 = SUM(payment_amount) / COUNT(DISTINCT order_id)",
             ]
         )
+        verified_queries = list_verified_queries()
+        if verified_queries:
+            lines.extend(["", "## Verified Queries"])
+            for query in verified_queries:
+                lines.extend(
+                    [
+                        f"- id: {query.id}",
+                        f"  question: {query.question}",
+                        f"  sql: {query.sql}",
+                        f"  tags: {', '.join(query.tags)}",
+                    ]
+                )
         return "\n".join(lines)
 
 

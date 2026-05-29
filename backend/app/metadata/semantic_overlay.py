@@ -1,6 +1,7 @@
 import json
 
-TABLE_METADATA = {
+# Demo-only business semantics. Physical tables and columns still come from DB introspection.
+TABLE_SEMANTICS = {
     "dim_date": ("日期维表", "日期、周、月、季度、年份维度", "time"),
     "dim_users": ("用户维表", "用户基础属性和注册信息", "user"),
     "dim_products": ("商品维表", "商品品类、品牌和价格信息", "product"),
@@ -10,7 +11,7 @@ TABLE_METADATA = {
     "fact_order_items": ("订单明细事实表", "订单商品明细、数量和明细金额", "sales"),
 }
 
-COLUMN_DESCRIPTIONS = {
+COLUMN_SEMANTICS = {
     "date_key": "日期键，格式 YYYYMMDD",
     "date_value": "日期",
     "year": "年份",
@@ -48,8 +49,7 @@ COLUMN_DESCRIPTIONS = {
     "item_amount": "明细金额",
 }
 
-# 按 (table_name, column_name) 覆盖全局描述，解决同名字段歧义
-TABLE_COLUMN_DESCRIPTIONS: dict[tuple[str, str], str] = {
+TABLE_COLUMN_SEMANTICS: dict[tuple[str, str], str] = {
     ("dim_users", "name"): "用户姓名",
     ("dim_users", "city"): "用户所在城市",
     ("dim_products", "name"): "商品名称",
@@ -96,7 +96,7 @@ METRIC_COLUMNS = {
     "item_amount",
 }
 
-SAMPLE_VALUES = {
+SAMPLE_VALUE_FALLBACKS = {
     "gender": ["女", "男"],
     "age_group": ["18-24", "25-34", "35-44", "45+"],
     "category": ["手机数码", "家用电器", "服饰鞋包", "食品生鲜", "美妆个护"],
@@ -106,7 +106,7 @@ SAMPLE_VALUES = {
     "order_status": ["paid", "completed", "refunded"],
 }
 
-FIXED_RELATIONSHIPS = [
+CONFIRMED_RELATIONSHIPS = [
     ("fact_orders", "user_key", "dim_users", "user_key", "many_to_one", "订单关联用户"),
     ("fact_orders", "region_key", "dim_regions", "region_key", "many_to_one", "订单关联区域"),
     ("fact_orders", "channel_key", "dim_channels", "channel_key", "many_to_one", "订单关联渠道"),
@@ -117,6 +117,6 @@ FIXED_RELATIONSHIPS = [
 ]
 
 
-def sample_values_json(column_name: str) -> str | None:
-    values = SAMPLE_VALUES.get(column_name)
+def sample_value_fallbacks_json(column_name: str) -> str | None:
+    values = SAMPLE_VALUE_FALLBACKS.get(column_name)
     return json.dumps(values, ensure_ascii=False) if values else None
