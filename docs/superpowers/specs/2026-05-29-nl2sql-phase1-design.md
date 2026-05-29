@@ -776,12 +776,6 @@ Iteration 2 拆成 4 个小任务。原因是这一轮同时涉及 SQL AST 解�
 - DELETE、DROP、CREATE、非白名单表、非白名单字段、`read_csv` 被拒绝
 - 只读 executor 不暴露直接执行原始 SQL 的入口
 
-验收：
-
-- 15+ Guard 测试通过
-- 合法 SQL 能执行
-- DELETE、DROP、CREATE、非白名单表、`read_csv` 被拒绝
-
 ### Iteration 3：Mock Agent 和 SSE
 
 目标：先不接真实模型，用 Mock provider 跑通完整后端链路。
