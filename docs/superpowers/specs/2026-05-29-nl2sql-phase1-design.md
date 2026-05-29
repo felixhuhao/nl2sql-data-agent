@@ -42,9 +42,14 @@ nl2sql_pro/
 │   │   ├── core/
 │   │   │   ├── llm_provider.py      # LLM 抽象层
 │   │   │   └── db.py                # DuckDB + SQLite 连接管理
+│   │   ├── dataspace/
+│   │   │   ├── analysis_space.py    # 可问数据空间
+│   │   │   └── verified_queries.py  # 已验证 question-SQL
 │   │   ├── metadata/
 │   │   │   ├── models.py            # SQLAlchemy 元数据模型
+│   │   │   ├── explorer.py          # Schema Explorer
 │   │   │   ├── sync.py              # DuckDB schema -> SQLite 同步
+│   │   │   ├── semantic_overlay.py  # demo 业务语义补丁
 │   │   │   └── service.py           # 元数据查询服务
 │   │   ├── sql_guard/
 │   │   │   ├── guard.py             # 主入口
@@ -225,6 +230,9 @@ meta_relationships(
     target_table TEXT NOT NULL,
     target_column TEXT NOT NULL,
     relationship_type TEXT DEFAULT 'many_to_one',
+    source TEXT DEFAULT 'overlay',  -- database_fk / inferred / overlay
+    confidence REAL DEFAULT 1.0,
+    fanout_risk TEXT DEFAULT 'low',
     description TEXT
 )
 ```
@@ -266,11 +274,270 @@ fact_order_items.date_key -> dim_date.date_key
 - fact_orders: ~10,000 订单
 - fact_order_items: ~30,000 明细
 
-### 5.4 元数据同步
+### 5.4 Schema Explorer 定位
 
-`POST /api/metadata/sync` 触发，读取 DuckDB information_schema，upsert 到 SQLite。
+Schema 探知是本项目的核心能力，不只是 metadata sync 的附属脚本。成熟 NL2SQL / BI 产品的共同做法不是让 agent 每次查询时临场扫库，而是先构建可复用、可审计、可增量更新的 metadata layer。
 
-Phase 1 的 join 关系不依赖 DuckDB 自动推断，随数据生成脚本一起写入 `meta_relationships`。字段说明、维度/指标标记、少量枚举样例值可以用静态配置补齐，避免第一版过度开发元数据编辑后台。
+Phase 1 开始就把它作为独立模块设计：
+
+```text
+Schema Explorer
+  -> connector introspection
+  -> physical metadata sync
+  -> lightweight profiling
+  -> relationship discovery
+  -> semantic overlay
+  -> schema context builder
+```
+
+基本原则：
+
+- 物理 schema 以数据库 introspection 为真源，不在代码里硬编码表和字段
+- agent 可以辅助解释和补全语义，但探知结果必须落库，不在查询时临时拼上下文
+- schema context 只从已同步、已过滤、可审计的 metadata 生成
+- relationship、metric、alias、business term 都要记录来源，避免把模型猜测伪装成事实
+- SQL 执行仍必须经过 SQL Guard，不能因为 schema 探知更强就放松安全边界
+
+### 5.5 成熟产品参考
+
+**Data Catalog / Governance 产品**
+
+Microsoft Purview、Alation、Collibra、DataHub、OpenMetadata、Atlan 这类产品说明了 metadata ingestion 的工业做法：先注册数据源，再扫描 schema、classification、lineage、profile、owner、tag 等信息。Microsoft Purview 的扫描会捕获 technical metadata、抽取 structured schema、应用分类和 lineage ingestion；这说明“探知”应该是可重复运行的离线/准实时能力，而不是 query-time 行为。
+
+参考：
+
+- [Microsoft Purview scans and ingestion](https://learn.microsoft.com/en-us/purview/concept-scans-and-ingestion)
+- [Microsoft Purview scan data sources](https://learn.microsoft.com/en-us/azure/purview/scan-data-sources)
+- [DataHub documentation](https://docs.datahub.com/)
+- [OpenMetadata column-level lineage](https://docs.open-metadata.org/v1.11.x/how-to-guides/data-lineage/column)
+
+**Semantic Layer / BI Modeling 产品**
+
+Looker、dbt Semantic Layer、Cube、Tableau Pulse 说明了另一个事实：物理 schema 不等于业务可问数模型。Looker 用 LookML 的 Explore、View、Join、Dimension、Measure 建模查询入口和 join 关系；Snowflake Cortex Analyst 用 semantic model YAML 描述 logical tables、dimensions、facts、metrics、relationships、verified queries；Tableau Pulse Metrics Layer 强调 KPI 和业务指标口径。
+
+参考：
+
+- [LookML introduction](https://docs.cloud.google.com/looker/docs/what-is-lookml)
+- [Looker Explore parameter](https://docs.cloud.google.com/looker/docs/reference/param-explore-explore)
+- [Looker working with joins](https://docs.cloud.google.com/looker/docs/working-with-joins)
+- [Snowflake Cortex Analyst semantic model specification](https://docs.snowflake.com/user-guide/snowflake-cortex/cortex-analyst/semantic-model-spec)
+
+**NL2SQL / Agent Analytics 产品**
+
+Snowflake Cortex Analyst、Databricks AI/BI Genie、ThoughtSpot 的共性是：给自然语言问数提供一个受控的数据语义空间，而不是把整个数据库裸露给 LLM。Databricks Genie 使用 Genie space 和 trusted assets，把可问的数据资产限定在明确边界内；Snowflake Cortex Analyst 的 semantic model 还支持 verified queries，用已验证问答提升生成稳定性。
+
+参考：
+
+- [Databricks AI/BI Genie](https://docs.databricks.com/aws/genie/)
+- [Snowflake Cortex Analyst semantic model specification](https://docs.snowflake.com/user-guide/snowflake-cortex/cortex-analyst/semantic-model-spec)
+
+### 5.6 参考项目对比
+
+本地参考项目“掌柜问数”的做法不是完全自动 explore schema，而是：
+
+- 用 `meta_config.yaml` 人工维护表、字段、role、description、alias、指标
+- 从数据仓库补字段类型和字段取值
+- 将字段/指标写入 MySQL 元数据库
+- 用 Qdrant 做字段和指标向量召回
+- 用 Elasticsearch 做字段值全文召回
+- 查询时先召回候选字段、指标和值，再让 LLM 过滤上下文并生成 SQL
+
+优点：
+
+- 对大 schema 友好，不需要把全量表字段塞进 prompt
+- alias、description、metric 是一等元数据，中文问数命中率更高
+- 字段值召回能处理“华东”“会员等级”“品牌名”等自然语言值
+- Graph 拆得细，方便展示召回、过滤、生成、校验、修复过程
+
+缺点：
+
+- schema 语义主要靠 YAML 人工维护，不是自动适配任意数据库
+- 强绑定 MySQL、Qdrant、Elasticsearch、Embedding 服务，Phase 1 过重
+- join 关系只靠 primary_key / foreign_key role，没有显式 relationship edge 和置信度
+- SQL 安全主要靠 prompt、EXPLAIN 和执行错误修复，缺少强 SQL Guard
+- query-time 召回链路较长，调试和部署成本高
+
+### 5.7 本项目取舍
+
+本项目采用“自动探知 + 语义补丁 + 强安全”的分层方案：
+
+```text
+metadata sync
+  -> introspect physical schema
+  -> profile columns
+  -> infer relationships
+  -> apply semantic overlay
+  -> build_schema_context
+```
+
+Phase 1 只实现轻量但方向正确的版本：
+
+- DB introspection 是物理 schema 真源
+- 自动同步表名、字段名、字段类型、row count
+- 自动采样少量 sample values
+- relationship 先支持 `database_fk` / `inferred` / `overlay` 三类来源，并记录 confidence
+- semantic overlay 只做业务补丁，不定义物理 schema
+- 不引入 Qdrant / Elasticsearch / Embedding 服务
+- 不做复杂召回，只生成完整但可控的 schema context
+- SQL Guard 必须保留，不能只依赖 prompt 和 `EXPLAIN`
+
+后续 Phase 2/4 再扩展字段别名、指标语义层、值召回、向量召回和 verified query。
+
+### 5.8 成熟产品能力取舍矩阵
+
+除 Schema Explorer 外，成熟产品还有几类值得借鉴的能力。按 value / cost 评估如下，满分 5。
+
+| 能力 | 参考产品 | value | cost | 阶段 |
+|------|----------|-------|------|------|
+| Trusted Assets / Analysis Space | Databricks Genie | 5 | 2 | Phase 1 |
+| Verified Queries | Snowflake Cortex Analyst | 5 | 2 | Phase 1/2 |
+| Relationship Safety / Fanout Risk | Looker | 5 | 3 | Phase 1/2 |
+| Metric Layer | Looker / Tableau Pulse / Snowflake | 5 | 3 | Phase 2 |
+| Explainability | Genie / BI 产品 | 4 | 2 | Phase 1 |
+| Feedback Loop | Genie / Cortex Analyst | 4 | 3 | Phase 2/3 |
+| Value Recall | ThoughtSpot / 掌柜问数 | 4 | 4 | Phase 4 |
+| Data Quality Profiling | Purview / DataHub / OpenMetadata | 3 | 3 | Phase 2 |
+| Cost / Performance Governance | Databricks / ClickHouse | 4 | 3 | Phase 6 |
+| Lineage / Impact Analysis | Purview / DataHub / OpenMetadata | 3 | 4 | Phase 6+ |
+| Permission / Governance | Purview / Collibra | 3 | 5 | Phase 8 或文档说明 |
+
+### 5.9 能力选择分析
+
+**Trusted Assets / Analysis Space**
+
+Databricks Genie 的 Genie Space 思路是：业务用户不是对整个 workspace 任意问数，而是在一个受控的数据空间里问数。这个能力 value 高、cost 低，适合 Phase 1。
+
+Phase 1 轻量实现：
+
+```text
+analysis_space:
+  name: ecommerce_demo
+  datasource: duckdb_ecommerce
+  tables: [fact_orders, fact_order_items, dim_date, dim_products, dim_regions, dim_channels, dim_users]
+  enabled_metrics: [sales_amount, order_count, aov]
+  allowed_operations: [select]
+```
+
+它和 SQL Guard 互补：Analysis Space 决定“可以问哪些可信资产”，SQL Guard 决定“生成 SQL 是否允许执行”。
+
+**Verified Queries**
+
+Snowflake Cortex Analyst 的 semantic model 支持 verified queries。它本质上是已验证的问题-SQL 对，可以同时服务 demo、few-shot、eval 和回归测试。
+
+Phase 1/2 轻量实现：
+
+```yaml
+- id: recent_30d_sales
+  question: 查询最近30天每日销售额和订单数
+  sql: SELECT ...
+  verified_by: system
+  tags: [sales, time_series]
+```
+
+这个能力比单纯 prompt example 更工程化，因为它可以被 eval runner 和 prompt builder 同时复用。
+
+**Relationship Safety / Fanout Risk**
+
+Looker 对 join relationship 很谨慎，因为错误 join 会导致聚合膨胀。NL2SQL 项目里这比“能不能 join 上”更重要。
+
+Phase 1/2 需要在 relationship metadata 里记录：
+
+```text
+relationship_type: many_to_one / one_to_one / one_to_many
+join_type: left / inner
+source: database_fk / inferred / overlay
+confidence: 0.0-1.0
+fanout_risk: low / medium / high
+```
+
+例如从 `fact_order_items` join 到 `fact_orders` 后再计算 `SUM(fact_orders.payment_amount)`，可能因为明细行重复导致销售额膨胀。Schema Context 必须提示这类风险，SQL 生成和 Guard 都要能利用。
+
+Phase 1 的 confidence 规则：
+
+- `database_fk`: `1.0`
+- `overlay`: `1.0`
+- `inferred`: `0.6-0.9`，按命名规则强弱赋值
+- Phase 1 只记录并展示 confidence，不用于过滤、不参与 SQL Guard 决策
+- Phase 2 开始用于关系过滤、join path 排序和 fanout 风险提示
+
+**Metric Layer**
+
+Looker、Tableau Pulse、Snowflake Cortex Analyst 都强调 metric / measure 的显式建模。指标不能只写在 prompt 文本里。
+
+Phase 2 设计方向：
+
+```text
+metric:
+  name: sales_amount
+  label: 销售额
+  expression: SUM(fact_orders.payment_amount)
+  default_time_column: dim_date.date_value
+  allowed_dimensions: [date, channel, region, category]
+```
+
+Metric Layer 应该和 relationship safety 联动：某个指标允许哪些维度，哪些 join path 会导致 fanout，都要可表达。
+
+**Explainability**
+
+成熟问数产品都会解释“为什么用了这些数据”。Phase 1 可以低成本实现：
+
+```text
+matched_tables
+matched_columns
+matched_metrics
+join_paths
+date_interpretation
+guard_result
+```
+
+这对调试、演示和用户信任都很重要。
+
+**Feedback Loop**
+
+用户反馈可以沉淀为 verified query 或 eval case。Phase 2/3 再做：
+
+```text
+question
+generated_sql
+final_sql
+result_snapshot
+user_feedback
+corrected_sql
+promoted_to_verified_query
+```
+
+**Value Recall**
+
+参考项目“掌柜问数”用 Elasticsearch 做字段值召回，这个方向是对的：用户说“华东”“天猫”“美妆”时，系统要知道这些值属于哪个字段。但它依赖 ES/Embedding，Phase 1 不做。Phase 4 再做规则 + 向量/全文混合召回。
+
+### 5.10 与参考项目的能力对比
+
+参考项目“掌柜问数”已经具备：
+
+- 字段召回
+- 指标召回
+- 字段值召回
+- LLM 过滤候选表字段
+- SQL 生成
+- EXPLAIN 校验
+- SQL 修复
+- 流式进度输出
+
+本项目不直接照搬，原因：
+
+- 它的 schema 语义主要由 `meta_config.yaml` 人工维护，不是 DB introspection 真源
+- 它依赖 MySQL + Qdrant + Elasticsearch + Embedding，Phase 1 成本过高
+- 它没有强 SQL Guard，执行器会直接执行生成 SQL
+- 它没有 explicit trusted assets / analysis space 边界
+- 它没有显式 fanout risk 建模
+- 它没有 verified query 和 eval 的统一闭环
+
+本项目选择：
+
+- Phase 1 优先做 Schema Explorer、Analysis Space、SQL Guard、Explainability、最小 Verified Queries
+- Phase 2 做 Metric Layer、Relationship Safety 完整化、Feedback Loop
+- Phase 3 做 Eval Runner，把 verified queries 和 feedback 转成评测资产
+- Phase 4 再做 Value Recall 和向量召回
 
 ## 6. API 端点
 
@@ -328,11 +595,17 @@ Phase 1 的 join 关系不依赖 DuckDB 自动推断，随数据生成脚本一�
 
 ## 8. Iteration 拆分
 
-Phase 1 不一次性实现完整链路，拆成 5 个可独立验收的小迭代。每个 iteration 都必须能运行、能验证，避免数据、Guard、LLM、SSE、前端问题混在一起。
+Phase 1 不一次性实现完整链路，拆成 5 个可独立验收的小迭代。每个 iteration 都必须能运行、能验证，避免数据、Guard、LLM、SSE、前端问题混在一起。Iteration 1 内部再拆成 I1.1-I1.4 四个小任务，但不改变 Phase 1 的 5 个主迭代结构。
 
 ### Iteration 1：数据和元数据底座
 
 目标：不接 LLM，不做前端，先让数据、元数据和 schema context 稳定。
+
+Iteration 1 拆成 4 个小任务，避免把 schema explore、semantic overlay、analysis space 和 explainability 混在一起。
+
+#### I1.1 Schema Explorer 补齐
+
+目标：把 metadata sync 从“能同步表字段”升级为轻量 Schema Explorer。
 
 交付：
 
@@ -340,14 +613,73 @@ Phase 1 不一次性实现完整链路，拆成 5 个可独立验收的小迭代
 - DuckDB 电商数据生成
 - SQLite 元数据表
 - `meta_tables` / `meta_columns` / `meta_relationships`
-- metadata sync
+- metadata sync：从 DuckDB introspection 自动同步表、字段、类型和 row count
+- lightweight profiling：采样少量 sample values
+- relationship source：记录 `database_fk` / `inferred` / `overlay` 和 confidence
+- relationship inference：支持简单命名规则推断
+
+验收：
+
+- 能生成 `data/ecommerce.duckdb`
+- 能从 DuckDB 自动同步表字段、字段类型和 row count
+- 能采样并保存少量 sample values
+- sync 后能看到 relationship source、confidence 和 fanout_risk
+
+后续注意事项：
+
+- relationship inference 当前允许保留 demo 规则，例如 `order_id -> fact_orders`。后续泛化时需要抽成规则配置，支持 `*_id -> dim_*`、多事实表和复合键。
+- sample values 当前使用小数据集上的 `SELECT DISTINCT ... ORDER BY ... LIMIT 5`。后续大表需要按列类型、基数和表规模选择采样策略，或使用数据库原生采样能力。
+- 兼容旧 `metadata.sqlite` 的轻迁移代码只服务早期迭代。后续引入正式 migration 后可以删除。
+- `list_relationships()` 已返回 source、confidence、fanout_risk，但 Phase 1 API 暂不暴露 relationship list。I1.4 或 metadata API 扩展时再补 `/api/metadata/relationships`。
+
+#### I1.2 Semantic Overlay 重构
+
+目标：把当前静态配置降级为业务语义补丁，不再作为物理 schema 定义源。
+
+交付：
+
+- `static.py` 重构为 `semantic_overlay.py`
+- overlay 补充 demo 业务说明、字段说明、维度/指标角色、指标口径
+- overlay 可以确认或覆盖 relationship metadata
+- overlay 不允许定义不存在于 introspection 结果中的物理表字段
+
+验收：
+
+- 删除或清空 overlay 时，仍能同步物理表字段
+- 启用 overlay 后，字段说明、指标角色和确认 join 能写入 metadata
+
+#### I1.3 Analysis Space + Verified Queries
+
+目标：建立最小可问数据空间和已验证问答资产。
+
+交付：
+
+- Analysis Space v1：可问表、可用指标、允许操作
+- Verified Queries v0：至少 1 条 demo question-SQL
+- `build_schema_context` 按 analysis space 过滤表和字段
 - `build_schema_context`
 - 固定 `dataset_current_date = 2025-12-31`
 
 验收：
 
-- 能生成 `data/ecommerce.duckdb`
-- 能同步表字段；能写入固定 join 关系并被 `build_schema_context` 读取
+- schema context 只包含 analysis space 允许的表
+- schema context 包含 demo verified query
+- schema context 包含 `dataset_current_date`
+
+#### I1.4 Explainability Context
+
+目标：为后续 Agent 和前端步骤展示准备结构化解释信息。
+
+交付：
+
+- `build_explainability_context`
+- 输出 tables、columns、metrics、join paths、date rule
+- relationship 输出 source、confidence、fanout_risk
+
+验收：
+
+- 脚本能打印结构化 JSON explainability context
+- JSON 中能看到 schema、join 来源、confidence、日期规则和指标口径
 - 能打印或返回完整 schema context
 
 ### Iteration 2：SQL Guard 和只读执行器
@@ -382,12 +714,14 @@ Phase 1 不一次性实现完整链路，拆成 5 个可独立验收的小迭代
 - `/api/chat/query`
 - POST SSE：`step` / `done` / `error`
 - 基础图表推荐（`recommender.py` 输出结构：`chart_type` + `x_column` + `y_columns`）
+- Query-level explainability 输出：`matched_tables`、`matched_columns`、`join_paths`、`date_interpretation`、`guard_result`
 
 验收：
 
 - 问”最近30天每日销售额和订单数”
 - Mock provider 对 demo 问题返回固定 SQL；对安全 smoke case 返回对应危险 SQL，确保 Guard 能真实拦截
 - SSE 能看到 `build_context`、`generate_sql`、`sql_guard`、`execute`、`summarize`、`recommend_chart` 步骤
+- SSE done 结果包含 query-level explainability
 - 图表推荐返回结构化 JSON，包含 chart_type 和列映射
 
 ### Iteration 4：DeepSeek 和前端页面
@@ -486,7 +820,11 @@ Phase 1 不做完整 eval runner 报告，但必须保留 smoke eval，防止后
 - 元数据同步可从 DuckDB 导入表结构
 - `GET /api/metadata/tables` 返回正确表列表
 - `GET /api/metadata/tables/{name}/columns` 返回正确字段列表
-- `build_schema_context` 包含固定 join 关系和 `dataset_current_date = 2025-12-31`
+- Schema Explorer 可同步表、字段、类型、row count 和 sample values
+- Analysis Space 可展示可问表、可用指标和允许操作
+- 至少保留 1 条 verified query，并可被 demo / smoke eval 复用
+- `build_schema_context` 包含 join 关系、relationship source、confidence 和 `dataset_current_date = 2025-12-31`
+- 查询响应包含 query-level explainability：命中的表、字段、指标、join path、时间解释和 Guard 结果
 - 最小 smoke eval 可运行，正常查询（含 JOIN 场景）和安全用例（含 CREATE 拒绝）都能给出确定性结果
 
 ## 12. 后续 Phase 概览

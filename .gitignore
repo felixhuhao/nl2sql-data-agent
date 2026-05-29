@@ -16,6 +16,8 @@ coverage/
 
 data/*.duckdb
 data/*.duckdb.wal
+data/*.sqlite
+data/*.sqlite-*
 
 .DS_Store
 Thumbs.db

@@ -20,7 +20,32 @@
 
 工业级 NL2SQL 的关键不是“模型能生成 SQL”，而是“系统敢不敢执行这条 SQL”。因此 SQL Guard 必须尽早做，并且必须由确定性代码实现，不能只靠 prompt。
 
-### 1.3 每个阶段都能演示
+### 1.3 Schema 探知是核心能力
+
+NL2SQL 的质量上限首先取决于系统是否理解数据库。Schema 探知不能只是把表字段读出来塞进 prompt，而应该作为可复用的 metadata layer：
+
+```text
+数据源连接 -> schema introspection -> profiling -> relationship discovery -> semantic overlay -> context builder
+```
+
+成熟产品的取舍可以概括为：
+
+- Microsoft Purview / Alation / DataHub / OpenMetadata：强调 metadata ingestion、profiling、lineage、classification
+- Looker / dbt Semantic Layer / Cube / Tableau Pulse：强调 semantic layer、metric、join、business term
+- Snowflake Cortex Analyst / Databricks Genie：强调受控语义空间、trusted assets、verified queries
+
+因此本项目不采用“agent 每次临场扫库”的模式，而是把探知结果落库，查询时只使用已同步、已过滤、可审计的 metadata。
+
+### 1.4 成熟产品能力取舍
+
+完整 value/cost 矩阵以 Phase 1 spec 的 `5.8 成熟产品能力取舍矩阵` 为唯一真源。ROADMAP 只保留阶段原则：
+
+- Phase 1 做高 value、低 cost、能增强可信度的能力：Analysis Space、Verified Queries 雏形、Explainability、SQL Guard。
+- Phase 2 做业务语义：Metric Layer、Relationship Safety、可编辑 semantic overlay、Feedback Loop。
+- Phase 4 再做召回增强：Value Recall、向量召回、混合召回。
+- 权限、血缘、成本治理进入后期，不干扰第一条闭环。
+
+### 1.5 每个阶段都能演示
 
 每个阶段都应该有可运行、可截图、可写简历的结果：
 
@@ -29,7 +54,7 @@
 - eval 能跑出报告。
 - README 能说明当前能力。
 
-### 1.4 设计成 OLAP 问数平台，不设计成单一垂直助手
+### 1.6 设计成 OLAP 问数平台，不设计成单一垂直助手
 
 新项目的第一数据源采用 DuckDB + 示例电商数仓数据集，后续扩展 ClickHouse。项目主线面向通用企业经营分析，而不是单一垂直方向：
 
@@ -49,11 +74,17 @@ Frontend UI
 API Backend
   查询接口 / 元数据接口 / 评测接口 / 数据源接口 / 审计接口
 
+Schema Explorer
+  数据源探知 / 表字段同步 / profiling / join 推断 / 来源与置信度 / 语义补丁
+
 Agent Workflow
   意图识别 / 上下文召回 / SQL 生成 / SQL 修复 / 结果解释 / 图表推荐
 
 Semantic Layer
   表定义 / 字段定义 / 指标口径 / 业务别名 / 示例 SQL / join 关系
+
+Trusted Assets
+  Analysis Space / 可问表集合 / 可用指标集合 / verified queries / 业务说明
 
 SQL Guard
   AST 解析 / 只读限制 / 表字段白名单 / 自动 LIMIT / EXPLAIN / 审计
@@ -178,13 +209,86 @@ dim_date
 1. FastAPI 应用骨架。
 2. 配置系统。
 3. 数据库连接管理。
-4. 元数据同步 v1。
+4. Metadata foundation：Schema Explorer、Semantic Overlay、Analysis Space、Verified Queries、Explainability。
 5. SQL Guard v1。
 6. 简单 NL2SQL prompt。
 7. LangGraph 查询链路 v1。
 8. SSE 流式步骤。
 9. 查询执行和结果标准化。
 10. 图表推荐 v1。
+
+### Schema Explorer v1
+
+Phase 1 的 Schema Explorer 目标是建立方向正确的最小 metadata layer：
+
+- 从 DuckDB introspection 自动同步表名、字段名、字段类型。
+- 采集 row count 和少量 sample values。
+- 自动推断简单 join 关系，并记录 `source` 和 `confidence`。
+- 支持 semantic overlay 补充字段说明、指标口径、别名和确认 join。
+- `build_schema_context` 只读取已落库 metadata，不在查询时临场扫库。
+
+不做：
+
+- 不引入 Qdrant、Elasticsearch、Embedding 服务。
+- 不做复杂血缘、数据质量、权限治理。
+- 不让 LLM 直接决定物理 schema 真相。
+
+### Iteration 1 细分
+
+Iteration 1 拆成 4 个小任务：
+
+```text
+I1.1 Schema Explorer 补齐
+  -> metadata sync 自动同步表、字段、类型、row count
+  -> sample values 自动采样
+  -> relationship source / confidence / fanout_risk
+  -> 简单 relationship inference
+
+I1.2 Semantic Overlay 重构
+  -> static.py 降级为 semantic_overlay.py
+  -> overlay 只补业务语义，不定义物理 schema
+  -> overlay 可确认 relationship 和指标口径
+
+I1.3 Analysis Space + Verified Queries
+  -> 可问表集合
+  -> 可用指标集合
+  -> allowed operations
+  -> 至少 1 条 verified query
+
+I1.4 Explainability Context
+  -> tables / columns / metrics
+  -> join paths
+  -> date interpretation
+  -> relationship source / confidence / fanout_risk
+```
+
+### Analysis Space v1
+
+参考 Databricks Genie 的 trusted assets 思路，Phase 1 不让用户对整个数据库自由问数，而是限定在一个可问数据空间：
+
+```text
+analysis_space:
+  name: ecommerce_demo
+  datasource: duckdb_ecommerce
+  tables: [fact_orders, fact_order_items, dim_date, dim_products, dim_regions, dim_channels, dim_users]
+  enabled_metrics: [sales_amount, order_count, aov]
+  allowed_operations: [select]
+```
+
+Analysis Space 负责限定“哪些资产可信且可问”；SQL Guard 负责限定“生成 SQL 是否安全可执行”。
+
+### Verified Queries v0
+
+参考 Snowflake Cortex Analyst 的 verified queries，Phase 1 先保留少量已验证 question-SQL：
+
+```yaml
+- id: recent_30d_sales
+  question: 查询最近30天每日销售额和订单数
+  sql: SELECT ...
+  tags: [sales, time_series]
+```
+
+它同时服务 demo、prompt few-shot、smoke eval 和后续回归测试。
 
 ### 前端能力
 
@@ -242,6 +346,11 @@ GET  /api/query/history
 ### 验收标准
 
 - 可以在前端输入：“查询最近 30 天每日销售额和订单数”。
+- 可以自动同步 DuckDB schema、row count、sample values。
+- 可以展示 join 关系来源和 semantic overlay 补充结果。
+- 可以展示 Analysis Space 中可问表和可用指标。
+- 至少保留 1 条 verified query 作为 demo 和 smoke eval 资产。
+- 查询结果包含 query-level explainability：命中的表、字段、指标、join path、时间解释和 Guard 结果。
 - 后端返回执行步骤。
 - 前端展示 SQL、表格和折线图。
 - 危险请求会被 SQL Guard 阻断，例如“删除 2024 年数据”。
@@ -255,7 +364,7 @@ GET  /api/query/history
 
 ### 目标
 
-从“schema prompt”升级为“轻量语义层 + 元数据检索”。
+从“Schema Explorer v1”升级为“可编辑语义层 + 元数据检索”。
 
 ### 能力
 
@@ -266,6 +375,39 @@ GET  /api/query/history
 5. 示例 question-SQL 管理。
 6. 样例值采样。
 7. 规则检索 v1。
+8. relationship 人工确认和置信度调整。
+9. semantic overlay 从代码迁移到数据库或 YAML 配置。
+10. Metric Layer v1。
+11. Feedback Loop v1。
+12. Data Quality Profiling v1。
+
+### Metric Layer v1
+
+Metric Layer 负责把业务指标从 prompt 文本升级为结构化资产：
+
+```text
+metric:
+  name: sales_amount
+  label: 销售额
+  expression: SUM(fact_orders.payment_amount)
+  default_time_column: dim_date.date_value
+  allowed_dimensions: [date, channel, region, category]
+```
+
+指标需要和 relationship safety 联动，避免错误 join path 导致聚合膨胀。
+
+### Feedback Loop v1
+
+用户可以标记 SQL/结果是否正确，反馈沉淀为 verified query 或 eval case：
+
+```text
+question
+generated_sql
+final_sql
+user_feedback
+corrected_sql
+promoted_to_verified_query
+```
 
 ### 第一版不一定上向量库
 
@@ -390,6 +532,7 @@ receive_question
 3. 上下文召回结果排序。
 4. 与规则召回融合。
 5. 召回结果可解释展示。
+6. 字段值召回。
 
 ### 推荐策略
 
@@ -398,6 +541,8 @@ receive_question
 ```text
 规则匹配得分 + 向量相似度 + 业务优先级 + 历史使用频率
 ```
+
+Value Recall 参考 ThoughtSpot 和“掌柜问数”的做法，用于识别用户问题中的业务值属于哪个字段，例如“华东”“天猫”“美妆个护”。Phase 4 再引入全文/向量能力，避免 Phase 1 基础设施过重。
 
 ### 验收标准
 
@@ -670,17 +815,21 @@ mcp_servers/olap_tools
 1. 初始化后端 FastAPI 项目。
 2. 初始化前端 Vue 项目。
 3. 写 `.env.example`。
-4. 实现 MySQL 连接。
-5. 实现 DuckDB 电商数仓元数据同步。
-6. 实现 SQLGlot Guard v1。
-7. 写 SQL Guard 单元测试。
-8. 实现最简单的 SQL 生成 prompt。
-9. 实现 LangGraph 查询链路。
-10. 实现 SSE 步骤流。
-11. 实现前端聊天页面。
-12. 实现 SQL 展示和结果表格。
-13. 实现基础折线图推荐。
-14. 写 10 条 eval case。
+4. 实现 DuckDB 连接。
+5. 实现 DuckDB 电商数仓数据生成。
+6. I1.1 实现 Schema Explorer v1：表、字段、类型、row count、sample values、relationship inference。
+7. I1.2 重构 semantic overlay：字段说明、指标角色、指标口径、确认 join。
+8. I1.3 实现 Analysis Space v1 和 Verified Queries v0。
+9. I1.4 实现 `build_schema_context` 和 explainability 输出。
+10. 实现 SQLGlot Guard v1。
+11. 写 SQL Guard 单元测试。
+12. 实现最简单的 SQL 生成 prompt。
+13. 实现 LangGraph 查询链路。
+14. 实现 SSE 步骤流。
+15. 实现前端聊天页面。
+16. 实现 SQL 展示和结果表格。
+17. 实现基础折线图推荐。
+18. 写 10 条 eval case。
 
 ## 15. 不做清单
 
