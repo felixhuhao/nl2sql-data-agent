@@ -262,6 +262,40 @@ I1.4 Explainability Context
   -> relationship source / confidence / fanout_risk
 ```
 
+### Iteration 2 细分
+
+Iteration 2 拆成 4 个小任务：
+
+```text
+I2.1 SQL Guard Core
+  -> 引入 sqlglot
+  -> SQLGlot parse + 单语句校验 + DuckDB dialect
+  -> 只允许 SELECT
+  -> 拒绝 DDL / DML / COPY / INSTALL / LOAD
+  -> 拒绝 read_csv / read_parquet / read_json
+
+I2.2 Scope Guard
+  -> 从 Analysis Space 读取表白名单
+  -> 从 metadata 读取字段白名单
+  -> 校验表和字段访问范围
+  -> 支持基础 alias 解析
+  -> unqualified column 只在唯一匹配时通过
+
+I2.3 Cost Guard + Normalized SQL
+  -> 无 LIMIT 自动追加 LIMIT 500
+  -> LIMIT 超过 500 时截断
+  -> 产出 normalized_sql
+  -> executor 只接收 normalized_sql
+
+I2.4 Readonly Executor + Tests
+  -> DuckDB read-only connection
+  -> 返回 columns / rows / row_count
+  -> SQL Guard 单元测试 15+
+  -> 覆盖合法 SQL、危险操作、越权表、越权字段、外部读取函数
+```
+
+拆分依据：SQL Guard 既是安全边界，也是后续 Agent、SSE、eval 的共同依赖。先做 parse/op/function，再做 scope，再做 cost rewrite，最后接 read-only executor，可以降低定位成本。
+
 ### Analysis Space v1
 
 参考 Databricks Genie 的 trusted assets 思路，Phase 1 不让用户对整个数据库自由问数，而是限定在一个可问数据空间：

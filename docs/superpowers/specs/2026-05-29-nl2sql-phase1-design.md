@@ -686,6 +686,8 @@ Iteration 1 拆成 4 个小任务，避免把 schema explore、semantic overlay�
 
 目标：先把安全边界做实，再接 Agent 和前端。
 
+Iteration 2 拆成 4 个小任务。原因是这一轮同时涉及 SQL AST 解析、安全策略、scope 绑定、SQL 改写、只读执行和测试；如果一次性做完，失败时很难判断问题来自 Guard、metadata scope 还是 executor。
+
 交付：
 
 - Syntax Guard: SQLGlot parse，单语句，指定方言
@@ -695,6 +697,84 @@ Iteration 1 拆成 4 个小任务，避免把 schema explore、semantic overlay�
 - Cost Guard: 无 LIMIT 自动追加 500，已有 LIMIT 超过 500 截断
 - Connection Guard: DuckDB read-only 连接，执行器只接收 Guard 后的 `normalized_sql`
 - SQL Guard 单元测试（15+）
+
+#### I2.1 SQL Guard Core
+
+目标：先把 SQL 的结构化解析和高危语句拦截做出来，不接执行器。
+
+交付：
+
+- 新增 `sql_guard/` 模块
+- 引入 `sqlglot`
+- 定义 Guard 输入输出模型：`allowed`、`normalized_sql`、`reason`、`stage`、`warnings`
+- Syntax Guard：SQLGlot parse、单语句校验、DuckDB dialect
+- Operation Guard：只允许 `SELECT`
+- Function Guard：拒绝 DuckDB 外部读取函数和系统扩展语句
+
+验收：
+
+- 合法 `SELECT` 通过
+- 多语句被拒绝
+- `DELETE`、`DROP`、`CREATE`、`COPY`、`INSTALL`、`LOAD` 被拒绝
+- `read_csv`、`read_parquet`、`read_json` 被拒绝
+
+#### I2.2 Scope Guard
+
+目标：把 Analysis Space 和 metadata 接入 Guard，让 SQL 只能访问可信表和可信字段。
+
+交付：
+
+- 从 Analysis Space 读取表白名单
+- 从 metadata 读取字段白名单
+- 校验 SQL 访问表必须在白名单内
+- 校验 SQL 访问字段必须属于允许表
+- 支持基础 alias 解析
+- 对 unqualified column 使用保守策略：只能在已引用表中唯一匹配时通过
+
+验收：
+
+- 白名单表和字段通过
+- 非白名单表被拒绝
+- 非白名单字段被拒绝
+- alias 场景可以正确识别真实表
+
+#### I2.3 Cost Guard 和 Normalized SQL
+
+目标：让后续执行器只执行 Guard 归一化后的 SQL，并限制结果规模。
+
+交付：
+
+- 无 `LIMIT` 自动追加 `LIMIT 500`
+- 已有 `LIMIT > 500` 截断为 500
+- 已有 `LIMIT <= 500` 保留
+- 返回 `normalized_sql`
+- 返回结构化 warning，例如 `LIMIT 500 was added automatically`
+
+验收：
+
+- 无 LIMIT 查询会被补 LIMIT
+- 大 LIMIT 会被压到 500
+- 小 LIMIT 不被改写
+- 后续 executor 不接受原始 SQL，只接受 `normalized_sql`
+
+#### I2.4 Readonly Executor 和 Guard Tests
+
+目标：把 Guard 和 DuckDB 只读执行串起来，形成安全执行边界。
+
+交付：
+
+- 新增 `execution/runner.py`
+- DuckDB 使用 read-only connection
+- executor 只接收 Guard 后的 `normalized_sql`
+- 返回 `columns`、`rows`、`row_count`
+- SQL Guard 单元测试 15+
+
+验收：
+
+- 15+ Guard 测试通过
+- 合法 SQL 能执行
+- DELETE、DROP、CREATE、非白名单表、非白名单字段、`read_csv` 被拒绝
+- 只读 executor 不暴露直接执行原始 SQL 的入口
 
 验收：
 
@@ -775,9 +855,10 @@ Iteration 1
   -> build_schema_context
 
 Iteration 2
-  -> sql_guard/
-  -> execution/runner.py
-  -> SQL Guard tests
+  -> I2.1 sql_guard/ core parse + operation/function guards
+  -> I2.2 scope guard with Analysis Space + metadata whitelist
+  -> I2.3 cost guard + normalized_sql
+  -> I2.4 execution/runner.py + read-only connection + SQL Guard tests
 
 Iteration 3
   -> core/llm_provider.py with Mock provider
