@@ -780,6 +780,10 @@ Iteration 2 拆成 4 个小任务。原因是这一轮同时涉及 SQL AST 解�
 
 目标：先不接真实模型，用 Mock provider 跑通完整后端链路。
 
+Iteration 3 拆成 5 个小任务。原因是这一轮是链路集成，不是单模块开发，同时包含 provider 抽象、agent workflow、query-level explainability、图表推荐和 SSE API。先把节点接口和数据结构跑通，再接 SSE，避免模型、执行、事件流和图表推荐问题混在一起。
+
+Iteration 3 暂不强制引入 LangGraph 运行时依赖。先把 state、node 和 provider 按 LangGraph 兼容的形状实现为普通 Python 函数；等 Mock 链路稳定后，再决定是否在后续 iteration 接入 LangGraph runtime。
+
 交付：
 
 - `LLMProvider` 抽象
@@ -797,6 +801,93 @@ Iteration 2 拆成 4 个小任务。原因是这一轮同时涉及 SQL AST 解�
 - SSE 能看到 `build_context`、`generate_sql`、`sql_guard`、`execute`、`summarize`、`recommend_chart` 步骤
 - SSE done 结果包含 query-level explainability
 - 图表推荐返回结构化 JSON，包含 chart_type 和列映射
+
+#### I3.1 Provider 和 MockLLMProvider
+
+目标：先建立 LLM provider 边界，并用 Mock provider 产出确定性 SQL。
+
+交付：
+
+- 新增 `core/llm_provider.py`
+- 定义 `LLMProvider` 协议或抽象基类
+- 新增 `MockLLMProvider`
+- demo 问题返回固定合法 SQL
+- 安全 smoke 问题返回固定危险 SQL，用来验证 Guard 真拦截
+- prompt 接口先保留签名，不接真实模型
+
+验收：
+
+- demo 问题能得到确定性 SQL
+- 删除、DROP、CREATE 类问题能得到对应危险 SQL
+- provider 单元测试通过
+
+#### I3.2 Agent Workflow Core
+
+目标：用普通函数串起后端查询链路，不先引入 SSE 和前端。
+
+交付：
+
+- 新增 `agent/state.py`
+- 新增节点函数：`build_context`、`generate_sql`、`sql_guard`、`execute`、`summarize`
+- 接入 `build_schema_context`
+- 接入 `build_default_guard_scope`、`guard_sql`、`execute_guarded_sql`
+- 输出统一 query result 结构
+
+验收：
+
+- demo 问题能完成 context -> SQL -> Guard -> execute -> summary
+- 危险问题在 Guard 阶段停止，不执行 SQL
+- 节点级单元测试通过
+
+#### I3.3 Query-level Explainability
+
+目标：查询响应里返回本次命中的上下文和执行解释，先用规则生成，不让 LLM 编造 explainability。
+
+交付：
+
+- 输出 `matched_tables`
+- 输出 `matched_columns`
+- 输出 `join_paths`
+- 输出 `date_interpretation`
+- 输出 `guard_result`
+
+验收：
+
+- demo 问题响应包含表、字段、join path、日期解释和 Guard 结果
+- Guard 拒绝响应也包含 `guard_result`
+
+#### I3.4 Chart Recommender
+
+目标：给执行结果推荐最小可用图表结构。
+
+交付：
+
+- 新增 `visualization/recommender.py`
+- 输出 `chart_type`、`x_column`、`y_columns`
+- 先支持时间序列折线图
+- 无法识别时 fallback 为 table
+
+验收：
+
+- 每日销售额场景返回 line chart
+- 非时间序列结果返回 table fallback
+
+#### I3.5 `/api/chat/query` 和 SSE
+
+目标：把 Mock Agent 链路暴露成后端 API，并提供步骤流。
+
+交付：
+
+- 新增 `api/chat.py`
+- `POST /api/chat/query`
+- SSE 事件：`step` / `done` / `error`
+- 步骤包括 `build_context`、`generate_sql`、`sql_guard`、`execute`、`summarize`、`recommend_chart`
+
+验收：
+
+- demo 问题能返回 SSE step 和 done
+- 危险问题能返回 error，且不执行 SQL
+- done 事件包含 SQL、结果表、summary、chart recommendation、query-level explainability
 
 ### Iteration 4：DeepSeek 和前端页面
 
@@ -855,12 +946,11 @@ Iteration 2
   -> I2.4 execution/runner.py + read-only connection + SQL Guard tests
 
 Iteration 3
-  -> core/llm_provider.py with Mock provider
-  -> agent/state.py + nodes/
-  -> agent/prompts/sql_generation.py + summarize.py（接口签名）
-  -> agent/graph.py
-  -> api/chat.py
-  -> visualization/recommender.py
+  -> I3.1 core/llm_provider.py with Mock provider
+  -> I3.2 agent/state.py + node functions
+  -> I3.3 query-level explainability
+  -> I3.4 visualization/recommender.py
+  -> I3.5 api/chat.py + POST SSE
 
 Iteration 4
   -> DeepSeek provider

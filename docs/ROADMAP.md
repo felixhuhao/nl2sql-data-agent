@@ -296,6 +296,47 @@ I2.4 Readonly Executor + Tests
 
 拆分依据：SQL Guard 既是安全边界，也是后续 Agent、SSE、eval 的共同依赖。先做 parse/op/function，再做 scope，再做 cost rewrite，最后接 read-only executor，可以降低定位成本。
 
+### Iteration 3 细分
+
+Iteration 3 拆成 5 个小任务：
+
+```text
+I3.1 Provider + MockLLMProvider
+  -> LLMProvider 抽象
+  -> MockLLMProvider
+  -> demo 问题返回固定合法 SQL
+  -> 安全问题返回固定危险 SQL
+  -> provider 单元测试
+
+I3.2 Agent Workflow Core
+  -> agent/state.py
+  -> build_context / generate_sql / sql_guard / execute / summarize 节点函数
+  -> 接入 schema context、SQL Guard 和 readonly executor
+  -> 先用普通函数串链路，不强制引入 LangGraph runtime
+
+I3.3 Query-level Explainability
+  -> matched_tables
+  -> matched_columns
+  -> join_paths
+  -> date_interpretation
+  -> guard_result
+  -> explainability 先用规则生成，不让 LLM 编造
+
+I3.4 Chart Recommender
+  -> visualization/recommender.py
+  -> chart_type / x_column / y_columns
+  -> 时间序列返回 line
+  -> 无法识别时 fallback table
+
+I3.5 /api/chat/query + SSE
+  -> api/chat.py
+  -> POST /api/chat/query
+  -> step / done / error 事件
+  -> 串起 Mock Agent 完整链路
+```
+
+拆分依据：Iteration 3 是链路集成，同时涉及 provider、agent state、Guard/Executor、解释信息、图表推荐和 SSE。先把确定性的 Mock 链路跑通，再接事件流，可以避免模型输出、执行错误和 API 流式响应互相干扰。
+
 ### Analysis Space v1
 
 参考 Databricks Genie 的 trusted assets 思路，Phase 1 不让用户对整个数据库自由问数，而是限定在一个可问数据空间：
