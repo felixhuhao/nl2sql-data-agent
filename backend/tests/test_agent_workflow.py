@@ -1,0 +1,131 @@
+import pytest
+
+from backend.app.agent.nodes import (
+    build_context_node,
+    execute_node,
+    generate_sql_node,
+    run_query_workflow,
+    sql_guard_node,
+)
+from backend.app.agent.state import AgentState
+from backend.app.core.llm_provider import MockLLMProvider
+from backend.app.execution.runner import QueryResult
+from backend.app.sql_guard.models import GuardResult
+from backend.app.sql_guard.scope import GuardScope
+
+
+def test_build_context_node_sets_context_and_step():
+    state = AgentState(question="test")
+
+    build_context_node(state, schema_context_builder=lambda: "# Context")
+
+    assert state.schema_context == "# Context"
+    assert state.completed_steps == ["build_context"]
+
+
+def test_generate_sql_node_requires_schema_context():
+    state = AgentState(question="test")
+
+    with pytest.raises(ValueError, match="schema_context"):
+        generate_sql_node(state, provider=MockLLMProvider())
+
+
+def test_sql_guard_node_requires_sql():
+    state = AgentState(question="test")
+
+    with pytest.raises(ValueError, match="sql is required"):
+        sql_guard_node(state, scope_builder=_scope)
+
+
+def test_execute_node_requires_guard_result():
+    state = AgentState(question="test")
+
+    with pytest.raises(ValueError, match="guard_result"):
+        execute_node(state)
+
+
+def test_execute_node_skips_rejected_guard_result_without_overwriting_error():
+    state = AgentState(
+        question="test",
+        guard_result=GuardResult(allowed=False, stage="operation_guard", reason="DROP is not allowed."),
+        error="existing error",
+        stopped_at="sql_guard",
+    )
+
+    execute_node(state)
+
+    assert state.error == "existing error"
+    assert state.stopped_at == "sql_guard"
+    assert state.query_result is None
+    assert state.completed_steps == []
+
+
+def test_run_query_workflow_executes_demo_question():
+    executed_sql = []
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        executed_sql.append(guard_result.normalized_sql)
+        return QueryResult(
+            columns=["date_value", "sales_amount", "order_count"],
+            rows=[["2025-12-31", 100, 2]],
+            row_count=1,
+        )
+
+    state = run_query_workflow(
+        "查询最近30天每日销售额和订单数",
+        schema_context_builder=lambda: "# Schema Context",
+        scope_builder=_scope,
+        executor=fake_executor,
+    )
+
+    assert state.stopped_at is None
+    assert state.error is None
+    assert state.provider == "mock"
+    assert state.matched_query_id == "recent_30d_daily_sales"
+    assert state.guard_result is not None
+    assert state.guard_result.allowed is True
+    assert state.query_result is not None
+    assert state.query_result.row_count == 1
+    assert state.summary == "查询返回 1 行，字段：date_value, sales_amount, order_count。"
+    assert state.completed_steps == [
+        "build_context",
+        "generate_sql",
+        "sql_guard",
+        "execute",
+        "summarize",
+    ]
+    assert executed_sql
+    assert "LIMIT 500" in executed_sql[0]
+
+
+def test_run_query_workflow_stops_when_guard_rejects_sql():
+    executed = []
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        executed.append(guard_result)
+        return QueryResult(columns=[], rows=[], row_count=0)
+
+    state = run_query_workflow(
+        "删除2024年数据",
+        schema_context_builder=lambda: "# Schema Context",
+        scope_builder=_scope,
+        executor=fake_executor,
+    )
+
+    assert state.stopped_at == "sql_guard"
+    assert state.error == "DELETE is not allowed."
+    assert state.guard_result is not None
+    assert state.guard_result.allowed is False
+    assert state.query_result is None
+    assert executed == []
+    assert state.completed_steps == ["build_context", "generate_sql", "sql_guard"]
+
+
+def _scope() -> GuardScope:
+    return GuardScope(
+        allowed_tables=frozenset({"fact_orders", "dim_date"}),
+        table_columns={
+            "fact_orders": frozenset({"order_id", "date_key", "payment_amount"}),
+            "dim_date": frozenset({"date_key", "date_value"}),
+        },
+    )
