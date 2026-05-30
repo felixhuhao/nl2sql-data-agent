@@ -1,7 +1,7 @@
 # NL2SQL Phase 3 设计文档
 
 > 日期: 2026-05-30
-> 状态: 进行中
+> 状态: 已完成
 > 前置: Phase 2.5 语义资产管理已完成
 > 范围: 评测体系与真实模型验证
 
@@ -31,19 +31,19 @@
 
 | 组件 | 说明 |
 |------|------|
-| `evals/smoke_cases.yaml` | 15 条 case，YAML 格式，含 retrieval / guard / execution 验证 |
+| `evals/smoke_cases.yaml` | 30 条 case，YAML 格式，含 retrieval / guard / execution 验证 |
 | `scripts/run_smoke_eval.py` | 完整的 smoke runner，含报告生成 |
 | `MockLLMProvider` | 确定性 SQL 生成，支持 verified query 匹配 |
 | `DeepSeekProvider` | 真实 LLM 调用，已实现 |
 | `run_query_workflow()` | 完整 Agent 工作流，返回 AgentState；Phase 3 不直接替换当前 smoke runner，除非先补 `StaticSQLProvider` 或等价注入点 |
 | `SmokeResult` / `_write_report()` | 评测结果数据结构和 Markdown 报告 |
 
-### 3.2 缺失
+### 3.2 已补齐
 
-- Case 数量不足（15 → 30+）
-- 错误归因分类（当前只有 pass/fail，无错误类型）
-- Real LLM benchmark 模式（当前只跑 Mock）
-- 报告中缺少 per-case SQL / 错误归因 / 耗时
+- Case 数量已扩展到 30 条。
+- Smoke runner 已支持错误归因分类。
+- Runner 已支持 `--provider mock|deepseek`。
+- 报告已包含 per-case SQL、错误归因、耗时、provider 和 skipped cases。
 
 ## 4. Case 扩展设计
 

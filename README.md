@@ -63,7 +63,7 @@ dim_date
 - 表格和图表展示。
 - Eval Runner。
 
-## Phase 1 快速启动
+## 快速启动
 
 生成本地 DuckDB 数据并同步元数据：
 
@@ -112,7 +112,7 @@ http://127.0.0.1:5174/
 
 ## Smoke Eval
 
-运行最小回归：
+运行 Mock 基线回归：
 
 ```bash
 python scripts/run_smoke_eval.py
@@ -120,24 +120,33 @@ python scripts/run_smoke_eval.py
 
 当前 smoke eval 覆盖：
 
-- 10 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、指标/别名检索、fallback
-- 5 条安全用例：DELETE、DROP、CREATE、非白名单表、外部读取函数
+- 22 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback
+- 8 条安全用例：DELETE、DROP、CREATE、UPDATE、TRUNCATE、非白名单表、外部读取函数
 - retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation
+- 错误归因：retrieval_miss、sql_invalid、guard_blocked、execution_error、result_mismatch
 
 通过时输出类似：
 
 ```text
-15/15 smoke cases passed.
-focused context: avg=2448 chars, full=7155 chars, avg_reduction=65.8%, fallback=1/15
+30/30 smoke cases passed.
+focused context: avg=2293 chars, full=7155 chars, avg_reduction=68.0%, fallback=2/30
 report: evals\reports\smoke_latest.md
 ```
 
-报告会写入 `evals/reports/smoke_latest.md`，包含 retrieval expected hit rate、full schema vs focused context 对比、每条 case 的检索资产和失败详情。
+报告会写入 `evals/reports/smoke_latest.md`，包含 provider、skipped cases、错误类型分布、retrieval expected hit rate、full schema vs focused context 对比、每条 case 的 SQL、检索资产和失败详情。
 
-## Phase 1 当前限制
+运行 DeepSeek real eval：
+
+```bash
+python scripts/run_smoke_eval.py --provider deepseek --report-path evals/reports/deepseek_latest.md
+```
+
+Real eval 需要配置 `DEEPSEEK_API_KEY`。显式 `--provider deepseek` 且缺少 key 时，runner 会直接报错退出；Mock eval 不需要 key。
+
+## 当前限制
 
 - Mock provider 只覆盖少量 verified/demo 问题，不是完整自然语言泛化能力。
-- DeepSeek provider 已接入，但真实模型效果取决于 API Key、模型输出和 prompt 约束。
+- DeepSeek provider 已接入，real eval 会保存 generated SQL 和 normalized SQL；业务语义等价性仍需要人工审阅报告。
 - SQL 高亮目前是基础代码块展示，未接入完整语法高亮。
 - ECharts 当前只渲染 time-series line chart，其他结果使用表格 fallback。
 
@@ -166,3 +175,4 @@ report: evals\reports\smoke_latest.md
 
 - [NL2SQL_RESEARCH.md](docs/NL2SQL_RESEARCH.md)
 - [ROADMAP.md](docs/ROADMAP.md)
+- [Phase 3 Design](docs/superpowers/specs/2026-05-30-nl2sql-phase3-design.md)
