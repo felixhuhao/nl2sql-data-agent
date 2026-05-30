@@ -104,9 +104,54 @@ textarea {
   display: grid;
   gap: 10px;
   margin: 16px 0 0;
-  padding-left: 20px;
+  padding-left: 0;
   color: #667085;
   font-size: 14px;
+  list-style: none;
+}
+
+.workflow-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-left: 3px solid #d5dce7;
+  padding: 6px 0 6px 10px;
+}
+
+.workflow-step strong {
+  flex: 0 0 auto;
+  color: #7a8494;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.workflow-step.running {
+  border-left-color: #2f75b5;
+  color: #1d4f7a;
+}
+
+.workflow-step.running strong {
+  color: #2f75b5;
+}
+
+.workflow-step.completed {
+  border-left-color: #2e7d5b;
+  color: #265944;
+}
+
+.workflow-step.completed strong {
+  color: #2e7d5b;
+}
+
+.workflow-step.error {
+  border-left-color: #b42318;
+  color: #8f1d1d;
+}
+
+.workflow-step.error strong {
+  color: #b42318;
 }
 
 .conversation-panel {
@@ -181,6 +226,24 @@ textarea {
   color: #3d4656;
   background: #f7f9fc;
   font-size: 12px;
+}
+
+.step-list span.running {
+  border-color: #92b9df;
+  color: #1d4f7a;
+  background: #eef6ff;
+}
+
+.step-list span.completed {
+  border-color: #9fcbb8;
+  color: #265944;
+  background: #eefaf4;
+}
+
+.step-list span.error {
+  border-color: #efb6b6;
+  color: #8f1d1d;
+  background: #fff5f5;
 }
 
 .table-wrap {

@@ -2,16 +2,35 @@
 import { computed, ref } from "vue";
 import { API_BASE_URL } from "./api/config";
 
+const workflowSteps = [
+  { id: "build_context", label: "构建上下文" },
+  { id: "generate_sql", label: "生成 SQL" },
+  { id: "sql_guard", label: "SQL Guard" },
+  { id: "execute", label: "执行查询" },
+  { id: "summarize", label: "生成回答" },
+  { id: "recommend_chart", label: "推荐图表" },
+] as const;
+
+type WorkflowStepId = (typeof workflowSteps)[number]["id"];
+type StepStatus = "pending" | "running" | "completed" | "error";
+
 const question = ref("查询最近30天每日销售额和订单数");
 const isSubmitting = ref(false);
 const errorMessage = ref("");
-const steps = ref<string[]>([]);
+const stepStates = ref(createStepStates());
 const sql = ref("");
 const summary = ref("");
 const rows = ref<unknown[][]>([]);
 const columns = ref<string[]>([]);
 const apiTarget = computed(() => `${API_BASE_URL || "same origin"}/api/chat/query`);
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
+const hasActivity = computed(
+  () =>
+    isSubmitting.value ||
+    stepStates.value.some((step) => step.status !== "pending") ||
+    Boolean(summary.value) ||
+    Boolean(errorMessage.value),
+);
 
 async function submitQuestion() {
   if (!canSubmit.value) {
@@ -20,7 +39,8 @@ async function submitQuestion() {
 
   isSubmitting.value = true;
   errorMessage.value = "";
-  steps.value = [];
+  stepStates.value = createStepStates();
+  setStepStatus("build_context", "running");
   sql.value = "";
   summary.value = "";
   rows.value = [];
@@ -44,6 +64,46 @@ async function submitQuestion() {
     errorMessage.value = error instanceof Error ? error.message : "请求失败";
   } finally {
     isSubmitting.value = false;
+  }
+}
+
+function createStepStates() {
+  return workflowSteps.map((step) => ({
+    ...step,
+    status: "pending" as StepStatus,
+  }));
+}
+
+function setStepStatus(stepId: string, status: StepStatus) {
+  const step = stepStates.value.find((item) => item.id === stepId);
+  if (step) {
+    step.status = status;
+  }
+}
+
+function completeStep(stepId: WorkflowStepId) {
+  const index = stepStates.value.findIndex((step) => step.id === stepId);
+  if (index === -1) {
+    return;
+  }
+
+  stepStates.value[index].status = "completed";
+  const nextStep = stepStates.value[index + 1];
+  if (nextStep && nextStep.status === "pending") {
+    nextStep.status = "running";
+  }
+}
+
+function failStep(stepId: string | undefined) {
+  const matchedStep = stepStates.value.find((step) => step.id === stepId);
+  if (matchedStep) {
+    matchedStep.status = "error";
+    return;
+  }
+
+  const runningStep = stepStates.value.find((step) => step.status === "running");
+  if (runningStep) {
+    runningStep.status = "error";
   }
 }
 
@@ -88,17 +148,25 @@ function handleSseChunk(chunk: string) {
     return;
   }
 
-  const payload = JSON.parse(data);
+  let payload: Record<string, any>;
+  try {
+    payload = JSON.parse(data);
+  } catch {
+    return;
+  }
+
   if (event === "step") {
-    steps.value.push(payload.step);
+    completeStep(payload.step);
   }
   if (event === "done") {
+    stepStates.value = stepStates.value.map((step) => ({ ...step, status: "completed" }));
     sql.value = payload.sql ?? "";
     summary.value = payload.summary ?? "";
     columns.value = payload.result?.columns ?? [];
     rows.value = payload.result?.rows ?? [];
   }
   if (event === "error") {
+    failStep(payload.step);
     errorMessage.value = payload.reason ?? "请求失败";
   }
 }
@@ -119,18 +187,20 @@ function handleSseChunk(chunk: string) {
         <aside class="steps-panel">
           <h2>执行步骤</h2>
           <ol>
-            <li>build_context</li>
-            <li>generate_sql</li>
-            <li>sql_guard</li>
-            <li>execute</li>
-            <li>summarize</li>
-            <li>recommend_chart</li>
+            <li
+              v-for="step in stepStates"
+              :key="step.id"
+              :class="['workflow-step', step.status]"
+            >
+              <span>{{ step.label }}</span>
+              <strong>{{ step.status }}</strong>
+            </li>
           </ol>
         </aside>
 
         <section class="conversation-panel">
           <div class="result-area">
-            <div v-if="!steps.length && !summary && !errorMessage" class="empty-state">
+            <div v-if="!hasActivity" class="empty-state">
               <h2>开始一次问数</h2>
               <p>输入经营分析问题，Agent 会生成 SQL 并返回查询结果。</p>
             </div>
@@ -138,10 +208,16 @@ function handleSseChunk(chunk: string) {
             <div v-else class="answer-stack">
               <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
 
-              <section v-if="steps.length" class="answer-section">
-                <h2>执行步骤</h2>
+              <section v-if="hasActivity" class="answer-section">
+                <h2>步骤流</h2>
                 <div class="step-list">
-                  <span v-for="step in steps" :key="step">{{ step }}</span>
+                  <span
+                    v-for="step in stepStates"
+                    :key="step.id"
+                    :class="step.status"
+                  >
+                    {{ step.label }}
+                  </span>
                 </div>
               </section>
 
