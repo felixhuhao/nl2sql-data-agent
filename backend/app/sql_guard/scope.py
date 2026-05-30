@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from sqlalchemy import select
 
 from backend.app.core.db import get_sqlite_engine, sqlite_session
-from backend.app.dataspace.analysis_space import get_default_analysis_space
-from backend.app.metadata.models import MetaColumn, MetaTable, create_metadata_schema
+from backend.app.metadata.models import MetaAnalysisSpace, MetaColumn, MetaTable, create_metadata_schema
 
 
 @dataclass(frozen=True)
@@ -20,10 +20,9 @@ class GuardScope:
 
 def build_default_guard_scope() -> GuardScope:
     create_metadata_schema(get_sqlite_engine())
-    analysis_space = get_default_analysis_space()
-    allowed_tables = frozenset(analysis_space.tables)
 
     with sqlite_session() as session:
+        allowed_tables = _active_allowed_tables(session)
         tables = session.scalars(
             select(MetaTable)
             .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
@@ -40,3 +39,24 @@ def build_default_guard_scope() -> GuardScope:
             table_columns[table.table_name] = frozenset(columns)
 
     return GuardScope(allowed_tables=allowed_tables, table_columns=table_columns)
+
+
+def _active_allowed_tables(session) -> frozenset[str]:
+    analysis_space = session.scalar(
+        select(MetaAnalysisSpace)
+        .where(MetaAnalysisSpace.enabled.is_(True))
+        .order_by(MetaAnalysisSpace.id)
+    )
+    if analysis_space is None:
+        return frozenset()
+    return frozenset(_parse_json_list(analysis_space.tables))
+
+
+def _parse_json_list(value: str | None) -> list:
+    if value is None:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []

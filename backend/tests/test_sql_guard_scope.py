@@ -1,4 +1,13 @@
+import json
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+import backend.app.sql_guard.scope as scope_module
 from backend.app.sql_guard import GuardScope, guard_sql
+from backend.app.sql_guard.scope import build_default_guard_scope
+from backend.app.metadata.models import MetaAnalysisSpace, MetaColumn, MetaTable, create_metadata_schema
 
 
 def test_allowed_table_and_unique_column_pass():
@@ -137,6 +146,48 @@ def test_cte_inner_non_whitelist_column_is_rejected():
     assert result.reason == "Column secret_note is not allowed."
 
 
+def test_build_default_guard_scope_reads_analysis_space_from_db(monkeypatch):
+    engine = _patch_scope_db(monkeypatch)
+    with Session(engine) as session:
+        fact_orders = MetaTable(table_name="fact_orders", enabled=True)
+        raw_orders = MetaTable(table_name="raw_orders", enabled=True)
+        session.add_all([fact_orders, raw_orders])
+        session.flush()
+        session.add_all(
+            [
+                MetaColumn(table_id=fact_orders.id, column_name="order_id", data_type="VARCHAR"),
+                MetaColumn(table_id=fact_orders.id, column_name="payment_amount", data_type="DECIMAL"),
+                MetaColumn(table_id=raw_orders.id, column_name="order_id", data_type="VARCHAR"),
+                MetaAnalysisSpace(
+                    name="custom_space",
+                    datasource="test",
+                    tables=json.dumps(["fact_orders"], ensure_ascii=False),
+                    enabled_metrics=json.dumps([], ensure_ascii=False),
+                    allowed_operations=json.dumps(["select"], ensure_ascii=False),
+                    enabled=True,
+                ),
+            ]
+        )
+        session.commit()
+
+    scope = build_default_guard_scope()
+
+    assert scope.allowed_tables == frozenset({"fact_orders"})
+    assert scope.columns_for_table("fact_orders") == frozenset({"order_id", "payment_amount"})
+    assert guard_sql("SELECT order_id FROM fact_orders", scope=scope).allowed is True
+    assert guard_sql("SELECT order_id FROM raw_orders", scope=scope).reason == "Table raw_orders is not allowed."
+    assert guard_sql("SELECT secret_note FROM fact_orders", scope=scope).reason == "Column secret_note is not allowed."
+
+
+def test_build_default_guard_scope_handles_empty_analysis_space(monkeypatch):
+    _patch_scope_db(monkeypatch)
+
+    scope = build_default_guard_scope()
+
+    assert scope.allowed_tables == frozenset()
+    assert scope.table_columns == {}
+
+
 def _scope() -> GuardScope:
     return GuardScope(
         allowed_tables=frozenset({"fact_orders", "dim_date", "dim_regions"}),
@@ -153,3 +204,22 @@ def _scope() -> GuardScope:
             "dim_regions": frozenset({"region_key", "region_name"}),
         },
     )
+
+
+def _patch_scope_db(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    create_metadata_schema(engine)
+
+    @contextmanager
+    def session_scope():
+        with Session(engine, autoflush=False, expire_on_commit=False) as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+    monkeypatch.setattr(scope_module, "get_sqlite_engine", lambda: engine)
+    monkeypatch.setattr(scope_module, "sqlite_session", session_scope)
+    return engine
