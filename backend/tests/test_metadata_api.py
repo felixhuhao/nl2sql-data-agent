@@ -206,6 +206,8 @@ def test_verified_query_update_toggle_and_filter(monkeypatch):
         },
     )
     toggle_response = client.patch("/api/metadata/verified-queries/admin_verified_sales/toggle")
+    default_response = client.get("/api/metadata/verified-queries")
+    enabled_response = client.get("/api/metadata/verified-queries", params={"enabled": True})
     disabled_response = client.get("/api/metadata/verified-queries", params={"enabled": False})
 
     assert update_response.status_code == 200
@@ -213,6 +215,8 @@ def test_verified_query_update_toggle_and_filter(monkeypatch):
     assert update_response.json()["tags"] == ["updated"]
     assert toggle_response.status_code == 200
     assert toggle_response.json()["enabled"] is False
+    assert [query["id"] for query in default_response.json()] == ["admin_verified_sales"]
+    assert enabled_response.json() == []
     assert [query["id"] for query in disabled_response.json()] == ["admin_verified_sales"]
 
 

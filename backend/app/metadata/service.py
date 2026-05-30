@@ -102,7 +102,7 @@ def get_analysis_space() -> dict:
         return _analysis_space_payload(analysis_space) if analysis_space else {}
 
 
-def list_verified_queries(enabled: bool | None = True) -> list[dict]:
+def list_verified_queries(enabled: bool | None = None) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
         query = select(MetaVerifiedQuery).order_by(MetaVerifiedQuery.id)

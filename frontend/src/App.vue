@@ -8,6 +8,7 @@ import {
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import Admin from "./Admin.vue";
 import { API_BASE_URL } from "./api/config";
 
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
@@ -57,6 +58,7 @@ const explainability = ref<Explainability | null>(null);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
 const chartContainer = ref<HTMLDivElement | null>(null);
+const activeView = ref<"chat" | "admin">("chat");
 const apiTarget = computed(() => `${API_BASE_URL || "same origin"}/api/chat/query`);
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -319,6 +321,13 @@ function disposeChart() {
   chartInstance?.dispose();
   chartInstance = null;
 }
+
+function switchView(view: "chat" | "admin") {
+  activeView.value = view;
+  if (view === "chat") {
+    void nextTick(renderLineChart);
+  }
+}
 </script>
 
 <template>
@@ -329,10 +338,28 @@ function disposeChart() {
           <h1>掌柜问数</h1>
           <p>NL2SQL Data Agent</p>
         </div>
-        <span class="status-pill">Mock Agent Ready</span>
+        <div class="topbar-actions">
+          <nav class="view-toggle" aria-label="view switcher">
+            <button
+              type="button"
+              :class="{ active: activeView === 'chat' }"
+              @click="switchView('chat')"
+            >
+              问数
+            </button>
+            <button
+              type="button"
+              :class="{ active: activeView === 'admin' }"
+              @click="switchView('admin')"
+            >
+              管理
+            </button>
+          </nav>
+          <span class="status-pill">Mock Agent Ready</span>
+        </div>
       </header>
 
-      <section class="chat-layout" aria-label="chat workspace">
+      <section v-if="activeView === 'chat'" class="chat-layout" aria-label="chat workspace">
         <aside class="steps-panel">
           <h2>执行步骤</h2>
           <ol>
@@ -515,6 +542,7 @@ function disposeChart() {
           </form>
         </section>
       </section>
+      <Admin v-else />
     </section>
   </main>
 </template>
