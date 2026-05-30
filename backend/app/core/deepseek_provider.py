@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from backend.app.agent.prompts.sql_generation import build_sql_generation_messages
 from backend.app.config import get_settings
 from backend.app.core.llm_provider import SQLGenerationRequest, SQLGenerationResult
 
@@ -42,22 +43,7 @@ class DeepSeekProvider:
     def _post_chat_completion(self, request: SQLGenerationRequest) -> httpx.Response:
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You generate DuckDB SQL for a governed NL2SQL system. "
-                        "Return SQL only. Do not include markdown or explanation."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Schema context:\n{request.schema_context}\n\n"
-                        f"Question:\n{request.question}"
-                    ),
-                },
-            ],
+            "messages": build_sql_generation_messages(request),
             "temperature": 0,
             "stream": False,
         }
