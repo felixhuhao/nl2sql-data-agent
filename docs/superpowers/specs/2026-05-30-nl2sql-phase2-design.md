@@ -170,10 +170,10 @@ question → tokenize → match tables / columns / metrics / examples → scored
 ```python
 @dataclass
 class RetrievalResult:
-    tables: list[RetrievedTable]     # 最多 5
-    columns: list[RetrievedColumn]   # 最多 20
-    metrics: list[RetrievedMetric]   # 最多 5
-    examples: list[RetrievedExample] # 最多 3
+    tables: list[RetrievedTable]                   # 默认最多 10
+    columns: list[RetrievedColumn]                 # 默认最多 10
+    metrics: list[RetrievedMetric]                 # 默认最多 10
+    verified_queries: list[RetrievedVerifiedQuery] # 默认最多 10
 ```
 
 ### 5.4 Fallback
@@ -305,15 +305,12 @@ def build_context_node(state, schema_context_builder=None):
 ### 8.1 新增端点
 
 ```
-GET  /api/metadata/retrieve?question=...  — 检索结果（调试用）
-GET  /api/metadata/metrics                 — 列出指标
-POST /api/metadata/metrics                 — 创建指标
-GET  /api/metadata/aliases                 — 列出别名
-POST /api/metadata/aliases                 — 添加别名
-GET  /api/metadata/verified-queries         — 列出 verified queries（DB backed）
-POST /api/metadata/verified-queries         — 创建 verified query
-GET  /api/metadata/analysis-space           — 当前 Analysis Space（DB backed）
+GET /api/metadata/retrieve?question=... — 检索结果（调试用，只读）
+GET /api/metadata/verified-queries      — 列出 verified queries（DB backed，已完成）
+GET /api/metadata/analysis-space        — 当前 Analysis Space（DB backed，已完成）
 ```
+
+指标、别名、verified query 的 CRUD 先不进入规则检索迭代；等检索链路和 Agent v2 跑通后，作为管理能力单独拆分。
 
 ## 9. 实现顺序
 
@@ -349,17 +346,29 @@ I2.5 Guard Scope DB-backed Analysis Space
 ### Iteration 2: 规则检索引擎
 
 ```
-I2.4 retrieval.py 检索模块（表/列/指标/示例匹配）
-I2.5 build_focused_context() 聚焦上下文构建器
-I2.6 检索 API + 指标/别名 CRUD 端点
+I2.6 Retrieval Engine
+  -> 新增 metadata/retrieval.py
+  -> question normalization
+  -> 基于表/字段/别名/指标/verified query/sample values 做规则匹配
+  -> 返回 scored matched assets，先不改变 agent 运行链路
+
+I2.7 Focused Context Builder
+  -> 新增 build_focused_context(question)
+  -> 根据检索结果选择 tables / columns / metrics / join paths / verified queries
+  -> 无明确命中时 fallback 到 full schema context
+  -> 验证 focused context 小于 full schema context，且 smoke eval 仍通过
+
+I2.8 Retrieval API
+  -> 新增只读检索调试端点，例如 /api/metadata/retrieve
+  -> 返回 matched tables / columns / metrics / verified queries / join paths
+  -> 指标/别名 CRUD 暂不进入本轮，后移到管理能力迭代
 ```
 
 ### Iteration 3: Agent v2
 
 ```
-I2.7 AgentState + retrieve_context_node + build_context_node 改用聚焦上下文
-I2.8 SSE 流更新（retrieve_context 事件）
-I2.9 Smoke eval 扩展（15 cases）+ README 更新
+I2.9 AgentState + retrieve_context_node + build_context_node 改用聚焦上下文
+I2.10 SSE 流更新（retrieve_context 事件）+ Smoke eval 扩展（15 cases）+ README 更新
 ```
 
 ## 10. 验收标准
@@ -371,9 +380,10 @@ I2.9 Smoke eval 扩展（15 cases）+ README 更新
 - [ ] "查询最近30天每日销售额" 检索到 fact_orders + dim_date + sales_amount + order_count
 - [ ] "客单价" 检索到 aov 指标
 - [ ] 聚焦上下文比全量 schema 小，但 smoke eval 仍通过
+- [ ] 检索 API 可展示 matched tables / columns / metrics / verified queries / join paths
 - [ ] SSE 流包含 retrieve_context 步骤
 - [ ] 15/15 smoke cases 通过
-- [ ] 所有现有 74 个 pytest 不受影响
+- [ ] 所有现有 pytest 不受影响
 
 新增 5 条 Phase 2 smoke cases：
 

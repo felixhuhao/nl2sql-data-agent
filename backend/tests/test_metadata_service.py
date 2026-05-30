@@ -14,6 +14,7 @@ from backend.app.metadata.models import (
     MetaVerifiedQuery,
     create_metadata_schema,
 )
+from backend.app.metadata.seed import seed_semantics
 
 
 def test_build_schema_context_reads_runtime_assets_from_db(monkeypatch):
@@ -86,6 +87,92 @@ def test_runtime_context_handles_empty_analysis_space(monkeypatch):
     assert explainability_context["metrics"] == []
     assert explainability_context["join_paths"] == []
     assert explainability_context["verified_queries"] == []
+
+
+def test_build_focused_context_uses_retrieved_assets_and_join_keys(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    _insert_demo_context_assets(engine)
+    retrieval_result = {
+        "question": "按渠道统计最近30天销售额",
+        "fallback_used": False,
+        "tables": [
+            {"table_name": "dim_channels", "source": "direct_match"},
+            {"table_name": "fact_orders", "source": "metric_expansion"},
+        ],
+        "columns": [
+            {"table_name": "dim_channels", "column_name": "channel_name"},
+            {"table_name": "fact_orders", "column_name": "payment_amount"},
+        ],
+        "metrics": [{"name": "sales_amount"}],
+        "verified_queries": [],
+    }
+
+    focused_context = service.build_focused_context_from_retrieval(retrieval_result)
+    full_context = service.build_schema_context()
+
+    assert len(focused_context) < len(full_context)
+    assert "- fact_orders:" in focused_context
+    assert "- dim_channels:" in focused_context
+    assert "- dim_regions:" not in focused_context
+    assert "  - payment_amount" in focused_context
+    assert "  - channel_name" in focused_context
+    assert "  - channel_key" in focused_context
+    assert "fact_orders.channel_key -> dim_channels.channel_key" in focused_context
+    assert "销售额 (sales_amount) = SUM(fact_orders.payment_amount)" in focused_context
+
+
+def test_build_focused_context_expands_dimension_match_to_fact_partner(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    _insert_demo_context_assets(engine)
+    retrieval_result = {
+        "question": "按渠道统计",
+        "fallback_used": False,
+        "tables": [{"table_name": "dim_channels", "source": "direct_match"}],
+        "columns": [{"table_name": "dim_channels", "column_name": "channel_name"}],
+        "metrics": [],
+        "verified_queries": [],
+    }
+
+    focused_context = service.build_focused_context_from_retrieval(retrieval_result)
+
+    assert "- dim_channels:" in focused_context
+    assert "- fact_orders:" in focused_context
+    assert "fact_orders.channel_key -> dim_channels.channel_key" in focused_context
+    assert "  - channel_key" in focused_context
+
+
+def test_build_focused_context_fallback_returns_full_schema_context(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    _insert_demo_context_assets(engine)
+    retrieval_result = {
+        "question": "完全无法命中的问题",
+        "fallback_used": True,
+        "tables": [{"table_name": "fact_orders", "source": "fallback"}],
+        "columns": [],
+        "metrics": [],
+        "verified_queries": [],
+    }
+
+    assert service.build_focused_context_from_retrieval(retrieval_result) == service.build_schema_context()
+
+
+def test_build_focused_context_retrieves_question(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    _insert_demo_context_assets(engine)
+    retrieval_result = {
+        "question": "客单价",
+        "fallback_used": False,
+        "tables": [{"table_name": "fact_orders", "source": "metric_expansion"}],
+        "columns": [{"table_name": "fact_orders", "column_name": "payment_amount"}],
+        "metrics": [{"name": "aov"}],
+        "verified_queries": [],
+    }
+    monkeypatch.setattr(service, "retrieve_metadata_assets", lambda question: retrieval_result)
+
+    focused_context = service.build_focused_context("客单价")
+
+    assert "客单价 (aov)" in focused_context
+    assert "- fact_orders:" in focused_context
 
 
 def _patch_service_db(monkeypatch):
@@ -168,4 +255,32 @@ def _insert_runtime_assets(engine) -> None:
                 ),
             ]
         )
+        session.commit()
+
+
+def _insert_demo_context_assets(engine) -> None:
+    with Session(engine) as session:
+        table_columns = {
+            "fact_orders": [
+                "order_id",
+                "payment_amount",
+                "date_key",
+                "channel_key",
+                "region_key",
+            ],
+            "dim_channels": ["channel_key", "channel_name"],
+            "dim_date": ["date_key", "date_value"],
+            "dim_regions": ["region_key", "region_group"],
+        }
+        for table_name, column_names in table_columns.items():
+            table = MetaTable(table_name=table_name, enabled=True)
+            session.add(table)
+            session.flush()
+            session.add_all(
+                [
+                    MetaColumn(table_id=table.id, column_name=column_name, data_type="VARCHAR")
+                    for column_name in column_names
+                ]
+            )
+        seed_semantics(session)
         session.commit()
