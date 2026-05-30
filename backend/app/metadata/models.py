@@ -64,5 +64,54 @@ class MetaRelationship(Base):
     description: Mapped[str | None] = mapped_column(Text)
 
 
+class MetaMetric(Base):
+    __tablename__ = "meta_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    expression: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    default_time_column: Mapped[str | None] = mapped_column(String)
+    allowed_dimensions: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class MetaColumnAlias(Base):
+    __tablename__ = "meta_column_aliases"
+    __table_args__ = (
+        UniqueConstraint("table_name", "column_name", "alias", name="uq_meta_column_aliases"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    table_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    column_name: Mapped[str] = mapped_column(String, nullable=False)
+    alias: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+
+class MetaVerifiedQuery(Base):
+    __tablename__ = "meta_verified_queries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    query_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    sql: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[str | None] = mapped_column(Text)
+    verified_by: Mapped[str] = mapped_column(String, default="system")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class MetaAnalysisSpace(Base):
+    __tablename__ = "meta_analysis_spaces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    datasource: Mapped[str] = mapped_column(String, nullable=False)
+    tables: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled_metrics: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_operations: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 def create_metadata_schema(engine) -> None:
     Base.metadata.create_all(engine)
