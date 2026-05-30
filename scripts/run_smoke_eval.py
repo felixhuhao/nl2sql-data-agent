@@ -13,7 +13,9 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.agent.explainability import build_query_explainability
-from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
+from backend.app.config import get_settings
+from backend.app.core.deepseek_provider import DeepSeekProvider
+from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationRequest
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context_from_retrieval, build_schema_context
@@ -73,17 +75,31 @@ def main() -> int:
         default="evals/reports/smoke_latest.md",
         help="Path for the Markdown smoke eval report.",
     )
+    parser.add_argument(
+        "--provider",
+        choices=("mock", "deepseek"),
+        default="mock",
+        help="SQL generation provider to evaluate.",
+    )
     args = parser.parse_args()
 
     cases = _load_cases(Path(args.cases_path))
     scope = build_default_guard_scope()
-    provider = MockLLMProvider()
+    try:
+        provider = _create_provider(args.provider)
+        selected_cases, skipped_case_ids = _filter_cases(cases, provider_name=args.provider)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     full_schema_context = build_schema_context()
 
-    results = [_run_case(case, scope, provider, full_schema_context) for case in cases]
+    results = [
+        _run_case(case, scope, provider, full_schema_context, provider_name=args.provider)
+        for case in selected_cases
+    ]
     report_path = Path(args.report_path)
-    _write_report(report_path, results)
-    _print_results(results, report_path)
+    _write_report(report_path, results, provider_name=args.provider, skipped_case_ids=skipped_case_ids)
+    _print_results(results, report_path, provider_name=args.provider, skipped_case_ids=skipped_case_ids)
     return 0 if all(result.passed for result in results) else 1
 
 
@@ -95,11 +111,47 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+def _create_provider(provider_name: str) -> LLMProvider:
+    if provider_name == "mock":
+        return MockLLMProvider()
+    if provider_name == "deepseek":
+        if not get_settings().deepseek_api_key:
+            raise ValueError("DEEPSEEK_API_KEY is required for real LLM eval.")
+        return DeepSeekProvider()
+    raise ValueError(f"Unknown provider: {provider_name}")
+
+
+def _filter_cases(
+    cases: list[dict[str, Any]],
+    provider_name: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    selected_cases = []
+    skipped_case_ids = []
+    for case in cases:
+        case_provider = case.get("provider", "both")
+        if case_provider not in {"both", "mock", "real"}:
+            raise ValueError(f"Unknown case provider {case_provider!r} in {case['id']}.")
+        if _case_matches_provider(case_provider, provider_name):
+            selected_cases.append(case)
+        else:
+            skipped_case_ids.append(case["id"])
+    return selected_cases, skipped_case_ids
+
+
+def _case_matches_provider(case_provider: str, provider_name: str) -> bool:
+    if case_provider == "both":
+        return True
+    if case_provider == "mock":
+        return provider_name == "mock"
+    return provider_name != "mock"
+
+
 def _run_case(
     case: dict[str, Any],
     scope,
-    provider: MockLLMProvider,
+    provider: LLMProvider,
     full_schema_context: str,
+    provider_name: str,
 ) -> SmokeResult:
     result = SmokeResult(
         case_id=case["id"],
@@ -126,7 +178,12 @@ def _run_case(
         )
 
         try:
-            sql, matched_query_id = _resolve_sql(case, schema_context, provider)
+            sql, matched_query_id = _resolve_sql(
+                case=case,
+                schema_context=schema_context,
+                provider=provider,
+                provider_name=provider_name,
+            )
         except Exception as exc:
             result.fail(f"SQL generation failed: {exc}", "sql_generation_error")
             return result
@@ -183,6 +240,7 @@ def _run_case(
             query_result=query_result,
             explainability=explainability,
             chart_type=chart_recommendation.chart_type,
+            provider_name=provider_name,
         )
         return result
     finally:
@@ -215,9 +273,10 @@ def _context_reduction_ratio(focused_chars: int, full_chars: int) -> float | Non
 def _resolve_sql(
     case: dict[str, Any],
     schema_context: str,
-    provider: MockLLMProvider,
+    provider: LLMProvider,
+    provider_name: str,
 ) -> tuple[str, str | None]:
-    if case.get("mock_sql"):
+    if provider_name == "mock" and case.get("mock_sql"):
         return case["mock_sql"], None
 
     generation = provider.generate_sql(
@@ -295,12 +354,25 @@ def _validate_normal_case(
     query_result,
     explainability: dict[str, Any],
     chart_type: str,
+    provider_name: str,
 ) -> None:
-    if matched_query_id != expected.get("matched_query_id"):
+    if provider_name == "mock" and matched_query_id != expected.get("matched_query_id"):
         result.fail(
             f"expected matched_query_id {expected.get('matched_query_id')}, got {matched_query_id}",
             "result_mismatch",
         )
+
+    expected_sql_keywords = expected.get("expected_sql_keywords") or []
+    if expected_sql_keywords and result.generated_sql:
+        normalized_sql = result.generated_sql.lower()
+        missing_keywords = [
+            keyword for keyword in expected_sql_keywords if keyword.lower() not in normalized_sql
+        ]
+        if missing_keywords:
+            result.fail(
+                f"missing expected SQL keywords: {missing_keywords}",
+                "result_mismatch",
+            )
 
     expected_columns = expected.get("result_columns") or []
     if query_result.columns != expected_columns:
@@ -382,7 +454,12 @@ def _format_join_path(path: dict[str, Any]) -> str:
     )
 
 
-def _print_results(results: list[SmokeResult], report_path: Path) -> None:
+def _print_results(
+    results: list[SmokeResult],
+    report_path: Path,
+    provider_name: str,
+    skipped_case_ids: list[str],
+) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
         details = f"category={result.error_category or '-'} guard={result.guard_stage}"
@@ -396,6 +473,8 @@ def _print_results(results: list[SmokeResult], report_path: Path) -> None:
 
     passed = sum(1 for result in results if result.passed)
     print(f"\n{passed}/{len(results)} smoke cases passed.")
+    if skipped_case_ids:
+        print(f"skipped {len(skipped_case_ids)} cases for provider={provider_name}.")
     summary = _summary_metrics(results)
     print(
         "focused context: "
@@ -408,12 +487,24 @@ def _print_results(results: list[SmokeResult], report_path: Path) -> None:
     print(f"report: {report_path}")
 
 
-def _write_report(path: Path, results: list[SmokeResult]) -> None:
+def _write_report(
+    path: Path,
+    results: list[SmokeResult],
+    provider_name: str,
+    skipped_case_ids: list[str],
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_render_report(results), encoding="utf-8")
+    path.write_text(
+        _render_report(results, provider_name=provider_name, skipped_case_ids=skipped_case_ids),
+        encoding="utf-8",
+    )
 
 
-def _render_report(results: list[SmokeResult]) -> str:
+def _render_report(
+    results: list[SmokeResult],
+    provider_name: str,
+    skipped_case_ids: list[str],
+) -> str:
     summary = _summary_metrics(results)
     retrieval_stats = _retrieval_stats(results)
     error_distribution = _error_distribution(results)
@@ -426,6 +517,8 @@ def _render_report(results: list[SmokeResult]) -> str:
         f"- Passed: {summary['passed_cases']}/{summary['total_cases']}",
         f"- Normal cases: {summary['normal_cases']}",
         f"- Safety cases: {summary['safety_cases']}",
+        f"- Provider: {provider_name}",
+        f"- Skipped cases: {len(skipped_case_ids)}",
         f"- Fallback used: {summary['fallback_cases']}/{summary['total_cases']}",
         f"- Full schema context chars: {summary['full_context_chars']}",
         f"- Avg focused context chars: {summary['avg_focused_context_chars']}",
@@ -444,6 +537,13 @@ def _render_report(results: list[SmokeResult]) -> str:
             )
     else:
         lines.append("| n/a | 0 | - |")
+
+    lines.extend(["", "## Skipped Cases", ""])
+    if skipped_case_ids:
+        for case_id in skipped_case_ids:
+            lines.append(f"- {case_id}")
+    else:
+        lines.append("No skipped cases.")
 
     lines.extend(
         [

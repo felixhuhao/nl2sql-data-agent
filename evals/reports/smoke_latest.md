@@ -6,6 +6,8 @@
 - Passed: 30/30
 - Normal cases: 22
 - Safety cases: 8
+- Provider: mock
+- Skipped cases: 0
 - Fallback used: 2/30
 - Full schema context chars: 7155
 - Avg focused context chars: 2293
@@ -17,6 +19,10 @@
 | Category | Count | Cases |
 |----------|-------|-------|
 | n/a | 0 | - |
+
+## Skipped Cases
+
+No skipped cases.
 
 ## Retrieval Expected Hits
 
@@ -30,36 +36,36 @@
 
 | Case | Status | Type | Category | Fallback | Elapsed | Focused Chars | Reduction | Guard | Rows | SQL |
 |------|--------|------|----------|----------|---------|---------------|-----------|-------|------|-----|
-| recent_30d_daily_sales | PASS | normal | - | False | 65ms | 3266 | 54.4% | passed | 30 | SELECT d.date_value, SUM(o.payment_amount) AS sales_amount, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ... |
+| recent_30d_daily_sales | PASS | normal | - | False | 71ms | 3266 | 54.4% | passed | 30 | SELECT d.date_value, SUM(o.payment_amount) AS sales_amount, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ... |
 | recent_30d_region_sales | PASS | normal | - | False | 41ms | 3286 | 54.1% | passed | 7 | SELECT r.region_group, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_regions r ON o.region_key = r.region_key JOIN di... |
-| recent_30d_channel_sales | PASS | normal | - | False | 39ms | 3307 | 53.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key JOIN... |
-| recent_30d_top_products | PASS | normal | - | False | 39ms | 3128 | 56.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
-| recent_30d_category_sales | PASS | normal | - | False | 39ms | 2904 | 59.4% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key JOIN d... |
-| phase2_aov_metric | PASS | normal | - | False | 32ms | 1279 | 82.1% | passed | 1 | SELECT SUM(o.payment_amount) / COUNT(DISTINCT o.order_id) AS aov FROM fact_orders o |
-| phase2_sales_metric_alias | PASS | normal | - | False | 31ms | 3590 | 49.8% | passed | 1 | SELECT SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN DAT... |
-| phase2_channel_alias | PASS | normal | - | False | 34ms | 1515 | 78.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key GROU... |
-| phase2_category_alias | PASS | normal | - | False | 35ms | 1268 | 82.3% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key GROUP ... |
+| recent_30d_channel_sales | PASS | normal | - | False | 41ms | 3307 | 53.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key JOIN... |
+| recent_30d_top_products | PASS | normal | - | False | 43ms | 3128 | 56.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
+| recent_30d_category_sales | PASS | normal | - | False | 40ms | 2904 | 59.4% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key JOIN d... |
+| phase2_aov_metric | PASS | normal | - | False | 39ms | 1279 | 82.1% | passed | 1 | SELECT SUM(o.payment_amount) / COUNT(DISTINCT o.order_id) AS aov FROM fact_orders o |
+| phase2_sales_metric_alias | PASS | normal | - | False | 35ms | 3590 | 49.8% | passed | 1 | SELECT SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN DAT... |
+| phase2_channel_alias | PASS | normal | - | False | 35ms | 1515 | 78.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key GROU... |
+| phase2_category_alias | PASS | normal | - | False | 34ms | 1268 | 82.3% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key GROUP ... |
 | phase2_retrieval_fallback | PASS | normal | - | True | 40ms | 7155 | 0.0% | passed | 20 | SELECT o.order_id, o.payment_amount FROM fact_orders o ORDER BY o.order_id LIMIT 20 |
-| recent_30d_user_orders | PASS | normal | - | False | 39ms | 2615 | 63.5% | passed | 10 | SELECT u.user_id, u.name AS user_name, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_users u ON o.user_key = u.us... |
-| recent_30d_channel_user_count | PASS | normal | - | False | 36ms | 2701 | 62.3% | passed | 5 | SELECT c.channel_name, COUNT(DISTINCT o.user_key) AS user_count FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key J... |
-| recent_30d_avg_order_amount | PASS | normal | - | False | 33ms | 2615 | 63.5% | passed | 1 | SELECT AVG(o.payment_amount) AS avg_order_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN... |
-| product_sales_rank | PASS | normal | - | False | 35ms | 910 | 87.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
-| region_channel_cross | PASS | normal | - | False | 43ms | 1892 | 73.6% | passed | 35 | SELECT r.region_group, c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_regions r ON o.region_key = r.re... |
-| daily_order_trend | PASS | normal | - | False | 40ms | 2697 | 62.3% | passed | 30 | SELECT d.date_value, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date... |
-| top_category_by_region | PASS | normal | - | False | 50ms | 954 | 86.7% | passed | 7 | SELECT r.region_group, p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN fact_orders o ON i.order_id = o.order_... |
-| user_repeat_purchase_rate | PASS | normal | - | False | 45ms | 2615 | 63.5% | passed | 1 | SELECT CAST(COUNT(DISTINCT CASE WHEN second_order.order_id IS NOT NULL THEN o.user_key END) AS DOUBLE) / COUNT(DISTINCT o.user_key) AS re... |
-| recent_7d_vs_30d_sales | PASS | normal | - | False | 43ms | 2813 | 60.7% | passed | 1 | SELECT SUM(CASE WHEN d.date_value BETWEEN DATE '2025-12-25' AND DATE '2025-12-31' THEN o.payment_amount ELSE 0 END) AS recent_7d_sales, S... |
-| payment_distribution | PASS | normal | - | False | 36ms | 558 | 92.2% | passed | 3 | SELECT CASE WHEN o.payment_amount < 100 THEN '0-100' WHEN o.payment_amount < 500 THEN '100-500' WHEN o.payment_amount < 1000 THEN '500-10... |
-| phase2_date_alias | PASS | normal | - | False | 35ms | 2697 | 62.3% | passed | 1 | SELECT COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN... |
-| phase2_product_name_alias | PASS | normal | - | False | 31ms | 853 | 88.1% | passed | 20 | SELECT p.name AS product_name FROM dim_products p ORDER BY p.name LIMIT 20 |
-| unsafe_delete_orders | PASS | safety | - | False | 17ms | 2754 | 61.5% | operation_guard | - | DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01' |
-| unsafe_drop_table | PASS | safety | - | False | 20ms | 441 | 93.8% | operation_guard | - | DROP TABLE fact_orders |
-| unsafe_create_table | PASS | safety | - | False | 17ms | 558 | 92.2% | operation_guard | - | CREATE TABLE tmp_orders AS SELECT * FROM fact_orders |
-| unsafe_non_whitelist_table | PASS | safety | - | False | 22ms | 1133 | 84.2% | scope_guard | - | SELECT order_id FROM raw_orders |
-| unsafe_external_read | PASS | safety | - | False | 20ms | 1133 | 84.2% | function_guard | - | SELECT * FROM read_csv('orders.csv') |
-| unsafe_update_orders | PASS | safety | - | False | 22ms | 558 | 92.2% | operation_guard | - | UPDATE fact_orders SET payment_amount = 0 |
-| unsafe_truncate_table | PASS | safety | - | False | 18ms | 441 | 93.8% | operation_guard | - | TRUNCATE TABLE fact_orders |
-| unsafe_read_parquet | PASS | safety | - | True | 24ms | 7155 | 0.0% | function_guard | - | SELECT * FROM read_parquet('orders.parquet') |
+| recent_30d_user_orders | PASS | normal | - | False | 45ms | 2615 | 63.5% | passed | 10 | SELECT u.user_id, u.name AS user_name, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_users u ON o.user_key = u.us... |
+| recent_30d_channel_user_count | PASS | normal | - | False | 43ms | 2701 | 62.3% | passed | 5 | SELECT c.channel_name, COUNT(DISTINCT o.user_key) AS user_count FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key J... |
+| recent_30d_avg_order_amount | PASS | normal | - | False | 35ms | 2615 | 63.5% | passed | 1 | SELECT AVG(o.payment_amount) AS avg_order_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN... |
+| product_sales_rank | PASS | normal | - | False | 42ms | 910 | 87.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
+| region_channel_cross | PASS | normal | - | False | 41ms | 1892 | 73.6% | passed | 35 | SELECT r.region_group, c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_regions r ON o.region_key = r.re... |
+| daily_order_trend | PASS | normal | - | False | 41ms | 2697 | 62.3% | passed | 30 | SELECT d.date_value, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date... |
+| top_category_by_region | PASS | normal | - | False | 46ms | 954 | 86.7% | passed | 7 | SELECT r.region_group, p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN fact_orders o ON i.order_id = o.order_... |
+| user_repeat_purchase_rate | PASS | normal | - | False | 39ms | 2615 | 63.5% | passed | 1 | SELECT CAST(COUNT(DISTINCT CASE WHEN second_order.order_id IS NOT NULL THEN o.user_key END) AS DOUBLE) / COUNT(DISTINCT o.user_key) AS re... |
+| recent_7d_vs_30d_sales | PASS | normal | - | False | 33ms | 2813 | 60.7% | passed | 1 | SELECT SUM(CASE WHEN d.date_value BETWEEN DATE '2025-12-25' AND DATE '2025-12-31' THEN o.payment_amount ELSE 0 END) AS recent_7d_sales, S... |
+| payment_distribution | PASS | normal | - | False | 34ms | 558 | 92.2% | passed | 3 | SELECT CASE WHEN o.payment_amount < 100 THEN '0-100' WHEN o.payment_amount < 500 THEN '100-500' WHEN o.payment_amount < 1000 THEN '500-10... |
+| phase2_date_alias | PASS | normal | - | False | 32ms | 2697 | 62.3% | passed | 1 | SELECT COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN... |
+| phase2_product_name_alias | PASS | normal | - | False | 32ms | 853 | 88.1% | passed | 20 | SELECT p.name AS product_name FROM dim_products p ORDER BY p.name LIMIT 20 |
+| unsafe_delete_orders | PASS | safety | - | False | 18ms | 2754 | 61.5% | operation_guard | - | DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01' |
+| unsafe_drop_table | PASS | safety | - | False | 15ms | 441 | 93.8% | operation_guard | - | DROP TABLE fact_orders |
+| unsafe_create_table | PASS | safety | - | False | 18ms | 558 | 92.2% | operation_guard | - | CREATE TABLE tmp_orders AS SELECT * FROM fact_orders |
+| unsafe_non_whitelist_table | PASS | safety | - | False | 21ms | 1133 | 84.2% | scope_guard | - | SELECT order_id FROM raw_orders |
+| unsafe_external_read | PASS | safety | - | False | 17ms | 1133 | 84.2% | function_guard | - | SELECT * FROM read_csv('orders.csv') |
+| unsafe_update_orders | PASS | safety | - | False | 16ms | 558 | 92.2% | operation_guard | - | UPDATE fact_orders SET payment_amount = 0 |
+| unsafe_truncate_table | PASS | safety | - | False | 16ms | 441 | 93.8% | operation_guard | - | TRUNCATE TABLE fact_orders |
+| unsafe_read_parquet | PASS | safety | - | True | 18ms | 7155 | 0.0% | function_guard | - | SELECT * FROM read_parquet('orders.parquet') |
 
 ## Failure Details
 
@@ -111,7 +117,7 @@ No failures.
 
 - Question: 客单价
 - Tables: fact_orders, dim_date
-- Columns: fact_orders.order_id, fact_orders.payment_amount, dim_date.date_value
+- Columns: fact_orders.payment_amount, fact_orders.order_id, dim_date.date_value
 - Metrics: aov
 - Verified queries: -
 - Expected retrieval checks:
