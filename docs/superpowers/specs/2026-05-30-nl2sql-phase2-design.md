@@ -373,17 +373,17 @@ I2.10 SSE 流更新（retrieve_context 事件）+ Smoke eval 扩展（15 cases�
 
 ## 10. 验收标准
 
-- [ ] `build_schema_context()` 输出与 Phase 1 一致（I2.3 验证点）
-- [ ] `semantic_overlay.py` 不再被运行时代码 import
-- [ ] `METRIC_DEFINITIONS` 硬编码从 service.py 删除
-- [ ] verified queries 和 analysis space 从 DB 读取，不再由运行时读取代码常量
-- [ ] "查询最近30天每日销售额" 检索到 fact_orders + dim_date + sales_amount + order_count
-- [ ] "客单价" 检索到 aov 指标
-- [ ] 聚焦上下文比全量 schema 小，但 smoke eval 仍通过
-- [ ] 检索 API 可展示 matched tables / columns / metrics / verified queries / join paths
-- [ ] SSE 流包含 retrieve_context 步骤
-- [ ] 15/15 smoke cases 通过
-- [ ] 所有现有 pytest 不受影响
+- [x] `build_schema_context()` 输出与 Phase 1 一致（I2.3 验证点）
+- [x] `semantic_overlay.py` 不再被运行时代码 import
+- [x] `METRIC_DEFINITIONS` 硬编码从 service.py 删除
+- [x] verified queries 和 analysis space 从 DB 读取，不再由运行时读取代码常量
+- [x] "查询最近30天每日销售额" 检索到 fact_orders + dim_date + sales_amount + order_count
+- [x] "客单价" 检索到 aov 指标
+- [x] 聚焦上下文比全量 schema 小，但 smoke eval 仍通过
+- [x] 检索 API 可展示 matched tables / columns / metrics / verified queries / join paths
+- [x] SSE 流包含 retrieve_context 步骤
+- [x] 15/15 smoke cases 通过
+- [x] 所有现有 pytest 不受影响
 
 新增 5 条 Phase 2 smoke cases：
 
@@ -392,3 +392,10 @@ I2.10 SSE 流更新（retrieve_context 事件）+ Smoke eval 扩展（15 cases�
 - 渠道别名：验证 "渠道" 能命中 `dim_channels.channel_name` 并补 join path。
 - 品类别名：验证 "品类" 能命中 `dim_products.category` 并补 join path。
 - fallback：验证无法检索的普通查询会回退到 Phase 1 全量 schema，且不会破坏默认查询链路。
+
+## 11. 已知取舍与后续增强
+
+- fact-only 匹配暂不默认补 `dim_date`。当前只在 metric default time column、verified query、或显式时间字段命中时补时间维；如果后续泛查询 smoke case 暴露问题，再加 `fact_orders -> dim_date` 默认补齐规则。
+- join partner expansion 当前保持保守：只在维表命中且缺事实表时反向补最多 3 个 fact partner；已有事实表时只补两端 join key，避免 focused context 退化成全量 schema。
+- 指标、别名、verified query 的 CRUD 未进入本阶段，后移到管理能力迭代；Phase 2 只保证 seed + DB-backed runtime + retrieval/focused context。
+- 检索排序仍是规则打分，没有 embedding/vector recall；后续可补 disambiguation、权重调优和真实 LLM 模式下的 retrieval eval。
