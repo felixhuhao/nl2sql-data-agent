@@ -14,6 +14,7 @@ import { API_BASE_URL } from "./api/config";
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const workflowSteps = [
+  { id: "retrieve_context", label: "检索上下文" },
   { id: "build_context", label: "构建上下文" },
   { id: "generate_sql", label: "生成 SQL" },
   { id: "sql_guard", label: "SQL Guard" },
@@ -95,7 +96,7 @@ async function submitQuestion() {
   errorMessage.value = "";
   errorStep.value = "";
   stepStates.value = createStepStates();
-  setStepStatus("build_context", "running");
+  setStepStatus("retrieve_context", "running");
   sql.value = "";
   summary.value = "";
   rows.value = [];

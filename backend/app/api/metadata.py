@@ -21,6 +21,7 @@ from backend.app.metadata.service import (
     update_metric,
     update_relationship,
     update_verified_query,
+    validate_semantic_assets,
 )
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.sync import sync_metadata
@@ -29,6 +30,7 @@ from backend.app.schemas.metadata_admin import (
     AliasResponse,
     AnalysisSpaceResponse,
     AnalysisSpaceUpdate,
+    MetadataValidationResponse,
     MetricCreate,
     MetricResponse,
     MetricUpdate,
@@ -75,6 +77,11 @@ def retrieve_metadata_endpoint(question: str) -> dict:
     if not question.strip():
         raise HTTPException(status_code=400, detail="question is required")
     return retrieve_metadata_assets(question)
+
+
+@router.get("/validate", response_model=MetadataValidationResponse)
+def validate_metadata_endpoint() -> dict:
+    return validate_semantic_assets()
 
 
 @router.get("/analysis-space")

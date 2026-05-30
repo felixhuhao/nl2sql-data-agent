@@ -446,6 +446,22 @@ def build_explainability_context() -> dict:
         }
 
 
+def validate_semantic_assets() -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        issues: list[dict] = []
+        table_columns, enabled_tables = _reference_index(session)
+        metrics_by_name = _metric_index(session)
+
+        _validate_analysis_space_assets(session, table_columns, enabled_tables, metrics_by_name, issues)
+        _validate_metric_assets(session, table_columns, issues)
+        _validate_alias_assets(session, table_columns, issues)
+        _validate_relationship_assets(session, table_columns, issues)
+        _validate_verified_query_assets(session, issues)
+
+        return {"ok": not issues, "issues": issues}
+
+
 def _columns_for_table(session: Session, table_id: int) -> list[MetaColumn]:
     return session.scalars(
         select(MetaColumn)
@@ -682,6 +698,241 @@ def _verified_queries(session: Session) -> list[MetaVerifiedQuery]:
         .where(MetaVerifiedQuery.enabled.is_(True))
         .order_by(MetaVerifiedQuery.id)
     ).all()
+
+
+def _reference_index(session: Session) -> tuple[dict[str, set[str]], set[str]]:
+    table_columns: dict[str, set[str]] = {}
+    enabled_tables: set[str] = set()
+    tables = session.scalars(select(MetaTable).order_by(MetaTable.table_name)).all()
+    for table in tables:
+        if table.enabled:
+            enabled_tables.add(table.table_name)
+        columns = session.scalars(
+            select(MetaColumn.column_name)
+            .where(MetaColumn.table_id == table.id)
+            .order_by(MetaColumn.id)
+        ).all()
+        table_columns[table.table_name] = set(columns)
+    return table_columns, enabled_tables
+
+
+def _metric_index(session: Session) -> dict[str, MetaMetric]:
+    metrics = session.scalars(select(MetaMetric).order_by(MetaMetric.name)).all()
+    return {metric.name: metric for metric in metrics}
+
+
+def _validate_analysis_space_assets(
+    session: Session,
+    table_columns: dict[str, set[str]],
+    enabled_tables: set[str],
+    metrics_by_name: dict[str, MetaMetric],
+    issues: list[dict],
+) -> None:
+    spaces = session.scalars(select(MetaAnalysisSpace).order_by(MetaAnalysisSpace.id)).all()
+    for space in spaces:
+        asset_id = space.name
+        for table_name in _parse_json_list(space.tables):
+            _check_table_reference(
+                issues,
+                "analysis_space",
+                asset_id,
+                "tables",
+                str(table_name),
+                table_columns,
+                enabled_tables,
+            )
+
+        for metric_name in _parse_json_list(space.enabled_metrics):
+            metric = metrics_by_name.get(str(metric_name))
+            if metric is None:
+                _add_validation_issue(
+                    issues,
+                    "analysis_space",
+                    asset_id,
+                    "enabled_metrics",
+                    f"Metric not found: {metric_name}",
+                )
+
+        allowed_operations = _parse_json_list(space.allowed_operations)
+        if allowed_operations != ["select"]:
+            _add_validation_issue(
+                issues,
+                "analysis_space",
+                asset_id,
+                "allowed_operations",
+                "allowed_operations must be ['select']",
+            )
+
+
+def _validate_metric_assets(
+    session: Session,
+    table_columns: dict[str, set[str]],
+    issues: list[dict],
+) -> None:
+    metrics = session.scalars(select(MetaMetric).order_by(MetaMetric.name)).all()
+    for metric in metrics:
+        try:
+            sqlglot.parse_one(f"SELECT {metric.expression} AS metric_value", read="duckdb")
+        except SqlglotError as exc:
+            _add_validation_issue(
+                issues,
+                "metric",
+                metric.name,
+                "expression",
+                f"Invalid metric expression: {exc}",
+            )
+
+        qualified_columns = _qualified_columns(metric.expression)
+        if not qualified_columns:
+            _add_validation_issue(
+                issues,
+                "metric",
+                metric.name,
+                "expression",
+                "Metric expression must reference at least one qualified column.",
+            )
+        for table_name, column_name in sorted(qualified_columns):
+            _check_column_reference(
+                issues,
+                "metric",
+                metric.name,
+                "expression",
+                table_name,
+                column_name,
+                table_columns,
+            )
+
+        if metric.default_time_column:
+            table_name, column_name = _split_qualified_name(metric.default_time_column)
+            if table_name is None or column_name is None:
+                _add_validation_issue(
+                    issues,
+                    "metric",
+                    metric.name,
+                    "default_time_column",
+                    "default_time_column must use table.column format.",
+                )
+            else:
+                _check_column_reference(
+                    issues,
+                    "metric",
+                    metric.name,
+                    "default_time_column",
+                    table_name,
+                    column_name,
+                    table_columns,
+                )
+
+
+def _validate_alias_assets(
+    session: Session,
+    table_columns: dict[str, set[str]],
+    issues: list[dict],
+) -> None:
+    aliases = session.scalars(select(MetaColumnAlias).order_by(MetaColumnAlias.id)).all()
+    for alias in aliases:
+        _check_column_reference(
+            issues,
+            "alias",
+            str(alias.id),
+            "column_name",
+            alias.table_name,
+            alias.column_name,
+            table_columns,
+        )
+
+
+def _validate_relationship_assets(
+    session: Session,
+    table_columns: dict[str, set[str]],
+    issues: list[dict],
+) -> None:
+    relationships = session.scalars(select(MetaRelationship).order_by(MetaRelationship.id)).all()
+    for relationship in relationships:
+        asset_id = (
+            f"{relationship.source_table}.{relationship.source_column}->"
+            f"{relationship.target_table}.{relationship.target_column}"
+        )
+        _check_column_reference(
+            issues,
+            "relationship",
+            asset_id,
+            "source_column",
+            relationship.source_table,
+            relationship.source_column,
+            table_columns,
+        )
+        _check_column_reference(
+            issues,
+            "relationship",
+            asset_id,
+            "target_column",
+            relationship.target_table,
+            relationship.target_column,
+            table_columns,
+        )
+
+
+def _validate_verified_query_assets(session: Session, issues: list[dict]) -> None:
+    queries = session.scalars(select(MetaVerifiedQuery).order_by(MetaVerifiedQuery.id)).all()
+    for query in queries:
+        result = guard_sql(query.sql, scope=_guard_scope_from_session(session))
+        if not result.allowed:
+            _add_validation_issue(
+                issues,
+                "verified_query",
+                query.query_id,
+                "sql",
+                f"Rejected by {result.stage}: {result.reason}",
+            )
+
+
+def _check_table_reference(
+    issues: list[dict],
+    asset_type: str,
+    asset_id: str,
+    field: str,
+    table_name: str,
+    table_columns: dict[str, set[str]],
+    enabled_tables: set[str],
+) -> None:
+    if table_name not in table_columns:
+        _add_validation_issue(issues, asset_type, asset_id, field, f"Table not found: {table_name}")
+    elif table_name not in enabled_tables:
+        _add_validation_issue(issues, asset_type, asset_id, field, f"Table is disabled: {table_name}")
+
+
+def _check_column_reference(
+    issues: list[dict],
+    asset_type: str,
+    asset_id: str,
+    field: str,
+    table_name: str,
+    column_name: str,
+    table_columns: dict[str, set[str]],
+) -> None:
+    if table_name not in table_columns:
+        _add_validation_issue(issues, asset_type, asset_id, field, f"Table not found: {table_name}")
+    elif column_name not in table_columns[table_name]:
+        _add_validation_issue(issues, asset_type, asset_id, field, f"Column not found: {table_name}.{column_name}")
+
+
+def _add_validation_issue(
+    issues: list[dict],
+    asset_type: str,
+    asset_id: str,
+    field: str,
+    message: str,
+) -> None:
+    issues.append(
+        {
+            "severity": "error",
+            "asset_type": asset_type,
+            "asset_id": asset_id,
+            "field": field,
+            "message": message,
+        }
+    )
 
 
 def _analysis_space_payload(analysis_space: MetaAnalysisSpace) -> dict:

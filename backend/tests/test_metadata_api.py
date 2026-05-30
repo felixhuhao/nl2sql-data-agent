@@ -11,9 +11,11 @@ from backend.app.metadata import retrieval, service
 from backend.app.metadata.models import (
     MetaAnalysisSpace,
     MetaColumn,
+    MetaColumnAlias,
     MetaMetric,
     MetaRelationship,
     MetaTable,
+    MetaVerifiedQuery,
     create_metadata_schema,
 )
 
@@ -277,6 +279,92 @@ def test_relationship_endpoint_updates_metadata_only(monkeypatch):
     assert update_response.json()["source"] == "overlay"
     assert update_response.json()["description"] is None
     assert invalid_response.status_code == 422
+
+
+def test_validate_metadata_endpoint_accepts_valid_assets(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    with Session(engine) as session:
+        session.add(
+            MetaMetric(
+                name="gross_sales",
+                label="总销售额",
+                expression="SUM(fact_orders.payment_amount)",
+                default_time_column="dim_date.date_value",
+                enabled=True,
+            )
+        )
+        session.commit()
+    client = TestClient(main.app)
+
+    response = client.get("/api/metadata/validate")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "issues": []}
+
+
+def test_validate_metadata_endpoint_reports_stale_assets(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    with Session(engine) as session:
+        analysis_space = session.query(MetaAnalysisSpace).one()
+        analysis_space.tables = json.dumps(["fact_orders", "missing_table"], ensure_ascii=False)
+        analysis_space.enabled_metrics = json.dumps(["missing_metric"], ensure_ascii=False)
+        analysis_space.allowed_operations = json.dumps(["select", "delete"], ensure_ascii=False)
+        session.add_all(
+            [
+                MetaColumnAlias(
+                    table_name="fact_orders",
+                    column_name="missing_column",
+                    alias="坏别名",
+                ),
+                MetaMetric(
+                    name="bad_metric",
+                    label="坏指标",
+                    expression="SUM(fact_orders.missing_amount)",
+                    default_time_column="dim_date.missing_date",
+                    enabled=True,
+                ),
+                MetaRelationship(
+                    source_table="fact_orders",
+                    source_column="missing_key",
+                    target_table="dim_date",
+                    target_column="date_key",
+                    relationship_type="many_to_one",
+                    source="overlay",
+                    confidence=1.0,
+                    fanout_risk="low",
+                ),
+                MetaVerifiedQuery(
+                    query_id="bad_verified",
+                    question="坏查询",
+                    sql="SELECT order_id FROM raw_orders",
+                    tags=json.dumps(["bad"], ensure_ascii=False),
+                    verified_by="tester",
+                    enabled=True,
+                ),
+            ]
+        )
+        session.commit()
+    client = TestClient(main.app)
+
+    response = client.get("/api/metadata/validate")
+    payload = response.json()
+    issue_keys = {
+        (issue["asset_type"], issue["asset_id"], issue["field"])
+        for issue in payload["issues"]
+    }
+
+    assert response.status_code == 200
+    assert payload["ok"] is False
+    assert ("analysis_space", "admin_test", "tables") in issue_keys
+    assert ("analysis_space", "admin_test", "enabled_metrics") in issue_keys
+    assert ("analysis_space", "admin_test", "allowed_operations") in issue_keys
+    assert ("metric", "bad_metric", "expression") in issue_keys
+    assert ("metric", "bad_metric", "default_time_column") in issue_keys
+    assert any(issue["asset_type"] == "alias" for issue in payload["issues"])
+    assert any(issue["asset_type"] == "relationship" for issue in payload["issues"])
+    assert ("verified_query", "bad_verified", "sql") in issue_keys
 
 
 def _patch_metadata_db(monkeypatch):

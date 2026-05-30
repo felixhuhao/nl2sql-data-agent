@@ -99,3 +99,16 @@ class RelationshipResponse(BaseModel):
     confidence: float
     fanout_risk: str
     description: str | None
+
+
+class MetadataValidationIssue(BaseModel):
+    severity: str
+    asset_type: str
+    asset_id: str
+    field: str
+    message: str
+
+
+class MetadataValidationResponse(BaseModel):
+    ok: bool
+    issues: list[MetadataValidationIssue]
