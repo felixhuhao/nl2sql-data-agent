@@ -94,8 +94,7 @@ def _seed_table_semantics(session: Session, reset: bool) -> int:
     for table_name, (display_name, description, domain) in TABLE_SEMANTICS.items():
         table = session.scalar(select(MetaTable).where(MetaTable.table_name == table_name))
         if table is None:
-            table = MetaTable(table_name=table_name)
-            session.add(table)
+            continue
         if reset or table.display_name is None:
             table.display_name = display_name
         if reset or table.description is None:

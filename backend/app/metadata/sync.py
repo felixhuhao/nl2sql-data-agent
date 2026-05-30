@@ -5,15 +5,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.db import get_duckdb_connection, get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
-from backend.app.metadata.semantic_overlay import (
-    COLUMN_SEMANTICS,
-    CONFIRMED_RELATIONSHIPS,
-    DIMENSION_COLUMNS,
-    METRIC_COLUMNS,
-    TABLE_COLUMN_SEMANTICS,
-    TABLE_SEMANTICS,
-    sample_value_fallbacks_json,
-)
+from backend.app.metadata.seed import seed_semantics
 
 
 def sync_metadata() -> dict[str, int]:
@@ -23,6 +15,7 @@ def sync_metadata() -> dict[str, int]:
     with sqlite_session() as session:
         duckdb_tables = _read_duckdb_columns()
         table_count = _sync_tables_and_columns(session, duckdb_tables)
+        seed_semantics(session)
         relationship_count = _sync_relationships(session, duckdb_tables)
         column_count = sum(len(columns) for columns in duckdb_tables.values())
     return {
@@ -52,14 +45,10 @@ def _read_duckdb_columns() -> dict[str, list[dict[str, str]]]:
 
 def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dict[str, str]]]) -> int:
     for table_name, columns in duckdb_tables.items():
-        display_name, description, domain = TABLE_SEMANTICS.get(table_name, (table_name, None, None))
         table = session.scalar(select(MetaTable).where(MetaTable.table_name == table_name))
         if table is None:
             table = MetaTable(table_name=table_name)
             session.add(table)
-        table.display_name = display_name
-        table.description = description
-        table.domain = domain
         table.row_count = _count_rows(table_name)
         table.enabled = True
         session.flush()
@@ -81,19 +70,21 @@ def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dic
                 session.add(meta_column)
             column_name = column["column_name"]
             meta_column.data_type = column["data_type"]
-            meta_column.description = TABLE_COLUMN_SEMANTICS.get(
-                (table_name, column_name), COLUMN_SEMANTICS.get(column_name)
-            )
-            meta_column.is_dimension = column_name in DIMENSION_COLUMNS
-            meta_column.is_metric = column_name in METRIC_COLUMNS
             meta_column.sample_values = _profile_sample_values_json(table_name, column_name)
     return len(duckdb_tables)
 
 
 def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str, str]]]) -> int:
     relationships = _infer_relationships(duckdb_tables)
-    for relationship in _overlay_relationships(duckdb_tables).values():
-        relationships[(relationship["source_table"], relationship["source_column"], relationship["target_table"], relationship["target_column"])] = relationship
+    for relationship in _overlay_relationships_from_db(session, duckdb_tables).values():
+        relationships[
+            (
+                relationship["source_table"],
+                relationship["source_column"],
+                relationship["target_table"],
+                relationship["target_column"],
+            )
+        ] = relationship
 
     for relationship in relationships.values():
         existing = session.scalar(
@@ -126,27 +117,40 @@ def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str
     return len(relationships)
 
 
-def _overlay_relationships(duckdb_tables: dict[str, list[dict[str, str]]]) -> dict[tuple[str, str, str, str], dict]:
+def _overlay_relationships_from_db(
+    session: Session,
+    duckdb_tables: dict[str, list[dict[str, str]]],
+) -> dict[tuple[str, str, str, str], dict]:
     relationships = {}
-    for source_table, source_column, target_table, target_column, relationship_type, description in CONFIRMED_RELATIONSHIPS:
+    overlay_relationships = session.scalars(
+        select(MetaRelationship).where(MetaRelationship.source == "overlay")
+    ).all()
+    for relationship in overlay_relationships:
         if not _relationship_exists_in_schema(
             duckdb_tables,
-            source_table,
-            source_column,
-            target_table,
-            target_column,
+            relationship.source_table,
+            relationship.source_column,
+            relationship.target_table,
+            relationship.target_column,
         ):
             continue
-        relationships[(source_table, source_column, target_table, target_column)] = {
-            "source_table": source_table,
-            "source_column": source_column,
-            "target_table": target_table,
-            "target_column": target_column,
-            "relationship_type": relationship_type,
-            "source": "overlay",
-            "confidence": 1.0,
-            "fanout_risk": _fanout_risk(source_table, target_table, relationship_type),
-            "description": description,
+        relationships[
+            (
+                relationship.source_table,
+                relationship.source_column,
+                relationship.target_table,
+                relationship.target_column,
+            )
+        ] = {
+            "source_table": relationship.source_table,
+            "source_column": relationship.source_column,
+            "target_table": relationship.target_table,
+            "target_column": relationship.target_column,
+            "relationship_type": relationship.relationship_type,
+            "source": relationship.source,
+            "confidence": relationship.confidence,
+            "fanout_risk": relationship.fanout_risk,
+            "description": relationship.description,
         }
     return relationships
 
@@ -253,9 +257,7 @@ def _profile_sample_values_json(table_name: str, column_name: str, limit: int = 
             """
         ).fetchall()
     values = [row[0] for row in rows]
-    if not values:
-        return sample_value_fallbacks_json(column_name)
-    return json.dumps(values, ensure_ascii=False, default=str)
+    return json.dumps(values, ensure_ascii=False, default=str) if values else None
 
 
 def _fanout_risk(source_table: str, target_table: str, relationship_type: str) -> str:
