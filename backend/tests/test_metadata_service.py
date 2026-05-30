@@ -61,6 +61,15 @@ def test_metadata_api_runtime_assets_read_from_db(monkeypatch):
             "sql": "SELECT payment_amount FROM fact_orders",
             "tags": ["custom"],
             "verified_by": "tester",
+            "enabled": True,
+        },
+        {
+            "id": "disabled_query",
+            "question": "禁用问题",
+            "sql": "SELECT 1",
+            "tags": ["disabled"],
+            "verified_by": "system",
+            "enabled": False,
         }
     ]
 

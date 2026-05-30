@@ -8,7 +8,14 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app import main
 from backend.app.metadata import retrieval, service
-from backend.app.metadata.models import MetaAnalysisSpace, MetaColumn, MetaTable, create_metadata_schema
+from backend.app.metadata.models import (
+    MetaAnalysisSpace,
+    MetaColumn,
+    MetaMetric,
+    MetaRelationship,
+    MetaTable,
+    create_metadata_schema,
+)
 
 
 def test_retrieve_metadata_endpoint_returns_retrieval_result(monkeypatch):
@@ -146,6 +153,128 @@ def test_create_metric_endpoint_rejects_invalid_expression(monkeypatch):
     assert "Column not found" in response.json()["detail"]
 
 
+def test_verified_query_endpoints_validate_sql_and_affect_retrieval(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    client = TestClient(main.app)
+
+    create_response = client.post(
+        "/api/metadata/verified-queries",
+        json={
+            "query_id": "admin_verified_sales",
+            "question": "管理端销售额",
+            "sql": "SELECT payment_amount FROM fact_orders",
+            "tags": ["admin", "sales"],
+        },
+    )
+    retrieve_response = client.get("/api/metadata/retrieve", params={"question": "管理端销售额"})
+    unsafe_response = client.post(
+        "/api/metadata/verified-queries",
+        json={
+            "query_id": "unsafe_verified",
+            "question": "危险查询",
+            "sql": "DELETE FROM fact_orders",
+        },
+    )
+
+    assert create_response.status_code == 200
+    assert create_response.json()["enabled"] is True
+    assert "admin_verified_sales" in [query["id"] for query in retrieve_response.json()["verified_queries"]]
+    assert unsafe_response.status_code == 422
+    assert "operation_guard" in unsafe_response.json()["detail"]
+
+
+def test_verified_query_update_toggle_and_filter(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    client = TestClient(main.app)
+    client.post(
+        "/api/metadata/verified-queries",
+        json={
+            "query_id": "admin_verified_sales",
+            "question": "管理端销售额",
+            "sql": "SELECT payment_amount FROM fact_orders",
+        },
+    )
+
+    update_response = client.put(
+        "/api/metadata/verified-queries/admin_verified_sales",
+        json={
+            "question": "更新后的销售额",
+            "tags": ["updated"],
+            "sql": "SELECT order_id, payment_amount FROM fact_orders",
+        },
+    )
+    toggle_response = client.patch("/api/metadata/verified-queries/admin_verified_sales/toggle")
+    disabled_response = client.get("/api/metadata/verified-queries", params={"enabled": False})
+
+    assert update_response.status_code == 200
+    assert update_response.json()["question"] == "更新后的销售额"
+    assert update_response.json()["tags"] == ["updated"]
+    assert toggle_response.status_code == 200
+    assert toggle_response.json()["enabled"] is False
+    assert [query["id"] for query in disabled_response.json()] == ["admin_verified_sales"]
+
+
+def test_update_analysis_space_endpoint_validates_assets_and_operations(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    client = TestClient(main.app)
+
+    update_response = client.put(
+        "/api/metadata/analysis-space",
+        json={
+            "tables": ["fact_orders"],
+            "enabled_metrics": ["existing_metric"],
+            "allowed_operations": ["select"],
+        },
+    )
+    invalid_table_response = client.put(
+        "/api/metadata/analysis-space",
+        json={"tables": ["missing_table"]},
+    )
+    invalid_operation_response = client.put(
+        "/api/metadata/analysis-space",
+        json={"allowed_operations": ["delete"]},
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["tables"] == ["fact_orders"]
+    assert update_response.json()["enabled_metrics"] == ["existing_metric"]
+    assert invalid_table_response.status_code == 422
+    assert invalid_operation_response.status_code == 422
+
+
+def test_relationship_endpoint_updates_metadata_only(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    client = TestClient(main.app)
+
+    relationships_response = client.get("/api/metadata/relationships")
+    relationship_id = relationships_response.json()[0]["id"]
+    update_response = client.put(
+        f"/api/metadata/relationships/{relationship_id}",
+        json={
+            "confidence": 1.0,
+            "fanout_risk": "medium",
+            "source": "overlay",
+            "description": "",
+        },
+    )
+    invalid_response = client.put(
+        f"/api/metadata/relationships/{relationship_id}",
+        json={"source": "confirmed"},
+    )
+
+    assert relationships_response.status_code == 200
+    assert update_response.status_code == 200
+    assert update_response.json()["confidence"] == 1.0
+    assert update_response.json()["fanout_risk"] == "medium"
+    assert update_response.json()["source"] == "overlay"
+    assert update_response.json()["description"] is None
+    assert invalid_response.status_code == 422
+
+
 def _patch_metadata_db(monkeypatch):
     engine = create_engine(
         "sqlite://",
@@ -187,6 +316,26 @@ def _insert_admin_api_assets(engine) -> None:
                     for column_name in column_names
                 ]
             )
+        session.add(
+            MetaMetric(
+                name="existing_metric",
+                label="已有指标",
+                expression="SUM(fact_orders.payment_amount)",
+                enabled=True,
+            )
+        )
+        session.add(
+            MetaRelationship(
+                source_table="fact_orders",
+                source_column="date_key",
+                target_table="dim_date",
+                target_column="date_key",
+                relationship_type="many_to_one",
+                source="inferred",
+                confidence=0.8,
+                fanout_risk="low",
+            )
+        )
         session.add(
             MetaAnalysisSpace(
                 name="admin_test",

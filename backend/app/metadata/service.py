@@ -19,7 +19,16 @@ from backend.app.metadata.models import (
     create_metadata_schema,
 )
 from backend.app.metadata.retrieval import retrieve_metadata_assets
-from backend.app.schemas.metadata_admin import AliasCreate, MetricCreate, MetricUpdate
+from backend.app.schemas.metadata_admin import (
+    AliasCreate,
+    AnalysisSpaceUpdate,
+    MetricCreate,
+    MetricUpdate,
+    RelationshipUpdate,
+    VerifiedQueryCreate,
+    VerifiedQueryUpdate,
+)
+from backend.app.sql_guard import GuardScope, guard_sql
 
 
 QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
@@ -83,20 +92,7 @@ def list_relationships() -> list[dict]:
                 MetaRelationship.target_table,
             )
         ).all()
-        return [
-            {
-                "source_table": relationship.source_table,
-                "source_column": relationship.source_column,
-                "target_table": relationship.target_table,
-                "target_column": relationship.target_column,
-                "relationship_type": relationship.relationship_type,
-                "source": relationship.source,
-                "confidence": relationship.confidence,
-                "fanout_risk": relationship.fanout_risk,
-                "description": relationship.description,
-            }
-            for relationship in relationships
-        ]
+        return [_relationship_payload(relationship) for relationship in relationships]
 
 
 def get_analysis_space() -> dict:
@@ -106,10 +102,13 @@ def get_analysis_space() -> dict:
         return _analysis_space_payload(analysis_space) if analysis_space else {}
 
 
-def list_verified_queries() -> list[dict]:
+def list_verified_queries(enabled: bool | None = True) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
-        return [_verified_query_payload(query) for query in _verified_queries(session)]
+        query = select(MetaVerifiedQuery).order_by(MetaVerifiedQuery.id)
+        if enabled is not None:
+            query = query.where(MetaVerifiedQuery.enabled.is_(enabled))
+        return [_verified_query_payload(row) for row in session.scalars(query).all()]
 
 
 def list_metrics(enabled: bool | None = None) -> list[dict]:
@@ -226,6 +225,105 @@ def delete_alias(alias_id: int) -> None:
         if alias is None:
             raise MetadataAdminError(404, f"Alias not found: {alias_id}")
         session.delete(alias)
+
+
+def create_verified_query(data: VerifiedQueryCreate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        query_id = _required_text(data.query_id, "query_id")
+        if session.scalar(select(MetaVerifiedQuery).where(MetaVerifiedQuery.query_id == query_id)) is not None:
+            raise MetadataAdminError(409, f"Verified query already exists: {query_id}")
+
+        sql = _required_text(data.sql, "sql")
+        _validate_verified_query_sql(session, sql)
+        query = MetaVerifiedQuery(
+            query_id=query_id,
+            question=_required_text(data.question, "question"),
+            sql=sql,
+            tags=json.dumps(_clean_string_list(data.tags), ensure_ascii=False),
+            verified_by=_required_text(data.verified_by, "verified_by"),
+            enabled=True,
+        )
+        session.add(query)
+        session.flush()
+        return _verified_query_payload(query)
+
+
+def update_verified_query(query_id: str, data: VerifiedQueryUpdate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        query = _verified_query_or_raise(session, query_id)
+        sql = _required_text(data.sql, "sql") if data.sql is not None else query.sql
+        _validate_verified_query_sql(session, sql)
+
+        if data.question is not None:
+            query.question = _required_text(data.question, "question")
+        if data.sql is not None:
+            query.sql = sql
+        if data.tags is not None:
+            query.tags = json.dumps(_clean_string_list(data.tags), ensure_ascii=False)
+        if data.enabled is not None:
+            query.enabled = data.enabled
+        session.flush()
+        return _verified_query_payload(query)
+
+
+def toggle_verified_query(query_id: str) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        query = _verified_query_or_raise(session, query_id)
+        query.enabled = not query.enabled
+        session.flush()
+        return _verified_query_payload(query)
+
+
+def update_analysis_space(data: AnalysisSpaceUpdate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        analysis_space = _active_analysis_space(session)
+        if analysis_space is None:
+            raise MetadataAdminError(404, "Active analysis space not found.")
+
+        if data.tables is not None:
+            table_names = _clean_string_list(data.tables)
+            _validate_table_names(session, table_names)
+            analysis_space.tables = json.dumps(table_names, ensure_ascii=False)
+        if data.enabled_metrics is not None:
+            metric_names = _clean_string_list(data.enabled_metrics)
+            _validate_metric_names(session, metric_names)
+            analysis_space.enabled_metrics = json.dumps(metric_names, ensure_ascii=False)
+        if data.allowed_operations is not None:
+            allowed_operations = _clean_string_list(data.allowed_operations)
+            if allowed_operations != ["select"]:
+                raise MetadataAdminError(422, "allowed_operations must be ['select']")
+            analysis_space.allowed_operations = json.dumps(allowed_operations, ensure_ascii=False)
+        session.flush()
+        return _analysis_space_payload(analysis_space)
+
+
+def update_relationship(rel_id: int, data: RelationshipUpdate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        relationship = session.scalar(select(MetaRelationship).where(MetaRelationship.id == rel_id))
+        if relationship is None:
+            raise MetadataAdminError(404, f"Relationship not found: {rel_id}")
+
+        if data.confidence is not None:
+            if data.confidence < 0 or data.confidence > 1:
+                raise MetadataAdminError(422, "confidence must be between 0 and 1")
+            relationship.confidence = data.confidence
+        if data.fanout_risk is not None:
+            if data.fanout_risk not in {"low", "medium", "high"}:
+                raise MetadataAdminError(422, "fanout_risk must be one of: low, medium, high")
+            relationship.fanout_risk = data.fanout_risk
+        if data.source is not None:
+            if data.source not in {"inferred", "overlay"}:
+                raise MetadataAdminError(422, "source must be one of: inferred, overlay")
+            relationship.source = data.source
+        if data.description is not None:
+            relationship.description = _optional_text(data.description)
+        session.flush()
+        return _relationship_payload(relationship)
 
 
 def build_schema_context() -> str:
@@ -629,11 +727,33 @@ def _alias_payload(alias: MetaColumnAlias) -> dict:
     }
 
 
+def _relationship_payload(relationship: MetaRelationship) -> dict:
+    return {
+        "id": relationship.id,
+        "source_table": relationship.source_table,
+        "source_column": relationship.source_column,
+        "target_table": relationship.target_table,
+        "target_column": relationship.target_column,
+        "relationship_type": relationship.relationship_type,
+        "source": relationship.source,
+        "confidence": relationship.confidence,
+        "fanout_risk": relationship.fanout_risk,
+        "description": relationship.description,
+    }
+
+
 def _metric_or_raise(session: Session, name: str) -> MetaMetric:
     metric = session.scalar(select(MetaMetric).where(MetaMetric.name == name))
     if metric is None:
         raise MetadataAdminError(404, f"Metric not found: {name}")
     return metric
+
+
+def _verified_query_or_raise(session: Session, query_id: str) -> MetaVerifiedQuery:
+    query = session.scalar(select(MetaVerifiedQuery).where(MetaVerifiedQuery.query_id == query_id))
+    if query is None:
+        raise MetadataAdminError(404, f"Verified query not found: {query_id}")
+    return query
 
 
 def _validate_metric_definition(
@@ -657,6 +777,56 @@ def _validate_metric_definition(
         if table_name is None or column_name is None:
             raise MetadataAdminError(422, "default_time_column must use table.column format.")
         _require_column(session, table_name, column_name)
+
+
+def _validate_verified_query_sql(session: Session, sql: str) -> None:
+    result = guard_sql(sql, scope=_guard_scope_from_session(session))
+    if not result.allowed:
+        raise MetadataAdminError(
+            422,
+            f"Verified query SQL rejected by {result.stage}: {result.reason}",
+        )
+
+
+def _guard_scope_from_session(session: Session) -> GuardScope:
+    analysis_space = _active_analysis_space(session)
+    allowed_tables = frozenset(_parse_json_list(analysis_space.tables if analysis_space else None))
+    table_rows = session.scalars(
+        select(MetaTable)
+        .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+        .order_by(MetaTable.table_name)
+    ).all()
+    table_columns = {}
+    for table in table_rows:
+        columns = session.scalars(
+            select(MetaColumn.column_name)
+            .where(MetaColumn.table_id == table.id)
+            .order_by(MetaColumn.id)
+        ).all()
+        table_columns[table.table_name] = frozenset(columns)
+    return GuardScope(allowed_tables=allowed_tables, table_columns=table_columns)
+
+
+def _validate_table_names(session: Session, table_names: list[str]) -> None:
+    if not table_names:
+        return
+    existing = set(
+        session.scalars(select(MetaTable.table_name).where(MetaTable.table_name.in_(table_names))).all()
+    )
+    missing = sorted(set(table_names) - existing)
+    if missing:
+        raise MetadataAdminError(422, f"Tables not found: {missing}")
+
+
+def _validate_metric_names(session: Session, metric_names: list[str]) -> None:
+    if not metric_names:
+        return
+    existing = set(
+        session.scalars(select(MetaMetric.name).where(MetaMetric.name.in_(metric_names))).all()
+    )
+    missing = sorted(set(metric_names) - existing)
+    if missing:
+        raise MetadataAdminError(422, f"Metrics not found: {missing}")
 
 
 def _require_column(session: Session, table_name: str, column_name: str) -> None:
@@ -705,6 +875,7 @@ def _verified_query_payload(query: MetaVerifiedQuery) -> dict:
         "sql": query.sql,
         "tags": _parse_json_list(query.tags),
         "verified_by": query.verified_by,
+        "enabled": query.enabled,
     }
 
 

@@ -6,24 +6,37 @@ from backend.app.metadata.service import (
     build_schema_context,
     create_alias,
     create_metric,
+    create_verified_query,
     delete_alias,
     get_analysis_space,
     list_aliases,
     list_columns,
     list_metrics,
+    list_relationships,
     list_tables,
     list_verified_queries,
     toggle_metric,
+    toggle_verified_query,
+    update_analysis_space,
     update_metric,
+    update_relationship,
+    update_verified_query,
 )
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.sync import sync_metadata
 from backend.app.schemas.metadata_admin import (
     AliasCreate,
     AliasResponse,
+    AnalysisSpaceResponse,
+    AnalysisSpaceUpdate,
     MetricCreate,
     MetricResponse,
     MetricUpdate,
+    RelationshipResponse,
+    RelationshipUpdate,
+    VerifiedQueryCreate,
+    VerifiedQueryResponse,
+    VerifiedQueryUpdate,
 )
 
 router = APIRouter(prefix="/api/metadata", tags=["metadata"])
@@ -69,9 +82,39 @@ def analysis_space_endpoint() -> dict:
     return get_analysis_space()
 
 
-@router.get("/verified-queries")
-def verified_queries_endpoint() -> list[dict]:
-    return list_verified_queries()
+@router.put("/analysis-space", response_model=AnalysisSpaceResponse)
+def update_analysis_space_endpoint(payload: AnalysisSpaceUpdate) -> dict:
+    return _admin_call(update_analysis_space, payload)
+
+
+@router.get("/verified-queries", response_model=list[VerifiedQueryResponse])
+def verified_queries_endpoint(enabled: bool | None = None) -> list[dict]:
+    return list_verified_queries(enabled=enabled)
+
+
+@router.post("/verified-queries", response_model=VerifiedQueryResponse)
+def create_verified_query_endpoint(payload: VerifiedQueryCreate) -> dict:
+    return _admin_call(create_verified_query, payload)
+
+
+@router.put("/verified-queries/{query_id}", response_model=VerifiedQueryResponse)
+def update_verified_query_endpoint(query_id: str, payload: VerifiedQueryUpdate) -> dict:
+    return _admin_call(update_verified_query, query_id, payload)
+
+
+@router.patch("/verified-queries/{query_id}/toggle", response_model=VerifiedQueryResponse)
+def toggle_verified_query_endpoint(query_id: str) -> dict:
+    return _admin_call(toggle_verified_query, query_id)
+
+
+@router.get("/relationships", response_model=list[RelationshipResponse])
+def relationships_endpoint() -> list[dict]:
+    return list_relationships()
+
+
+@router.put("/relationships/{relationship_id}", response_model=RelationshipResponse)
+def update_relationship_endpoint(relationship_id: int, payload: RelationshipUpdate) -> dict:
+    return _admin_call(update_relationship, relationship_id, payload)
 
 
 @router.get("/metrics", response_model=list[MetricResponse])
