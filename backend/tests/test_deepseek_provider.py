@@ -1,0 +1,110 @@
+import httpx
+import pytest
+
+from backend.app.core.deepseek_provider import DeepSeekProvider
+from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
+
+
+class FakeHTTPClient:
+    def __init__(self, response: httpx.Response) -> None:
+        self.response = response
+        self.requests = []
+
+    def post(self, url, json, headers, timeout):
+        self.requests.append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return self.response
+
+
+def test_deepseek_provider_requires_api_key():
+    provider = DeepSeekProvider(api_key="", http_client=FakeHTTPClient(_response("SELECT 1")))
+
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+        provider.generate_sql(_request())
+
+
+def test_deepseek_provider_posts_chat_completion_request():
+    client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
+    provider = DeepSeekProvider(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        http_client=client,
+    )
+
+    result = provider.generate_sql(_request())
+
+    assert result.provider == "deepseek"
+    assert result.sql == "SELECT order_id FROM fact_orders"
+    assert client.requests[0]["url"] == "https://api.deepseek.com/chat/completions"
+    assert client.requests[0]["headers"]["Authorization"] == "Bearer test-key"
+    assert client.requests[0]["json"]["model"] == "deepseek-v4-pro"
+    assert client.requests[0]["json"]["stream"] is False
+    assert client.requests[0]["json"]["messages"][0]["role"] == "system"
+    assert client.requests[0]["json"]["messages"][1]["role"] == "user"
+
+
+def test_deepseek_provider_strips_sql_markdown_fence():
+    client = FakeHTTPClient(_response("```sql\nSELECT 1\n```"))
+    provider = DeepSeekProvider(api_key="test-key", http_client=client)
+
+    result = provider.generate_sql(_request())
+
+    assert result.sql == "SELECT 1"
+
+
+def test_deepseek_provider_rejects_missing_message_content():
+    payload = {"choices": [{"message": {"content": None}}]}
+    client = FakeHTTPClient(
+        httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
+            json=payload,
+        )
+    )
+    provider = DeepSeekProvider(api_key="test-key", http_client=client)
+
+    with pytest.raises(ValueError, match="message content"):
+        provider.generate_sql(_request())
+
+
+def test_mock_provider_is_not_affected_by_deepseek_provider():
+    result = MockLLMProvider().generate_sql(
+        SQLGenerationRequest(
+            question="查询最近30天每日销售额和订单数",
+            schema_context="# Schema Context",
+        )
+    )
+
+    assert result.provider == "mock"
+    assert result.matched_query_id == "recent_30d_daily_sales"
+
+
+def _request() -> SQLGenerationRequest:
+    return SQLGenerationRequest(
+        question="查询订单",
+        schema_context="# Schema Context",
+    )
+
+
+def _response(content: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                }
+            ]
+        },
+    )
