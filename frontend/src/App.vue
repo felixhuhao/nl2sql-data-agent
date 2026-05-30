@@ -14,6 +14,7 @@ import { API_BASE_URL } from "./api/config";
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const workflowSteps = [
+  { id: "intent_guard", label: "意图检查" },
   { id: "retrieve_context", label: "检索上下文" },
   { id: "build_context", label: "构建上下文" },
   { id: "generate_sql", label: "生成 SQL" },
@@ -45,6 +46,10 @@ type ChartRecommendation = {
   y_columns?: string[];
   reason?: string;
 };
+type HealthPayload = {
+  status?: string;
+  llm_provider?: string;
+};
 
 const question = ref("查询最近30天每日销售额和订单数");
 const isSubmitting = ref(false);
@@ -60,7 +65,17 @@ const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
 const chartContainer = ref<HTMLDivElement | null>(null);
 const activeView = ref<"chat" | "admin">("chat");
+const llmProvider = ref("");
 const apiTarget = computed(() => `${API_BASE_URL || "same origin"}/api/chat/query`);
+const providerStatusLabel = computed(() => {
+  if (llmProvider.value === "deepseek") {
+    return "DeepSeek Agent Ready";
+  }
+  if (llmProvider.value === "mock") {
+    return "Mock Agent Ready";
+  }
+  return "Agent Ready";
+});
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
   () =>
@@ -80,6 +95,7 @@ let chartInstance: echarts.ECharts | null = null;
 
 onMounted(() => {
   window.addEventListener("resize", resizeChart);
+  void fetchAgentStatus();
 });
 
 onBeforeUnmount(() => {
@@ -96,7 +112,7 @@ async function submitQuestion() {
   errorMessage.value = "";
   errorStep.value = "";
   stepStates.value = createStepStates();
-  setStepStatus("retrieve_context", "running");
+  setStepStatus("intent_guard", "running");
   sql.value = "";
   summary.value = "";
   rows.value = [];
@@ -124,6 +140,19 @@ async function submitQuestion() {
     errorMessage.value = error instanceof Error ? error.message : "请求失败";
   } finally {
     isSubmitting.value = false;
+  }
+}
+
+async function fetchAgentStatus() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/health`);
+    if (!response.ok) {
+      return;
+    }
+    const payload = (await response.json()) as HealthPayload;
+    llmProvider.value = (payload.llm_provider ?? "").toLowerCase();
+  } catch {
+    llmProvider.value = "";
   }
 }
 
@@ -356,7 +385,7 @@ function switchView(view: "chat" | "admin") {
               管理
             </button>
           </nav>
-          <span class="status-pill">Mock Agent Ready</span>
+          <span class="status-pill">{{ providerStatusLabel }}</span>
         </div>
       </header>
 

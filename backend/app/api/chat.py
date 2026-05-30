@@ -11,11 +11,14 @@ from backend.app.agent.nodes import (
     build_context_node,
     execute_node,
     generate_sql_node,
+    intent_guard_node,
     retrieve_context_node,
     sql_guard_node,
     summarize_node,
 )
 from backend.app.agent.state import AgentState
+from backend.app.config import get_settings
+from backend.app.core.deepseek_provider import DeepSeekProvider
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
 from backend.app.metadata.retrieval import retrieve_metadata_assets
@@ -48,6 +51,18 @@ def iter_chat_events(
 ) -> Iterator[str]:
     state = AgentState(question=question)
     try:
+        intent_guard_node(state)
+        if state.stopped_at is not None:
+            yield _sse_event(
+                "error",
+                {
+                    "step": state.stopped_at,
+                    "reason": state.error,
+                },
+            )
+            return
+        yield _sse_event("step", {"step": "intent_guard", "status": "completed"})
+
         if schema_context_builder is None:
             retrieve_context_node(state, retriever=retriever)
             yield _sse_event("step", _retrieval_step_payload(state.retrieval_result))
@@ -55,7 +70,7 @@ def iter_chat_events(
         build_context_node(state, schema_context_builder=schema_context_builder)
         yield _sse_event("step", {"step": "build_context", "status": "completed"})
 
-        generate_sql_node(state, provider=provider or MockLLMProvider())
+        generate_sql_node(state, provider=provider or get_default_llm_provider())
         yield _sse_event(
             "step",
             {
@@ -139,6 +154,15 @@ def iter_chat_events(
                 "reason": str(exc),
             },
         )
+
+
+def get_default_llm_provider() -> LLMProvider:
+    provider_name = get_settings().llm_provider.lower()
+    if provider_name == "mock":
+        return MockLLMProvider()
+    if provider_name == "deepseek":
+        return DeepSeekProvider()
+    raise ValueError(f"Unsupported LLM_PROVIDER: {provider_name}")
 
 
 def _sse_event(event: str, payload: dict) -> str:

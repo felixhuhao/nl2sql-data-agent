@@ -18,6 +18,27 @@ ScopeBuilder = Callable[[], GuardScope]
 SQLExecutor = Callable[..., QueryResult]
 
 
+_BLOCKED_INTENT_KEYWORDS = (
+    ("DELETE", ("delete", "删除", "删掉", "清空", "清除")),
+    ("UPDATE", ("update", "修改", "更新", "改为", "改成")),
+    ("INSERT", ("insert", "新增", "插入", "写入")),
+    ("CREATE", ("create", "建表", "创建表", "创建一张表")),
+    ("DROP", ("drop", "删表")),
+    ("ALTER", ("alter", "改表", "修改表结构")),
+    ("TRUNCATE", ("truncate", "截断")),
+    ("COPY/LOAD", ("copy", "load", "install", "导入", "加载")),
+)
+_EXTERNAL_FILE_KEYWORDS = (
+    "read_csv",
+    "read_json",
+    "read_parquet",
+    "外部csv",
+    "外部parquet",
+    "外部json",
+    "外部文件",
+)
+
+
 def run_query_workflow(
     question: str,
     provider: LLMProvider | None = None,
@@ -27,6 +48,9 @@ def run_query_workflow(
     executor: SQLExecutor = execute_guarded_sql,
 ) -> AgentState:
     state = AgentState(question=question)
+    intent_guard_node(state)
+    if state.stopped_at is not None:
+        return state
     if schema_context_builder is None:
         retrieve_context_node(state, retriever=retriever)
     build_context_node(state, schema_context_builder=schema_context_builder)
@@ -36,6 +60,15 @@ def run_query_workflow(
         return state
     execute_node(state, executor=executor)
     summarize_node(state)
+    return state
+
+
+def intent_guard_node(state: AgentState) -> AgentState:
+    blocked_intent = _detect_blocked_intent(state.question)
+    state.completed_steps.append("intent_guard")
+    if blocked_intent is not None:
+        state.error = f"{blocked_intent} intent is not allowed."
+        state.stopped_at = "intent_guard"
     return state
 
 
@@ -124,3 +157,18 @@ def summarize_node(state: AgentState) -> AgentState:
     state.summary = f"查询返回 {state.query_result.row_count} 行，字段：{columns}。"
     state.completed_steps.append("summarize")
     return state
+
+
+def _detect_blocked_intent(question: str) -> str | None:
+    normalized = _normalize_intent_text(question)
+    if any(keyword in normalized for keyword in _EXTERNAL_FILE_KEYWORDS):
+        return "EXTERNAL_FILE_READ"
+
+    for operation, keywords in _BLOCKED_INTENT_KEYWORDS:
+        if any(keyword in normalized for keyword in keywords):
+            return operation
+    return None
+
+
+def _normalize_intent_text(text: str) -> str:
+    return "".join(text.casefold().split())

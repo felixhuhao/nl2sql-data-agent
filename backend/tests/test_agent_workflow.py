@@ -5,6 +5,7 @@ from backend.app.agent.nodes import (
     build_context_node,
     execute_node,
     generate_sql_node,
+    intent_guard_node,
     retrieve_context_node,
     run_query_workflow,
     sql_guard_node,
@@ -23,6 +24,23 @@ def test_retrieve_context_node_sets_result_and_step():
 
     assert state.retrieval_result == {"question": "test", "tables": []}
     assert state.completed_steps == ["retrieve_context"]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_error"),
+    [
+        ("删除2024年的订单数据", "DELETE intent is not allowed."),
+        ("从外部 CSV 读取订单数据", "EXTERNAL_FILE_READ intent is not allowed."),
+    ],
+)
+def test_intent_guard_node_rejects_blocked_questions(question: str, expected_error: str):
+    state = AgentState(question=question)
+
+    intent_guard_node(state)
+
+    assert state.stopped_at == "intent_guard"
+    assert state.error == expected_error
+    assert state.completed_steps == ["intent_guard"]
 
 
 def test_build_context_node_sets_context_and_step():
@@ -128,6 +146,7 @@ def test_run_query_workflow_executes_demo_question():
     assert state.query_result.row_count == 1
     assert state.summary == "查询返回 1 行，字段：date_value, sales_amount, order_count。"
     assert state.completed_steps == [
+        "intent_guard",
         "build_context",
         "generate_sql",
         "sql_guard",
@@ -171,6 +190,7 @@ def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypat
     assert state.retrieval_result == {"question": "查询订单", "fallback_used": False}
     assert captured_schema_context == ["# Focused Context"]
     assert state.completed_steps == [
+        "intent_guard",
         "retrieve_context",
         "build_context",
         "generate_sql",
@@ -180,7 +200,38 @@ def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypat
     ]
 
 
+def test_run_query_workflow_stops_when_intent_guard_rejects_question():
+    class FailingProvider:
+        name = "failing"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            raise AssertionError("provider should not be called")
+
+    def failing_retriever(question: str) -> dict:
+        raise AssertionError("retriever should not be called")
+
+    state = run_query_workflow(
+        "删除2024年的订单数据",
+        provider=FailingProvider(),
+        retriever=failing_retriever,
+        scope_builder=_scope,
+    )
+
+    assert state.stopped_at == "intent_guard"
+    assert state.error == "DELETE intent is not allowed."
+    assert state.sql is None
+    assert state.guard_result is None
+    assert state.query_result is None
+    assert state.completed_steps == ["intent_guard"]
+
+
 def test_run_query_workflow_stops_when_guard_rejects_sql():
+    class DeleteProvider:
+        name = "delete-provider"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            return SQLGenerationResult(sql="DELETE FROM fact_orders", provider=self.name)
+
     executed = []
 
     def fake_executor(guard_result: GuardResult) -> QueryResult:
@@ -188,7 +239,8 @@ def test_run_query_workflow_stops_when_guard_rejects_sql():
         return QueryResult(columns=[], rows=[], row_count=0)
 
     state = run_query_workflow(
-        "删除2024年数据",
+        "查询订单",
+        provider=DeleteProvider(),
         schema_context_builder=lambda: "# Schema Context",
         scope_builder=_scope,
         executor=fake_executor,
@@ -203,7 +255,7 @@ def test_run_query_workflow_stops_when_guard_rejects_sql():
     assert state.explainability["guard_result"]["stage"] == "operation_guard"
     assert state.query_result is None
     assert executed == []
-    assert state.completed_steps == ["build_context", "generate_sql", "sql_guard"]
+    assert state.completed_steps == ["intent_guard", "build_context", "generate_sql", "sql_guard"]
 
 
 def _scope() -> GuardScope:

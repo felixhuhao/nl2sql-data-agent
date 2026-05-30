@@ -1,10 +1,12 @@
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from backend.app import main
 import backend.app.agent.nodes as nodes_module
 from backend.app.api.chat import iter_chat_events
+from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationResult
 from backend.app.execution.runner import QueryResult
 from backend.app.sql_guard.models import GuardResult
 from backend.app.sql_guard.scope import GuardScope
@@ -24,6 +26,7 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
     events = _parse_events(
         iter_chat_events(
             "查询最近30天每日销售额和订单数",
+            provider=MockLLMProvider(),
             schema_context_builder=lambda: "# Schema Context",
             scope_builder=_scope,
             executor=fake_executor,
@@ -37,9 +40,11 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
         "step",
         "step",
         "step",
+        "step",
         "done",
     ]
     assert [event["data"].get("step") for event in events[:-1]] == [
+        "intent_guard",
         "build_context",
         "generate_sql",
         "sql_guard",
@@ -81,6 +86,7 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
     events = _parse_events(
         iter_chat_events(
             "查询最近30天每日销售额和订单数",
+            provider=MockLLMProvider(),
             retriever=fake_retriever,
             scope_builder=_scope,
             executor=fake_executor,
@@ -88,6 +94,13 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
     )
 
     assert events[0] == {
+        "event": "step",
+        "data": {
+            "step": "intent_guard",
+            "status": "completed",
+        },
+    }
+    assert events[1] == {
         "event": "step",
         "data": {
             "step": "retrieve_context",
@@ -100,6 +113,7 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
         },
     }
     assert [event["data"].get("step") for event in events[:-1]] == [
+        "intent_guard",
         "retrieve_context",
         "build_context",
         "generate_sql",
@@ -110,7 +124,31 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
     ]
 
 
+def test_iter_chat_events_returns_error_event_for_destructive_intent():
+    def failing_retriever(question: str) -> dict:
+        raise AssertionError("retriever should not be called")
+
+    events = _parse_events(
+        iter_chat_events(
+            "删除2024年的订单数据",
+            provider=MockLLMProvider(),
+            retriever=failing_retriever,
+            scope_builder=_scope,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[-1]["data"]["step"] == "intent_guard"
+    assert events[-1]["data"]["reason"] == "DELETE intent is not allowed."
+
+
 def test_iter_chat_events_returns_error_event_for_guard_rejection():
+    class DeleteProvider:
+        name = "delete-provider"
+
+        def generate_sql(self, request):
+            return SQLGenerationResult(sql="DELETE FROM fact_orders", provider=self.name)
+
     executed = []
 
     def fake_executor(guard_result: GuardResult) -> QueryResult:
@@ -119,14 +157,15 @@ def test_iter_chat_events_returns_error_event_for_guard_rejection():
 
     events = _parse_events(
         iter_chat_events(
-            "删除2024年数据",
+            "查询订单",
+            provider=DeleteProvider(),
             schema_context_builder=lambda: "# Schema Context",
             scope_builder=_scope,
             executor=fake_executor,
         )
     )
 
-    assert [event["event"] for event in events] == ["step", "step", "step", "error"]
+    assert [event["event"] for event in events] == ["step", "step", "step", "step", "error"]
     assert events[-1]["data"]["step"] == "sql_guard"
     assert events[-1]["data"]["reason"] == "DELETE is not allowed."
     assert events[-1]["data"]["explainability"]["guard_result"]["allowed"] is False
@@ -145,6 +184,60 @@ def test_chat_query_endpoint_is_registered(monkeypatch):
 
     assert response.status_code == 200
     assert "event: done" in response.text
+
+
+def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.main.get_settings",
+        lambda: SimpleNamespace(llm_provider="deepseek"),
+    )
+    client = TestClient(main.app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "llm_provider": "deepseek"}
+
+    api_response = client.get("/api/health")
+    assert api_response.status_code == 200
+    assert api_response.json() == {"status": "ok", "llm_provider": "deepseek"}
+
+
+def test_iter_chat_events_uses_configured_deepseek_provider(monkeypatch):
+    class FakeDeepSeekProvider:
+        name = "deepseek"
+
+        def generate_sql(self, request):
+            assert request.schema_context == "# Schema Context"
+            return SQLGenerationResult(
+                sql="SELECT order_id, payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.api.chat.get_settings",
+        lambda: SimpleNamespace(llm_provider="deepseek"),
+    )
+    monkeypatch.setattr("backend.app.api.chat.DeepSeekProvider", FakeDeepSeekProvider)
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        return QueryResult(
+            columns=["order_id", "payment_amount"],
+            rows=[["O00000001", 100]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单金额",
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    generate_step = next(event for event in events if event["data"].get("step") == "generate_sql")
+    assert generate_step["data"]["provider"] == "deepseek"
 
 
 def _parse_events(chunks) -> list[dict]:
