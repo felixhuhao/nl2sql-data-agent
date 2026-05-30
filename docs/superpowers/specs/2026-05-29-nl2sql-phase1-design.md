@@ -893,6 +893,8 @@ Iteration 3 暂不强制引入 LangGraph 运行时依赖。先把 state、node �
 
 目标：接真实 LLM 和 Vue 页面，完成可演示体验。
 
+Iteration 4 拆成 6 个小任务。原因是当前仓库还没有 `frontend/`，这一轮同时包含真实模型 provider、SQL prompt、前端工程初始化、SSE 客户端、结果展示和 ECharts 渲染。如果把真实模型和前端放在同一步，API 调试、流式解析、页面状态和图表问题会混在一起。
+
 交付：
 
 - DeepSeek provider
@@ -908,6 +910,102 @@ Iteration 3 暂不强制引入 LangGraph 运行时依赖。先把 state、node �
 - 前端能完整跑通 demo 问题
 - 错误和 Guard 拒绝能展示
 - SSE error 事件格式正确，前端能解析并展示拒绝原因
+
+#### I4.1 DeepSeek Provider
+
+目标：把真实 LLM provider 接到现有 `LLMProvider` 边界上，但不改变 Mock 链路。
+
+交付：
+
+- 配置 `DEEPSEEK_API_KEY`
+- 配置 DeepSeek base url 和 model
+- 新增 `DeepSeekProvider`
+- 使用现有 `LLMProvider.generate_sql` 接口
+- 单测使用 fake HTTP / monkeypatch，不真实调用外部 API
+
+验收：
+
+- 无 API key 时 provider 给出明确错误
+- fake HTTP 返回 SQL 时能解析为 `SQLGenerationResult`
+- Mock provider 不受影响
+
+#### I4.2 SQL Generation Prompt
+
+目标：把 SQL 生成 prompt 从 provider 里拆出来，让真实模型使用统一提示词。
+
+交付：
+
+- 新增 `agent/prompts/sql_generation.py`
+- prompt 输入 `schema_context` 和 `question`
+- prompt 明确要求只输出 SQL
+- prompt 明确要求使用 DuckDB 方言、Analysis Space 内表字段、只读 SELECT
+
+验收：
+
+- prompt 单元测试覆盖关键约束文本
+- DeepSeek provider 调用 prompt 构建函数
+
+#### I4.3 Frontend Scaffold
+
+目标：初始化最小 Vue/Vite 前端工程，并能启动。
+
+交付：
+
+- 新增 `frontend/`
+- Vue + Vite + TypeScript
+- 单页 chat app 骨架
+- API base 配置
+
+验收：
+
+- 前端 dev server 可启动
+- 页面可以打开，展示输入框和空状态
+
+#### I4.4 SSE Client 和 Step Stream
+
+目标：前端能调用 `/api/chat/query` 并解析 SSE 事件。
+
+交付：
+
+- `fetch` + `ReadableStream`
+- 解析 `step` / `done` / `error`
+- 页面展示步骤状态
+
+验收：
+
+- demo 问题能看到步骤流
+- Guard 拒绝能进入 error 状态
+
+#### I4.5 Result Views
+
+目标：展示 query 结果主体。
+
+交付：
+
+- SQL 展示
+- 结果表格
+- query-level explainability 展示
+- Guard error 展示
+
+验收：
+
+- done 事件能展示 SQL、summary、表格、explainability
+- error 事件能展示拒绝阶段和原因
+
+#### I4.6 ECharts Chart Renderer
+
+目标：根据后端 `chart_recommendation` 渲染最小图表。
+
+交付：
+
+- 接入 ECharts
+- `line` 渲染折线图
+- `table` fallback 不画图
+
+验收：
+
+- 最近 30 天每日销售额和订单数展示折线图
+- 非图表场景保持表格展示
 
 ### Iteration 5：Smoke Eval 和 Demo 固化
 
@@ -953,11 +1051,12 @@ Iteration 3
   -> I3.5 api/chat.py + POST SSE
 
 Iteration 4
-  -> DeepSeek provider
-  -> SQL generation prompt
-  -> frontend chat page
-  -> fetch + ReadableStream SSE client
-  -> SQL display / result table / chart renderer
+  -> I4.1 DeepSeek provider
+  -> I4.2 SQL generation prompt
+  -> I4.3 frontend scaffold
+  -> I4.4 SSE client + step stream
+  -> I4.5 SQL display / result table / explainability / errors
+  -> I4.6 ECharts chart renderer
 
 Iteration 5
   -> evals/smoke_cases.yaml

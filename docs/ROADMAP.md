@@ -337,6 +337,48 @@ I3.5 /api/chat/query + SSE
 
 拆分依据：Iteration 3 是链路集成，同时涉及 provider、agent state、Guard/Executor、解释信息、图表推荐和 SSE。先把确定性的 Mock 链路跑通，再接事件流，可以避免模型输出、执行错误和 API 流式响应互相干扰。
 
+### Iteration 4 细分
+
+Iteration 4 拆成 6 个小任务：
+
+```text
+I4.1 DeepSeek Provider
+  -> DEEPSEEK_API_KEY / base url / model 配置
+  -> DeepSeekProvider
+  -> 复用 LLMProvider.generate_sql
+  -> fake HTTP 单元测试，不真实调用外部 API
+
+I4.2 SQL Generation Prompt
+  -> agent/prompts/sql_generation.py
+  -> 输入 schema_context + question
+  -> 只输出 SQL
+  -> 约束 DuckDB / SELECT-only / Analysis Space 内表字段
+
+I4.3 Frontend Scaffold
+  -> frontend/
+  -> Vue + Vite + TypeScript
+  -> 单页 chat app 骨架
+  -> API base 配置
+
+I4.4 SSE Client + Step Stream
+  -> fetch + ReadableStream
+  -> 解析 step / done / error
+  -> 展示步骤状态
+
+I4.5 Result Views
+  -> SQL 展示
+  -> 结果表格
+  -> query-level explainability 展示
+  -> Guard error 展示
+
+I4.6 ECharts Chart Renderer
+  -> 接 chart_recommendation
+  -> line 渲染折线图
+  -> table fallback 不画图
+```
+
+拆分依据：Iteration 4 同时涉及真实模型和前端体验。先接 DeepSeek provider，再写 prompt，再初始化前端，最后逐步接 SSE、结果展示和图表，可以避免模型调试、事件流解析和 UI 状态互相干扰。
+
 ### Analysis Space v1
 
 参考 Databricks Genie 的 trusted assets 思路，Phase 1 不让用户对整个数据库自由问数，而是限定在一个可问数据空间：
