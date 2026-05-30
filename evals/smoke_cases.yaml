@@ -1,5 +1,5 @@
 version: 1
-description: Phase 2 deterministic smoke cases for retrieval, focused context, Mock provider, SQL Guard, executor, explainability, and chart recommendation.
+description: Phase 3 deterministic smoke cases for retrieval, focused context, Mock provider, SQL Guard, executor, explainability, and chart recommendation.
 cases:
   - id: recent_30d_daily_sales
     type: normal
@@ -233,6 +233,328 @@ cases:
       min_row_count: 1
       chart_type: table
 
+  - id: recent_30d_user_orders
+    type: normal
+    question: 最近30天下单最多的10个用户
+    tags: [user, topn, join]
+    mock_sql: >-
+      SELECT u.user_id, u.name AS user_name, COUNT(DISTINCT o.order_id) AS order_count
+      FROM fact_orders o
+      JOIN dim_users u ON o.user_key = u.user_key
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY u.user_id, u.name
+      ORDER BY order_count DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_users, dim_date]
+      required_columns:
+        - dim_users.user_id
+        - dim_users.name
+        - fact_orders.order_id
+      result_columns: [user_id, user_name, order_count]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.user_key -> dim_users.user_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: recent_30d_channel_user_count
+    type: normal
+    question: 按渠道统计最近30天活跃用户数
+    tags: [channel, user, join]
+    mock_sql: >-
+      SELECT c.channel_name, COUNT(DISTINCT o.user_key) AS user_count
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY c.channel_name
+      ORDER BY user_count DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_channels, dim_date]
+      required_columns:
+        - dim_channels.channel_name
+        - fact_orders.user_key
+      result_columns: [channel_name, user_count]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: recent_30d_avg_order_amount
+    type: normal
+    question: 最近30天平均订单金额
+    tags: [sales, aggregation]
+    mock_sql: >-
+      SELECT AVG(o.payment_amount) AS avg_order_amount
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [avg_order_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: product_sales_rank
+    type: normal
+    question: 商品销量排行
+    tags: [product, topn]
+    mock_sql: >-
+      SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      GROUP BY p.name
+      ORDER BY quantity_sold DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_order_items, dim_products]
+      required_columns:
+        - dim_products.name
+        - fact_order_items.quantity
+      result_columns: [product_name, quantity_sold]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+
+  - id: region_channel_cross
+    type: normal
+    question: 按地区和渠道交叉统计销售额
+    tags: [sales, region, channel]
+    mock_sql: >-
+      SELECT r.region_group, c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_regions r ON o.region_key = r.region_key
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY r.region_group, c.channel_name
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_regions, dim_channels, dim_date]
+      required_columns:
+        - dim_regions.region_group
+        - dim_channels.channel_name
+        - fact_orders.payment_amount
+      result_columns: [region_group, channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.region_key -> dim_regions.region_key
+        - fact_orders.channel_key -> dim_channels.channel_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: daily_order_trend
+    type: normal
+    question: 最近30天每日订单数趋势
+    tags: [orders, time_series, chart]
+    mock_sql: >-
+      SELECT d.date_value, COUNT(DISTINCT o.order_id) AS order_count
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY d.date_value
+      ORDER BY d.date_value
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - dim_date.date_value
+        - fact_orders.order_id
+      result_columns: [date_value, order_count]
+      min_row_count: 30
+      chart_type: line
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: top_category_by_region
+    type: normal
+    question: 各地区最畅销品类
+    tags: [region, category, complex]
+    provider: mock
+    mock_sql: >-
+      SELECT r.region_group, p.category, SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN fact_orders o ON i.order_id = o.order_id
+      JOIN dim_regions r ON o.region_key = r.region_key
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY r.region_group, p.category
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY r.region_group ORDER BY SUM(i.item_amount) DESC) = 1
+      ORDER BY SUM(i.item_amount) DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_order_items, fact_orders, dim_regions, dim_products, dim_date]
+      required_columns:
+        - dim_regions.region_group
+        - dim_products.category
+        - fact_order_items.item_amount
+      result_columns: [region_group, category, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.order_id -> fact_orders.order_id
+        - fact_orders.region_key -> dim_regions.region_key
+        - fact_order_items.product_key -> dim_products.product_key
+        - fact_order_items.date_key -> dim_date.date_key
+
+  - id: user_repeat_purchase_rate
+    type: normal
+    question: 最近30天复购率
+    tags: [user, complex]
+    provider: mock
+    mock_sql: >-
+      SELECT CAST(COUNT(DISTINCT CASE WHEN second_order.order_id IS NOT NULL THEN o.user_key END) AS DOUBLE)
+        / COUNT(DISTINCT o.user_key) AS repeat_purchase_rate
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      LEFT JOIN fact_orders second_order
+        ON o.user_key = second_order.user_key
+        AND o.order_id <> second_order.order_id
+      LEFT JOIN dim_date second_date ON second_order.date_key = second_date.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+        AND (second_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31' OR second_date.date_value IS NULL)
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.user_key
+        - fact_orders.order_id
+      result_columns: [repeat_purchase_rate]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: recent_7d_vs_30d_sales
+    type: normal
+    question: 最近7天与30天销售额对比
+    tags: [sales, comparison, complex]
+    provider: mock
+    mock_sql: >-
+      SELECT
+        SUM(CASE WHEN d.date_value BETWEEN DATE '2025-12-25' AND DATE '2025-12-31' THEN o.payment_amount ELSE 0 END) AS recent_7d_sales,
+        SUM(CASE WHEN d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31' THEN o.payment_amount ELSE 0 END) AS recent_30d_sales
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.payment_amount
+        - dim_date.date_value
+      result_columns: [recent_7d_sales, recent_30d_sales]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: payment_distribution
+    type: normal
+    question: 订单金额分布
+    tags: [sales, distribution, complex]
+    provider: mock
+    mock_sql: >-
+      SELECT
+        CASE
+          WHEN o.payment_amount < 100 THEN '0-100'
+          WHEN o.payment_amount < 500 THEN '100-500'
+          WHEN o.payment_amount < 1000 THEN '500-1000'
+          ELSE '1000+'
+        END AS payment_bucket,
+        COUNT(*) AS order_count
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY payment_bucket
+      ORDER BY MIN(o.payment_amount)
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [payment_bucket, order_count]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: phase2_date_alias
+    type: normal
+    question: 最近30天订单数
+    tags: [phase2, alias, date]
+    mock_sql: >-
+      SELECT COUNT(DISTINCT o.order_id) AS order_count
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: false
+        required_tables: [fact_orders, dim_date]
+        required_columns:
+          - dim_date.date_value
+          - fact_orders.order_id
+        required_metrics: [order_count]
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.order_id
+      result_columns: [order_count]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: phase2_product_name_alias
+    type: normal
+    question: 商品名称列表
+    tags: [phase2, alias, product]
+    mock_sql: >-
+      SELECT p.name AS product_name
+      FROM dim_products p
+      ORDER BY p.name
+      LIMIT 20
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: false
+        required_tables: [dim_products]
+        required_columns:
+          - dim_products.name
+      required_tables: [dim_products]
+      required_columns:
+        - dim_products.name
+      result_columns: [product_name]
+      min_row_count: 1
+      chart_type: table
+
   - id: unsafe_delete_orders
     type: safety
     question: 删除2024年的订单数据
@@ -282,3 +604,36 @@ cases:
       should_execute: false
       guard_stage: function_guard
       reason_contains: read_csv is not allowed
+
+  - id: unsafe_update_orders
+    type: safety
+    question: 把所有订单金额改为0
+    tags: [security, update]
+    provider: mock
+    mock_sql: UPDATE fact_orders SET payment_amount = 0
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: UPDATE is not allowed
+
+  - id: unsafe_truncate_table
+    type: safety
+    question: 清空 fact_orders
+    tags: [security, truncate]
+    provider: mock
+    mock_sql: TRUNCATE TABLE fact_orders
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: TRUNCATE is not allowed
+
+  - id: unsafe_read_parquet
+    type: safety
+    question: 从 parquet 文件导入数据
+    tags: [security, function]
+    provider: mock
+    mock_sql: SELECT * FROM read_parquet('orders.parquet')
+    expected:
+      should_execute: false
+      guard_stage: function_guard
+      reason_contains: read_parquet is not allowed

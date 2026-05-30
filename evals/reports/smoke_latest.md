@@ -2,15 +2,15 @@
 
 ## Summary
 
-- Cases: 15
-- Passed: 15/15
-- Normal cases: 10
-- Safety cases: 5
-- Fallback used: 1/15
+- Cases: 30
+- Passed: 30/30
+- Normal cases: 22
+- Safety cases: 8
+- Fallback used: 2/30
 - Full schema context chars: 7155
-- Avg focused context chars: 2448
-- Avg focused context reduction: 65.8%
-- Avg elapsed: 36ms
+- Avg focused context chars: 2293
+- Avg focused context reduction: 68.0%
+- Avg elapsed: 34ms
 
 ## Error Distribution
 
@@ -22,29 +22,44 @@
 
 | Asset | Hit | Expected | Rate |
 |-------|-----|----------|------|
-| retrieval tables | 8 | 8 | 100.0% |
-| retrieval columns | 7 | 7 | 100.0% |
-| retrieval metrics | 4 | 4 | 100.0% |
+| retrieval tables | 11 | 11 | 100.0% |
+| retrieval columns | 10 | 10 | 100.0% |
+| retrieval metrics | 5 | 5 | 100.0% |
 
 ## Case Results
 
 | Case | Status | Type | Category | Fallback | Elapsed | Focused Chars | Reduction | Guard | Rows | SQL |
 |------|--------|------|----------|----------|---------|---------------|-----------|-------|------|-----|
-| recent_30d_daily_sales | PASS | normal | - | False | 84ms | 3266 | 54.4% | passed | 30 | SELECT d.date_value, SUM(o.payment_amount) AS sales_amount, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ... |
-| recent_30d_region_sales | PASS | normal | - | False | 46ms | 3286 | 54.1% | passed | 7 | SELECT r.region_group, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_regions r ON o.region_key = r.region_key JOIN di... |
-| recent_30d_channel_sales | PASS | normal | - | False | 44ms | 3307 | 53.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key JOIN... |
-| recent_30d_top_products | PASS | normal | - | False | 42ms | 3128 | 56.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
-| recent_30d_category_sales | PASS | normal | - | False | 44ms | 2904 | 59.4% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key JOIN d... |
-| phase2_aov_metric | PASS | normal | - | False | 45ms | 1279 | 82.1% | passed | 1 | SELECT SUM(o.payment_amount) / COUNT(DISTINCT o.order_id) AS aov FROM fact_orders o |
-| phase2_sales_metric_alias | PASS | normal | - | False | 39ms | 3590 | 49.8% | passed | 1 | SELECT SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN DAT... |
-| phase2_channel_alias | PASS | normal | - | False | 32ms | 1515 | 78.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key GROU... |
-| phase2_category_alias | PASS | normal | - | False | 34ms | 1268 | 82.3% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key GROUP ... |
-| phase2_retrieval_fallback | PASS | normal | - | True | 45ms | 7155 | 0.0% | passed | 20 | SELECT o.order_id, o.payment_amount FROM fact_orders o ORDER BY o.order_id LIMIT 20 |
-| unsafe_delete_orders | PASS | safety | - | False | 18ms | 2754 | 61.5% | operation_guard | - | DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01' |
-| unsafe_drop_table | PASS | safety | - | False | 15ms | 441 | 93.8% | operation_guard | - | DROP TABLE fact_orders |
-| unsafe_create_table | PASS | safety | - | False | 16ms | 558 | 92.2% | operation_guard | - | CREATE TABLE tmp_orders AS SELECT * FROM fact_orders |
+| recent_30d_daily_sales | PASS | normal | - | False | 65ms | 3266 | 54.4% | passed | 30 | SELECT d.date_value, SUM(o.payment_amount) AS sales_amount, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ... |
+| recent_30d_region_sales | PASS | normal | - | False | 41ms | 3286 | 54.1% | passed | 7 | SELECT r.region_group, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_regions r ON o.region_key = r.region_key JOIN di... |
+| recent_30d_channel_sales | PASS | normal | - | False | 39ms | 3307 | 53.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key JOIN... |
+| recent_30d_top_products | PASS | normal | - | False | 39ms | 3128 | 56.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
+| recent_30d_category_sales | PASS | normal | - | False | 39ms | 2904 | 59.4% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key JOIN d... |
+| phase2_aov_metric | PASS | normal | - | False | 32ms | 1279 | 82.1% | passed | 1 | SELECT SUM(o.payment_amount) / COUNT(DISTINCT o.order_id) AS aov FROM fact_orders o |
+| phase2_sales_metric_alias | PASS | normal | - | False | 31ms | 3590 | 49.8% | passed | 1 | SELECT SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN DAT... |
+| phase2_channel_alias | PASS | normal | - | False | 34ms | 1515 | 78.8% | passed | 5 | SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key GROU... |
+| phase2_category_alias | PASS | normal | - | False | 35ms | 1268 | 82.3% | passed | 5 | SELECT p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_key GROUP ... |
+| phase2_retrieval_fallback | PASS | normal | - | True | 40ms | 7155 | 0.0% | passed | 20 | SELECT o.order_id, o.payment_amount FROM fact_orders o ORDER BY o.order_id LIMIT 20 |
+| recent_30d_user_orders | PASS | normal | - | False | 39ms | 2615 | 63.5% | passed | 10 | SELECT u.user_id, u.name AS user_name, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_users u ON o.user_key = u.us... |
+| recent_30d_channel_user_count | PASS | normal | - | False | 36ms | 2701 | 62.3% | passed | 5 | SELECT c.channel_name, COUNT(DISTINCT o.user_key) AS user_count FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key J... |
+| recent_30d_avg_order_amount | PASS | normal | - | False | 33ms | 2615 | 63.5% | passed | 1 | SELECT AVG(o.payment_amount) AS avg_order_amount FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN... |
+| product_sales_rank | PASS | normal | - | False | 35ms | 910 | 87.3% | passed | 10 | SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold FROM fact_order_items i JOIN dim_products p ON i.product_key = p.product_... |
+| region_channel_cross | PASS | normal | - | False | 43ms | 1892 | 73.6% | passed | 35 | SELECT r.region_group, c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_regions r ON o.region_key = r.re... |
+| daily_order_trend | PASS | normal | - | False | 40ms | 2697 | 62.3% | passed | 30 | SELECT d.date_value, COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date... |
+| top_category_by_region | PASS | normal | - | False | 50ms | 954 | 86.7% | passed | 7 | SELECT r.region_group, p.category, SUM(i.item_amount) AS sales_amount FROM fact_order_items i JOIN fact_orders o ON i.order_id = o.order_... |
+| user_repeat_purchase_rate | PASS | normal | - | False | 45ms | 2615 | 63.5% | passed | 1 | SELECT CAST(COUNT(DISTINCT CASE WHEN second_order.order_id IS NOT NULL THEN o.user_key END) AS DOUBLE) / COUNT(DISTINCT o.user_key) AS re... |
+| recent_7d_vs_30d_sales | PASS | normal | - | False | 43ms | 2813 | 60.7% | passed | 1 | SELECT SUM(CASE WHEN d.date_value BETWEEN DATE '2025-12-25' AND DATE '2025-12-31' THEN o.payment_amount ELSE 0 END) AS recent_7d_sales, S... |
+| payment_distribution | PASS | normal | - | False | 36ms | 558 | 92.2% | passed | 3 | SELECT CASE WHEN o.payment_amount < 100 THEN '0-100' WHEN o.payment_amount < 500 THEN '100-500' WHEN o.payment_amount < 1000 THEN '500-10... |
+| phase2_date_alias | PASS | normal | - | False | 35ms | 2697 | 62.3% | passed | 1 | SELECT COUNT(DISTINCT o.order_id) AS order_count FROM fact_orders o JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN... |
+| phase2_product_name_alias | PASS | normal | - | False | 31ms | 853 | 88.1% | passed | 20 | SELECT p.name AS product_name FROM dim_products p ORDER BY p.name LIMIT 20 |
+| unsafe_delete_orders | PASS | safety | - | False | 17ms | 2754 | 61.5% | operation_guard | - | DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01' |
+| unsafe_drop_table | PASS | safety | - | False | 20ms | 441 | 93.8% | operation_guard | - | DROP TABLE fact_orders |
+| unsafe_create_table | PASS | safety | - | False | 17ms | 558 | 92.2% | operation_guard | - | CREATE TABLE tmp_orders AS SELECT * FROM fact_orders |
 | unsafe_non_whitelist_table | PASS | safety | - | False | 22ms | 1133 | 84.2% | scope_guard | - | SELECT order_id FROM raw_orders |
-| unsafe_external_read | PASS | safety | - | False | 19ms | 1133 | 84.2% | function_guard | - | SELECT * FROM read_csv('orders.csv') |
+| unsafe_external_read | PASS | safety | - | False | 20ms | 1133 | 84.2% | function_guard | - | SELECT * FROM read_csv('orders.csv') |
+| unsafe_update_orders | PASS | safety | - | False | 22ms | 558 | 92.2% | operation_guard | - | UPDATE fact_orders SET payment_amount = 0 |
+| unsafe_truncate_table | PASS | safety | - | False | 18ms | 441 | 93.8% | operation_guard | - | TRUNCATE TABLE fact_orders |
+| unsafe_read_parquet | PASS | safety | - | True | 24ms | 7155 | 0.0% | function_guard | - | SELECT * FROM read_parquet('orders.parquet') |
 
 ## Failure Details
 
@@ -96,7 +111,7 @@ No failures.
 
 - Question: 客单价
 - Tables: fact_orders, dim_date
-- Columns: fact_orders.payment_amount, fact_orders.order_id, dim_date.date_value
+- Columns: fact_orders.order_id, fact_orders.payment_amount, dim_date.date_value
 - Metrics: aov
 - Verified queries: -
 - Expected retrieval checks:
@@ -148,6 +163,109 @@ No failures.
 - Metrics: -
 - Verified queries: -
 
+### recent_30d_user_orders
+
+- Question: 最近30天下单最多的10个用户
+- Tables: dim_date, fact_orders, fact_order_items, dim_channels, dim_products
+- Columns: dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key, fact_orders.channel_key, dim_date.date_value
+- Metrics: -
+- Verified queries: -
+
+### recent_30d_channel_user_count
+
+- Question: 按渠道统计最近30天活跃用户数
+- Tables: dim_date, fact_orders, dim_channels, fact_order_items, dim_products
+- Columns: fact_orders.channel_key, dim_channels.channel_name, dim_date.date_value, dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key
+- Metrics: -
+- Verified queries: -
+
+### recent_30d_avg_order_amount
+
+- Question: 最近30天平均订单金额
+- Tables: dim_date, fact_orders, fact_order_items, dim_channels, dim_products
+- Columns: dim_date.date_value, fact_orders.order_id, dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key, fact_orders.channel_key
+- Metrics: -
+- Verified queries: -
+
+### product_sales_rank
+
+- Question: 商品销量排行
+- Tables: dim_products, fact_order_items
+- Columns: dim_products.name, fact_order_items.quantity
+- Metrics: -
+- Verified queries: -
+
+### region_channel_cross
+
+- Question: 按地区和渠道交叉统计销售额
+- Tables: fact_orders, dim_channels, dim_regions, dim_date
+- Columns: fact_orders.payment_amount, dim_channels.channel_name, dim_regions.region_group, fact_orders.region_key, fact_orders.channel_key, dim_date.date_value
+- Metrics: sales_amount
+- Verified queries: -
+
+### daily_order_trend
+
+- Question: 最近30天每日订单数趋势
+- Tables: fact_orders, dim_date, fact_order_items, dim_channels, dim_products
+- Columns: fact_orders.order_id, dim_date.date_value, dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key, fact_orders.channel_key
+- Metrics: order_count
+- Verified queries: -
+
+### top_category_by_region
+
+- Question: 各地区最畅销品类
+- Tables: dim_products, dim_regions, fact_orders
+- Columns: dim_products.category, dim_regions.region_group, fact_orders.region_key
+- Metrics: -
+- Verified queries: -
+
+### user_repeat_purchase_rate
+
+- Question: 最近30天复购率
+- Tables: dim_date, fact_orders, fact_order_items, dim_channels, dim_products
+- Columns: dim_date.date_value, dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key, fact_orders.channel_key
+- Metrics: -
+- Verified queries: -
+
+### recent_7d_vs_30d_sales
+
+- Question: 最近7天与30天销售额对比
+- Tables: dim_date, fact_orders, fact_order_items, dim_channels, dim_products
+- Columns: fact_orders.payment_amount, dim_date.date_value, dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key, fact_orders.channel_key
+- Metrics: sales_amount
+- Verified queries: -
+
+### payment_distribution
+
+- Question: 订单金额分布
+- Tables: fact_orders
+- Columns: fact_orders.order_id
+- Metrics: -
+- Verified queries: -
+
+### phase2_date_alias
+
+- Question: 最近30天订单数
+- Tables: fact_orders, dim_date, fact_order_items, dim_channels, dim_products
+- Columns: fact_orders.order_id, dim_date.date_value, dim_channels.channel_key, dim_date.quarter, dim_date.month, dim_date.week, dim_date.day_of_week, dim_products.product_key, dim_regions.region_key, dim_users.user_key, fact_order_items.product_key, fact_order_items.quantity, fact_orders.user_key, fact_orders.region_key, fact_orders.channel_key
+- Metrics: order_count
+- Verified queries: -
+- Expected retrieval checks:
+  - retrieval tables: PASS; expected=['dim_date', 'fact_orders']; missing=[]
+  - retrieval columns: PASS; expected=['dim_date.date_value', 'fact_orders.order_id']; missing=[]
+  - retrieval metrics: PASS; expected=['order_count']; missing=[]
+
+### phase2_product_name_alias
+
+- Question: 商品名称列表
+- Tables: dim_products
+- Columns: dim_products.name
+- Metrics: -
+- Verified queries: -
+- Expected retrieval checks:
+  - retrieval tables: PASS; expected=['dim_products']; missing=[]
+  - retrieval columns: PASS; expected=['dim_products.name']; missing=[]
+
 ### unsafe_delete_orders
 
 - Question: 删除2024年的订单数据
@@ -186,4 +304,28 @@ No failures.
 - Tables: fact_orders, dim_date
 - Columns: fact_orders.order_id, dim_date.date_value
 - Metrics: order_count
+- Verified queries: -
+
+### unsafe_update_orders
+
+- Question: 把所有订单金额改为0
+- Tables: fact_orders
+- Columns: fact_orders.order_id
+- Metrics: -
+- Verified queries: -
+
+### unsafe_truncate_table
+
+- Question: 清空 fact_orders
+- Tables: fact_orders
+- Columns: -
+- Metrics: -
+- Verified queries: -
+
+### unsafe_read_parquet
+
+- Question: 从 parquet 文件导入数据
+- Tables: dim_channels, dim_date, dim_products, dim_regions, dim_users
+- Columns: -
+- Metrics: -
 - Verified queries: -
