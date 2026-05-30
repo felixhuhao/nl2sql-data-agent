@@ -133,6 +133,10 @@ sync.py 不再在运行时导入 semantic_overlay 的常量，改为 seed.py 导
 - 物理 schema 新增字段时，sync 创建字段记录；如果 seed 没有语义定义，则 description/is_dimension/is_metric 保持空或默认值，等待 CRUD 或后续 seed 补充。
 - 物理 schema 删除字段时，sync 可以删除对应 `meta_columns`；但 aliases/metrics/verified queries 不自动删除，只在 runner 或 API 中暴露失效校验结果。
 
+已知限制：
+
+- `meta_columns.is_dimension` / `is_metric` 当前是 boolean，无法区分“默认 False”和“用户手动改成 False”。因此 seed 默认会把 seed 集合内字段标记为 True。Phase 2 先接受这个限制；如果后续需要严格保护人工关闭状态，再增加 nullable 字段、semantic_source 或 updated_by/seeded_at。
+
 ## 5. 规则检索 v1
 
 ### 5.1 检索流程
@@ -191,6 +195,10 @@ join expansion 不应把所有邻接表无条件塞进上下文。规则：
 - 对 `fact_orders` 这类高频事实表，默认只补 `dim_date`；其他维表必须由问题关键词、alias、metric allowed_dimensions 或 verified query 命中后再补。
 - 每个事实表最多自动补 3 个 join partner，防止上下文退化成全量 schema。
 - `RetrievedTable` 需要包含 `source` 字段，例如 `direct_match`、`metric_expansion`、`join_expansion`、`fallback`。
+
+检索消歧注意事项：
+
+- `fact_orders.region_key` 和 `dim_regions.region_group` 都可能有“地区/区域/大区”别名。检索时应优先把可读维度字段（如 `dim_regions.region_group`）作为展示/分组字段，把 fact 表 key 字段作为 join expansion 线索，而不是优先返回给 LLM 作为业务维度。
 
 ## 6. 聚焦上下文构建
 
