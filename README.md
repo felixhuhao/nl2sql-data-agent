@@ -121,9 +121,9 @@ python scripts/run_smoke_eval.py
 当前 smoke eval 覆盖：
 
 - 22 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback
-- 8 条安全用例：DELETE、DROP、CREATE、UPDATE、TRUNCATE、非白名单表、外部读取函数
+- 9 条安全用例：DELETE、DROP、CREATE、UPDATE、TRUNCATE、非白名单表、外部读取函数、fanout 风险
 - retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation
-- 错误归因：retrieval_miss、sql_generation_error、sql_invalid、guard_blocked、execution_error、result_mismatch
+- 错误归因：retrieval_miss、sql_generation_error、sql_generation_timeout、sql_generation_mismatch、sql_invalid、guard_blocked、fanout_risk、guard_mismatch、execution_error、result_mismatch、chart_mismatch、explainability_error、explainability_mismatch
 
 通过时输出类似：
 

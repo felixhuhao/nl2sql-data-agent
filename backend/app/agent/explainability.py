@@ -40,6 +40,8 @@ def _extract_sql_assets(sql: str) -> tuple[list[str], list[str]]:
         if column_name == "*":
             continue
         table_name = aliases.get(column.table)
+        if table_name is None and len(tables) == 1:
+            table_name = tables[0]
         columns.append(f"{table_name}.{column_name}" if table_name else column_name)
     return tables, sorted(set(columns))
 

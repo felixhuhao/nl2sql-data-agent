@@ -51,3 +51,18 @@ def test_build_query_explainability_handles_rejected_sql():
     }
     assert result["guard_result"]["allowed"] is False
     assert result["guard_result"]["reason"] == "DELETE is not allowed."
+
+
+def test_build_query_explainability_qualifies_single_table_bare_columns():
+    result = build_query_explainability(
+        sql="SELECT SUM(payment_amount) / COUNT(DISTINCT order_id) AS aov FROM fact_orders LIMIT 500",
+        question="客单价",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql="SELECT 1 LIMIT 500",
+        ),
+    )
+
+    assert result["matched_tables"] == ["fact_orders"]
+    assert result["matched_columns"] == ["fact_orders.order_id", "fact_orders.payment_amount"]

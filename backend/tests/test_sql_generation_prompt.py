@@ -15,8 +15,11 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "DuckDB SQL dialect" in system_prompt
     assert "single SELECT statement" in system_prompt
     assert "Analysis Space" in system_prompt
+    assert "Qualify every physical column" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
+    assert "SUM(fact_order_items.item_amount)" in system_prompt
+    assert "Do not aggregate fact_orders.payment_amount after joining fact_order_items" in system_prompt
 
 
 def test_sql_generation_prompt_includes_schema_context_and_question():

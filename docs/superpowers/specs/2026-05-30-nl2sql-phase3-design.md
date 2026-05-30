@@ -20,7 +20,7 @@
 ## 2. Phase 3 核心能力
 
 1. **Case 扩展到 30+** — 覆盖时间、地区、渠道、品类、客单价、别名、安全拦截、fallback、retrieval 验证
-2. **错误归因分类** — 自动归类为 retrieval miss / sql_invalid / guard_blocked / execution_error / result_mismatch
+2. **错误归因分类** — 自动归类为 retrieval miss / SQL 生成失败或超时 / SQL 语法错误 / Guard 拦截 / fanout 风险 / 执行失败 / 图表或解释信息不匹配
 3. **Real LLM Benchmark** — 支持 DeepSeek provider 批量跑 eval；显式 real 模式无 API key 时直接报错
 4. **Markdown 报告增强** — 输出错误类型分布、per-case 详情（生成 SQL / normalized SQL / 错误原因 / 耗时）
 5. **README 更新** — 展示最新 eval 结果和 Phase 3 能力
@@ -135,21 +135,32 @@ Provider 规则：
 | 错误类型 | 含义 | 判定条件 |
 |---------|------|---------|
 | `retrieval_miss` | 检索未命中必要资产 | retrieval_check 有 missing |
-| `sql_generation_error` | SQL 生成失败或为空 | `_resolve_sql` / provider 抛异常，或 SQL 为空 |
+| `sql_generation_error` | SQL 生成失败或为空 | `_resolve_sql` / provider 抛非 timeout 异常，或 SQL 为空 |
+| `sql_generation_timeout` | SQL 生成超时 | provider 抛 `httpx.ReadTimeout` |
+| `sql_generation_mismatch` | SQL 形态不符合预期 | expected_sql_keywords 缺失 |
 | `sql_invalid` | 生成的 SQL 语法错误 | Guard `syntax_guard` 拒绝 |
 | `guard_blocked` | SQL 被安全规则拦截 | `state.guard_result.allowed = False`（非 safety case 时） |
+| `fanout_risk` | SQL 被 fanout 风险拦截 | Guard `fanout_guard` 拒绝 |
+| `guard_mismatch` | 安全 case 的 Guard 行为不符合预期 | safety case 没被拦、stage 不匹配或 reason 不匹配 |
 | `execution_error` | SQL 执行失败 | `execute_guarded_sql` 抛异常 |
-| `result_mismatch` | 执行成功但结果不符合预期 | columns/row_count/chart 不匹配 |
-| `timeout` | 执行超时 | 超过设定时间 |
+| `result_mismatch` | 执行成功但结果不符合预期 | columns/row_count 不匹配 |
+| `chart_mismatch` | 图表推荐不符合预期 | chart_type 不匹配 |
+| `explainability_error` | 解释信息构建失败 | `build_query_explainability` 抛异常 |
+| `explainability_mismatch` | 解释信息缺必要资产 | tables/columns/join_paths 缺失 |
 
 ### 5.2 归因逻辑
 
 ```
 if retrieval_check has missing → retrieval_miss
+elif SQL resolve/provider times out → sql_generation_timeout
 elif SQL resolve/provider raises or returns blank → sql_generation_error
 elif guard_result.stage == "syntax_guard" → sql_invalid
+elif guard_result.stage == "fanout_guard" → fanout_risk
 elif guard_result.allowed is false and case.type != "safety" → guard_blocked
+elif safety case guard expectation failed → guard_mismatch
 elif execute_guarded_sql raises → execution_error
+elif chart validation failed → chart_mismatch
+elif explainability validation failed → explainability_mismatch
 elif result validation failed → result_mismatch
 else → none (passed)
 ```
@@ -165,6 +176,8 @@ class SmokeResult:
     error_category: str | None = None      # retrieval_miss / sql_generation_error / etc.
     generated_sql: str | None = None       # 实际生成的 SQL（real LLM 模式）
     normalized_sql: str | None = None      # Guard normalized SQL
+    chart_type: str | None = None          # chart recommendation 结果
+    guard_reason: str | None = None        # Guard 拒绝原因
     elapsed_ms: int | None = None          # 耗时
 ```
 

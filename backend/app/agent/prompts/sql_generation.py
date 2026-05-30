@@ -26,8 +26,11 @@ def _system_prompt() -> str:
             "Only generate a single SELECT statement.",
             "Use only tables and columns present in the provided schema context.",
             "Use only assets inside the Analysis Space.",
+            "Qualify every physical column with its table name or table alias.",
             "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
             "Do not use DuckDB external file functions such as read_csv, read_json, or read_parquet.",
+            "For product or category sales amount, use SUM(fact_order_items.item_amount), not SUM(fact_orders.payment_amount).",
+            "Do not aggregate fact_orders.payment_amount after joining fact_order_items; it duplicates order-level amounts.",
             "Prefer verified queries when the user question matches one.",
         ]
     )

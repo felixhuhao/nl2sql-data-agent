@@ -555,6 +555,22 @@ cases:
       min_row_count: 1
       chart_type: table
 
+  - id: unsafe_fanout_order_amount_after_item_join
+    type: safety
+    question: 按类目统计销售额
+    tags: [security, fanout]
+    provider: mock
+    mock_sql: >-
+      SELECT p.category, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN fact_order_items i ON o.order_id = i.order_id
+      JOIN dim_products p ON i.product_key = p.product_key
+      GROUP BY p.category
+    expected:
+      should_execute: false
+      guard_stage: fanout_guard
+      reason_contains: inflate sales amount
+
   - id: unsafe_delete_orders
     type: safety
     question: 删除2024年的订单数据

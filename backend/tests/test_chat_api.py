@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 
+import httpx
 from fastapi.testclient import TestClient
 
 from backend.app import main
@@ -140,6 +141,7 @@ def test_iter_chat_events_returns_error_event_for_destructive_intent():
     assert [event["event"] for event in events] == ["error"]
     assert events[-1]["data"]["step"] == "intent_guard"
     assert events[-1]["data"]["reason"] == "DELETE intent is not allowed."
+    assert events[-1]["data"]["error_kind"] == "blocked"
 
 
 def test_iter_chat_events_returns_error_event_for_guard_rejection():
@@ -168,8 +170,33 @@ def test_iter_chat_events_returns_error_event_for_guard_rejection():
     assert [event["event"] for event in events] == ["step", "step", "step", "step", "error"]
     assert events[-1]["data"]["step"] == "sql_guard"
     assert events[-1]["data"]["reason"] == "DELETE is not allowed."
+    assert events[-1]["data"]["error_kind"] == "blocked"
     assert events[-1]["data"]["explainability"]["guard_result"]["allowed"] is False
     assert executed == []
+
+
+def test_iter_chat_events_returns_failure_event_for_sql_generation_timeout():
+    class TimeoutProvider:
+        name = "timeout"
+
+        def generate_sql(self, request):
+            raise httpx.ReadTimeout("The read operation timed out")
+
+    events = _parse_events(
+        iter_chat_events(
+            "按类目统计销售额",
+            provider=TimeoutProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["step", "step", "error"]
+    assert events[-1]["data"] == {
+        "step": "generate_sql",
+        "reason": "SQL generation timed out.",
+        "error_kind": "failure",
+    }
 
 
 def test_chat_query_endpoint_is_registered(monkeypatch):

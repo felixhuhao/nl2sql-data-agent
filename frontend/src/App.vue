@@ -55,6 +55,7 @@ const question = ref("查询最近30天每日销售额和订单数");
 const isSubmitting = ref(false);
 const errorMessage = ref("");
 const errorStep = ref("");
+const errorKind = ref<"blocked" | "failure">("failure");
 const stepStates = ref(createStepStates());
 const sql = ref("");
 const summary = ref("");
@@ -111,6 +112,7 @@ async function submitQuestion() {
   isSubmitting.value = true;
   errorMessage.value = "";
   errorStep.value = "";
+  errorKind.value = "failure";
   stepStates.value = createStepStates();
   setStepStatus("intent_guard", "running");
   sql.value = "";
@@ -137,6 +139,8 @@ async function submitQuestion() {
 
     await readSseStream(response.body);
   } catch (error) {
+    failStep(undefined);
+    errorKind.value = "failure";
     errorMessage.value = error instanceof Error ? error.message : "请求失败";
   } finally {
     isSubmitting.value = false;
@@ -184,15 +188,31 @@ function completeStep(stepId: WorkflowStepId) {
 }
 
 function failStep(stepId: string | undefined) {
-  const matchedStep = stepStates.value.find((step) => step.id === stepId);
-  if (matchedStep) {
-    matchedStep.status = "error";
+  const matchedIndex = stepStates.value.findIndex((step) => step.id === stepId);
+  if (matchedIndex >= 0) {
+    stepStates.value = stepStates.value.map((step, index) => {
+      if (index === matchedIndex) {
+        return { ...step, status: "error" };
+      }
+      if (index > matchedIndex) {
+        return { ...step, status: "pending" };
+      }
+      return step;
+    });
     return;
   }
 
-  const runningStep = stepStates.value.find((step) => step.status === "running");
-  if (runningStep) {
-    runningStep.status = "error";
+  const runningIndex = stepStates.value.findIndex((step) => step.status === "running");
+  if (runningIndex >= 0) {
+    stepStates.value = stepStates.value.map((step, index) => {
+      if (index === runningIndex) {
+        return { ...step, status: "error" };
+      }
+      if (index > runningIndex) {
+        return { ...step, status: "pending" };
+      }
+      return step;
+    });
   }
 }
 
@@ -279,6 +299,7 @@ function handleSseChunk(chunk: string) {
   if (event === "error") {
     failStep(payload.step);
     errorStep.value = payload.step ?? "";
+    errorKind.value = payload.error_kind === "blocked" ? "blocked" : "failure";
     errorMessage.value = payload.reason ?? "请求失败";
     explainability.value = payload.explainability ?? null;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
@@ -413,7 +434,7 @@ function switchView(view: "chat" | "admin") {
 
             <div v-else class="answer-stack">
               <section v-if="errorMessage" class="error-message">
-                <h2>请求被拒绝</h2>
+                <h2>{{ errorKind === "blocked" ? "请求被拒绝" : "请求失败" }}</h2>
                 <p>{{ errorMessage }}</p>
                 <dl v-if="guardResult || errorStep" class="detail-list">
                   <div v-if="errorStep">

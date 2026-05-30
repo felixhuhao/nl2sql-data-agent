@@ -2,6 +2,7 @@ import json
 import logging
 from collections.abc import Iterator
 
+import httpx
 from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
@@ -58,6 +59,7 @@ def iter_chat_events(
                 {
                     "step": state.stopped_at,
                     "reason": state.error,
+                    "error_kind": "blocked",
                 },
             )
             return
@@ -97,6 +99,7 @@ def iter_chat_events(
                 {
                     "step": state.stopped_at,
                     "reason": state.error,
+                    "error_kind": "blocked",
                     "explainability": state.explainability,
                 },
             )
@@ -145,6 +148,16 @@ def iter_chat_events(
                 "explainability": state.explainability,
             },
         )
+    except httpx.ReadTimeout:
+        logger.exception("Chat query timed out during SQL generation")
+        yield _sse_event(
+            "error",
+            {
+                "step": "generate_sql",
+                "reason": "SQL generation timed out.",
+                "error_kind": "failure",
+            },
+        )
     except Exception as exc:
         logger.exception("Chat query failed")
         yield _sse_event(
@@ -152,6 +165,7 @@ def iter_chat_events(
             {
                 "step": state.completed_steps[-1] if state.completed_steps else "unknown",
                 "reason": str(exc),
+                "error_kind": "failure",
             },
         )
 

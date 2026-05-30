@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -53,6 +54,8 @@ class SmokeResult:
     error_category: str | None = None
     generated_sql: str | None = None
     normalized_sql: str | None = None
+    chart_type: str | None = None
+    guard_reason: str | None = None
     elapsed_ms: int | None = None
 
     def fail(self, message: str, error_category: str | None = None) -> None:
@@ -184,6 +187,9 @@ def _run_case(
                 provider=provider,
                 provider_name=provider_name,
             )
+        except httpx.ReadTimeout as exc:
+            result.fail(f"SQL generation timed out: {exc}", "sql_generation_timeout")
+            return result
         except Exception as exc:
             result.fail(f"SQL generation failed: {exc}", "sql_generation_error")
             return result
@@ -201,6 +207,7 @@ def _run_case(
             return result
 
         result.guard_stage = guard_result.stage
+        result.guard_reason = guard_result.reason
         result.normalized_sql = guard_result.normalized_sql
         try:
             explainability = build_query_explainability(
@@ -209,7 +216,7 @@ def _run_case(
                 guard_result=guard_result,
             )
         except Exception as exc:
-            result.fail(f"explainability failed: {exc}", "result_mismatch")
+            result.fail(f"explainability failed: {exc}", "explainability_error")
             return result
 
         if expected.get("should_execute") is False:
@@ -217,7 +224,7 @@ def _run_case(
             return result
 
         if not guard_result.allowed:
-            error_category = "sql_invalid" if guard_result.stage == "syntax_guard" else "guard_blocked"
+            error_category = _guard_error_category(guard_result.stage)
             result.fail(
                 f"expected execution, but Guard rejected SQL: {guard_result.reason}",
                 error_category,
@@ -232,6 +239,7 @@ def _run_case(
 
         result.row_count = query_result.row_count
         chart_recommendation = recommend_chart(query_result)
+        result.chart_type = chart_recommendation.chart_type
 
         _validate_normal_case(
             result=result,
@@ -329,21 +337,21 @@ def _validate_retrieval(
 
 def _validate_safety_case(result: SmokeResult, guard_result, expected: dict[str, Any]) -> None:
     if guard_result.allowed:
-        result.fail("expected Guard rejection, but SQL was allowed", "guard_blocked")
+        result.fail("expected Guard rejection, but SQL was allowed", "guard_mismatch")
         return
 
     expected_stage = expected.get("guard_stage")
     if expected_stage and guard_result.stage != expected_stage:
         result.fail(
             f"expected Guard stage {expected_stage}, got {guard_result.stage}",
-            "guard_blocked",
+            "guard_mismatch",
         )
 
     reason_contains = expected.get("reason_contains")
     if reason_contains and reason_contains not in (guard_result.reason or ""):
         result.fail(
             f"expected reason to contain {reason_contains!r}, got {guard_result.reason!r}",
-            "guard_blocked",
+            "guard_mismatch",
         )
 
 
@@ -371,7 +379,7 @@ def _validate_normal_case(
         if missing_keywords:
             result.fail(
                 f"missing expected SQL keywords: {missing_keywords}",
-                "result_mismatch",
+                "sql_generation_mismatch",
             )
 
     expected_columns = expected.get("result_columns") or []
@@ -392,7 +400,7 @@ def _validate_normal_case(
     if expected_chart_type and chart_type != expected_chart_type:
         result.fail(
             f"expected chart type {expected_chart_type}, got {chart_type}",
-            "result_mismatch",
+            "chart_mismatch",
         )
 
     _validate_subset(
@@ -400,18 +408,21 @@ def _validate_normal_case(
         label="tables",
         expected=expected.get("required_tables") or [],
         actual=explainability.get("matched_tables") or [],
+        error_category="explainability_mismatch",
     )
     _validate_subset(
         result,
         label="columns",
         expected=expected.get("required_columns") or [],
         actual=explainability.get("matched_columns") or [],
+        error_category="explainability_mismatch",
     )
     _validate_subset(
         result,
         label="join paths",
         expected=expected.get("join_paths") or [],
         actual=[_format_join_path(path) for path in explainability.get("join_paths") or []],
+        error_category="explainability_mismatch",
     )
 
 
@@ -420,10 +431,11 @@ def _validate_subset(
     label: str,
     expected: list[str],
     actual: list[str],
+    error_category: str = "result_mismatch",
 ) -> None:
     missing = sorted(set(expected) - set(actual))
     if missing:
-        result.fail(f"missing expected {label}: {missing}; actual={actual}", "result_mismatch")
+        result.fail(f"missing expected {label}: {missing}; actual={actual}", error_category)
 
 
 def _validate_retrieval_subset(
@@ -445,6 +457,14 @@ def _validate_retrieval_subset(
     )
     if missing:
         result.fail(f"missing expected {label}: {missing}; actual={actual}", "retrieval_miss")
+
+
+def _guard_error_category(stage: str | None) -> str:
+    if stage == "syntax_guard":
+        return "sql_invalid"
+    if stage == "fanout_guard":
+        return "fanout_risk"
+    return "guard_blocked"
 
 
 def _format_join_path(path: dict[str, Any]) -> str:
@@ -508,6 +528,7 @@ def _render_report(
     summary = _summary_metrics(results)
     retrieval_stats = _retrieval_stats(results)
     error_distribution = _error_distribution(results)
+    chart_distribution = _chart_distribution(results)
     lines = [
         "# Smoke Eval Report",
         "",
@@ -524,6 +545,7 @@ def _render_report(
         f"- Avg focused context chars: {summary['avg_focused_context_chars']}",
         f"- Avg focused context reduction: {_format_percent(summary['avg_context_reduction_ratio'])}",
         f"- Avg elapsed: {_format_elapsed(summary['avg_elapsed_ms'])}",
+        f"- Chart recommendations: {_format_distribution(chart_distribution)}",
         "",
         "## Error Distribution",
         "",
@@ -568,8 +590,8 @@ def _render_report(
             "",
             "## Case Results",
             "",
-            "| Case | Status | Type | Category | Fallback | Elapsed | Focused Chars | Reduction | Guard | Rows | SQL |",
-            "|------|--------|------|----------|----------|---------|---------------|-----------|-------|------|-----|",
+            "| Case | Status | Type | Category | Fallback | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
+            "|------|--------|------|----------|----------|---------|---------------|-----------|-------|------|-------|-----|",
         ]
     )
     for result in results:
@@ -587,6 +609,7 @@ def _render_report(
                     _format_percent(result.context_reduction_ratio),
                     _md_cell(result.guard_stage or "-"),
                     str(result.row_count) if result.row_count is not None else "-",
+                    _md_cell(result.chart_type or "-"),
                     _md_cell(_short_sql(result.generated_sql) or "-"),
                 ]
             )
@@ -605,6 +628,8 @@ def _render_report(
                     f"- Category: {result.error_category or '-'}",
                     f"- Elapsed: {_format_elapsed(result.elapsed_ms)}",
                     f"- Guard: {result.guard_stage or '-'}",
+                    f"- Guard reason: {result.guard_reason or '-'}",
+                    f"- Chart: {result.chart_type or '-'}",
                     f"- Retrieved tables: {', '.join(result.retrieval_tables) or '-'}",
                     f"- Retrieved metrics: {', '.join(result.retrieval_metrics) or '-'}",
                 ]
@@ -692,6 +717,21 @@ def _error_distribution(results: list[SmokeResult]) -> dict[str, list[str]]:
         category = result.error_category or "unknown"
         distribution.setdefault(category, []).append(result.case_id)
     return distribution
+
+
+def _chart_distribution(results: list[SmokeResult]) -> dict[str, int]:
+    distribution: dict[str, int] = {}
+    for result in results:
+        if result.chart_type is None:
+            continue
+        distribution[result.chart_type] = distribution.get(result.chart_type, 0) + 1
+    return distribution
+
+
+def _format_distribution(distribution: dict[str, int]) -> str:
+    if not distribution:
+        return "-"
+    return ", ".join(f"{key}={value}" for key, value in sorted(distribution.items()))
 
 
 def _average_int(values: list[int]) -> int:

@@ -146,6 +146,38 @@ def test_cte_inner_non_whitelist_column_is_rejected():
     assert result.reason == "Column secret_note is not allowed."
 
 
+def test_order_level_amount_after_item_join_is_rejected():
+    result = guard_sql(
+        """
+        SELECT p.category, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN fact_order_items i ON o.order_id = i.order_id
+        JOIN dim_products p ON i.product_key = p.product_key
+        GROUP BY p.category
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is False
+    assert result.stage == "fanout_guard"
+    assert result.reason == "Aggregating fact_orders.payment_amount after joining fact_order_items can inflate sales amount."
+
+
+def test_item_level_amount_after_item_join_passes():
+    result = guard_sql(
+        """
+        SELECT p.category, SUM(i.item_amount) AS sales_amount
+        FROM fact_order_items i
+        JOIN dim_products p ON i.product_key = p.product_key
+        GROUP BY p.category
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is True
+    assert result.stage == "passed"
+
+
 def test_build_default_guard_scope_reads_analysis_space_from_db(monkeypatch):
     engine = _patch_scope_db(monkeypatch)
     with Session(engine) as session:
@@ -190,7 +222,7 @@ def test_build_default_guard_scope_handles_empty_analysis_space(monkeypatch):
 
 def _scope() -> GuardScope:
     return GuardScope(
-        allowed_tables=frozenset({"fact_orders", "dim_date", "dim_regions"}),
+        allowed_tables=frozenset({"fact_orders", "fact_order_items", "dim_date", "dim_regions", "dim_products"}),
         table_columns={
             "fact_orders": frozenset(
                 {
@@ -200,8 +232,10 @@ def _scope() -> GuardScope:
                     "payment_amount",
                 }
             ),
+            "fact_order_items": frozenset({"order_id", "product_key", "item_amount"}),
             "dim_date": frozenset({"date_key", "date_value"}),
             "dim_regions": frozenset({"region_key", "region_name"}),
+            "dim_products": frozenset({"product_key", "category"}),
         },
     )
 

@@ -54,6 +54,10 @@ def guard_sql(sql: str, scope: GuardScope | None = None) -> GuardResult:
         if scope_result is not None:
             return scope_result
 
+    fanout_result = _check_fanout_risk(expression)
+    if fanout_result is not None:
+        return fanout_result
+
     cost_result = _apply_cost_guard(expression)
     if isinstance(cost_result, GuardResult):
         return cost_result
@@ -138,6 +142,26 @@ def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult |
                 return result
 
     return None
+
+
+def _check_fanout_risk(expression: exp.Expression) -> GuardResult | None:
+    for select in expression.find_all(exp.Select):
+        physical_aliases, _ = _select_table_context(select, _cte_names(expression))
+        referenced_tables = set(physical_aliases.values())
+        if {"fact_orders", "fact_order_items"}.issubset(referenced_tables) and _select_aggregates_order_amount(select):
+            return _reject(
+                "fanout_guard",
+                "Aggregating fact_orders.payment_amount after joining fact_order_items can inflate sales amount.",
+            )
+    return None
+
+
+def _select_aggregates_order_amount(select: exp.Select) -> bool:
+    for aggregate in select.find_all(exp.AggFunc):
+        for column in aggregate.find_all(exp.Column):
+            if column.name == "payment_amount" and _nearest_select(column) is select:
+                return True
+    return False
 
 
 def _apply_cost_guard(expression: exp.Expression) -> tuple[exp.Expression, list[str]] | GuardResult:
