@@ -4,9 +4,11 @@
 
 __pycache__/
 *.py[cod]
+*.tsbuildinfo
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.npm-cache/
 .venv/
 venv/
 
