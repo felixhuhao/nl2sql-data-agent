@@ -255,6 +255,14 @@ textarea {
   border-radius: 8px;
 }
 
+.chart-canvas {
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid #d5dce7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 .table-section table {
   width: 100%;
   border-collapse: collapse;

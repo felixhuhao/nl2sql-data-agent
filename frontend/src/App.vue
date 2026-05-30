@@ -1,6 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { LineChart } from "echarts/charts";
+import {
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+} from "echarts/components";
+import * as echarts from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { API_BASE_URL } from "./api/config";
+
+echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const workflowSteps = [
   { id: "build_context", label: "构建上下文" },
@@ -27,6 +37,12 @@ type Explainability = {
   date_interpretation?: Record<string, unknown>;
   guard_result?: GuardResult | null;
 };
+type ChartRecommendation = {
+  chart_type?: string;
+  x_column?: string | null;
+  y_columns?: string[];
+  reason?: string;
+};
 
 const question = ref("查询最近30天每日销售额和订单数");
 const isSubmitting = ref(false);
@@ -39,6 +55,8 @@ const rows = ref<unknown[][]>([]);
 const columns = ref<string[]>([]);
 const explainability = ref<Explainability | null>(null);
 const guardResult = ref<GuardResult | null>(null);
+const chartRecommendation = ref<ChartRecommendation | null>(null);
+const chartContainer = ref<HTMLDivElement | null>(null);
 const apiTarget = computed(() => `${API_BASE_URL || "same origin"}/api/chat/query`);
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -48,6 +66,23 @@ const hasActivity = computed(
     Boolean(summary.value) ||
     Boolean(errorMessage.value),
 );
+const canRenderLineChart = computed(
+  () =>
+    chartRecommendation.value?.chart_type === "line" &&
+    Boolean(chartRecommendation.value.x_column) &&
+    Boolean(chartRecommendation.value.y_columns?.length) &&
+    rows.value.length > 0,
+);
+let chartInstance: echarts.ECharts | null = null;
+
+onMounted(() => {
+  window.addEventListener("resize", resizeChart);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", resizeChart);
+  disposeChart();
+});
 
 async function submitQuestion() {
   if (!canSubmit.value) {
@@ -65,6 +100,8 @@ async function submitQuestion() {
   columns.value = [];
   explainability.value = null;
   guardResult.value = null;
+  chartRecommendation.value = null;
+  disposeChart();
 
   try {
     const response = await fetch(`${API_BASE_URL}/api/chat/query`, {
@@ -202,8 +239,10 @@ function handleSseChunk(chunk: string) {
     summary.value = payload.summary ?? "";
     columns.value = payload.result?.columns ?? [];
     rows.value = payload.result?.rows ?? [];
+    chartRecommendation.value = payload.chart_recommendation ?? null;
     explainability.value = payload.explainability ?? null;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
+    void nextTick(renderLineChart);
   }
   if (event === "error") {
     failStep(payload.step);
@@ -211,7 +250,74 @@ function handleSseChunk(chunk: string) {
     errorMessage.value = payload.reason ?? "请求失败";
     explainability.value = payload.explainability ?? null;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
+    chartRecommendation.value = null;
+    disposeChart();
   }
+}
+
+function renderLineChart() {
+  if (!canRenderLineChart.value || !chartContainer.value || !chartRecommendation.value) {
+    disposeChart();
+    return;
+  }
+
+  const xColumn = chartRecommendation.value.x_column;
+  const yColumns = chartRecommendation.value.y_columns ?? [];
+  if (!xColumn) {
+    disposeChart();
+    return;
+  }
+
+  const xIndex = columns.value.indexOf(xColumn);
+  const yIndexes = yColumns
+    .map((column) => ({ column, index: columns.value.indexOf(column) }))
+    .filter((item) => item.index >= 0);
+  if (xIndex < 0 || !yIndexes.length) {
+    disposeChart();
+    return;
+  }
+
+  chartInstance ??= echarts.init(chartContainer.value);
+  chartInstance.setOption({
+    color: ["#235789", "#2e7d5b", "#b7791f"],
+    grid: {
+      top: 28,
+      right: 20,
+      bottom: 36,
+      left: 56,
+    },
+    tooltip: {
+      trigger: "axis",
+    },
+    legend: {
+      top: 0,
+      right: 0,
+    },
+    xAxis: {
+      type: "category",
+      data: rows.value.map((row) => String(row[xIndex] ?? "")),
+    },
+    yAxis: {
+      type: "value",
+    },
+    series: yIndexes.map(({ column, index }) => ({
+      name: column,
+      type: "line",
+      smooth: true,
+      symbolSize: 5,
+      data: rows.value.map((row) => Number(row[index] ?? 0)),
+    })),
+  });
+  resizeChart();
+}
+
+function resizeChart() {
+  chartInstance?.resize();
+}
+
+function disposeChart() {
+  chartInstance?.dispose();
+  chartInstance = null;
 }
 </script>
 
@@ -289,6 +395,11 @@ function handleSseChunk(chunk: string) {
               <section v-if="summary" class="answer-section">
                 <h2>回答</h2>
                 <p>{{ summary }}</p>
+              </section>
+
+              <section v-if="canRenderLineChart" class="answer-section chart-section">
+                <h2>图表</h2>
+                <div ref="chartContainer" class="chart-canvas" />
               </section>
 
               <section v-if="rows.length" class="answer-section table-section">

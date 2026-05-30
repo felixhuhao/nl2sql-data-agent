@@ -9,6 +9,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .npm-cache/
+.edge-headless/
 .venv/
 venv/
 
