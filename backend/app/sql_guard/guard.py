@@ -7,9 +7,11 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from backend.app.sql_guard.models import GuardResult
+from backend.app.sql_guard.scope import GuardScope
 
 
 DIALECT = "duckdb"
+MAX_RESULT_ROWS = 500
 BLOCKED_COMMANDS = {
     "ALTER",
     "COPY",
@@ -30,7 +32,7 @@ BLOCKED_FUNCTION_RE = re.compile(
 )
 
 
-def guard_sql(sql: str) -> GuardResult:
+def guard_sql(sql: str, scope: GuardScope | None = None) -> GuardResult:
     statements = _parse_statements(sql)
     if isinstance(statements, GuardResult):
         return statements
@@ -47,10 +49,21 @@ def guard_sql(sql: str) -> GuardResult:
     if function_result is not None:
         return function_result
 
+    if scope is not None:
+        scope_result = _check_scope(expression, scope)
+        if scope_result is not None:
+            return scope_result
+
+    cost_result = _apply_cost_guard(expression)
+    if isinstance(cost_result, GuardResult):
+        return cost_result
+    expression, warnings = cost_result
+
     return GuardResult(
         allowed=True,
         stage="passed",
         normalized_sql=expression.sql(dialect=DIALECT),
+        warnings=warnings,
     )
 
 
@@ -94,6 +107,131 @@ def _check_functions(sql: str, expression: exp.Expression) -> GuardResult | None
         name = table.name.lower()
         if name in BLOCKED_FUNCTIONS:
             return _reject("function_guard", f"{name} is not allowed.")
+    return None
+
+
+def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult | None:
+    table_aliases = _table_aliases(expression)
+    referenced_tables = set(table_aliases.values())
+    projection_aliases = _projection_aliases(expression)
+
+    for table_name in sorted(referenced_tables):
+        if table_name not in scope.allowed_tables:
+            return _reject("scope_guard", f"Table {table_name} is not allowed.")
+
+    for column in expression.find_all(exp.Column):
+        result = _check_column_scope(
+            column,
+            table_aliases,
+            referenced_tables,
+            projection_aliases,
+            scope,
+        )
+        if result is not None:
+            return result
+
+    return None
+
+
+def _apply_cost_guard(expression: exp.Expression) -> tuple[exp.Expression, list[str]] | GuardResult:
+    limit = expression.args.get("limit")
+    if limit is None:
+        return (
+            expression.limit(MAX_RESULT_ROWS),
+            [f"LIMIT {MAX_RESULT_ROWS} was added automatically."],
+        )
+
+    limit_value = _limit_value(limit)
+    if limit_value is None:
+        return _reject("cost_guard", "LIMIT must be an integer literal.")
+    if limit_value < 0:
+        return _reject("cost_guard", "LIMIT must be non-negative.")
+    if limit_value > MAX_RESULT_ROWS:
+        limit.set("expression", exp.Literal.number(MAX_RESULT_ROWS))
+        return (
+            expression,
+            [f"LIMIT {limit_value} was capped to {MAX_RESULT_ROWS}."],
+        )
+
+    return expression, []
+
+
+def _limit_value(limit: exp.Limit) -> int | None:
+    limit_expression = limit.args.get("expression")
+    if isinstance(limit_expression, exp.Neg):
+        positive_value = _literal_int(limit_expression.this)
+        if positive_value is None:
+            return None
+        return -positive_value
+    return _literal_int(limit_expression)
+
+
+def _literal_int(expression: exp.Expression | None) -> int | None:
+    if not isinstance(expression, exp.Literal) or expression.is_string:
+        return None
+    try:
+        return int(expression.this)
+    except (TypeError, ValueError):
+        return None
+
+
+def _table_aliases(expression: exp.Expression) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for table in expression.find_all(exp.Table):
+        table_name = table.name
+        aliases[table_name] = table_name
+        aliases[table.alias_or_name] = table_name
+    return aliases
+
+
+def _projection_aliases(expression: exp.Expression) -> set[str]:
+    aliases: set[str] = set()
+    for projection in expression.expressions:
+        alias = projection.alias
+        if alias:
+            aliases.add(alias)
+    return aliases
+
+
+def _check_column_scope(
+    column: exp.Column,
+    table_aliases: dict[str, str],
+    referenced_tables: set[str],
+    projection_aliases: set[str],
+    scope: GuardScope,
+) -> GuardResult | None:
+    column_name = column.name
+    if column_name == "*":
+        return _check_star_scope(column, table_aliases)
+
+    qualifier = column.table
+    if qualifier:
+        table_name = table_aliases.get(qualifier)
+        if table_name is None:
+            return _reject("scope_guard", f"Unknown table qualifier {qualifier}.")
+        if column_name not in scope.columns_for_table(table_name):
+            return _reject("scope_guard", f"Column {table_name}.{column_name} is not allowed.")
+        return None
+
+    if column_name in projection_aliases:
+        return None
+
+    matching_tables = [
+        table_name
+        for table_name in sorted(referenced_tables)
+        if column_name in scope.columns_for_table(table_name)
+    ]
+    if len(matching_tables) == 1:
+        return None
+    if len(matching_tables) > 1:
+        return _reject("scope_guard", f"Column {column_name} is ambiguous.")
+    return _reject("scope_guard", f"Column {column_name} is not allowed.")
+
+
+def _check_star_scope(column: exp.Column, table_aliases: dict[str, str]) -> GuardResult | None:
+    qualifier = column.table
+    if qualifier and qualifier not in table_aliases:
+        return _reject("scope_guard", f"Unknown table qualifier {qualifier}.")
     return None
 
 
