@@ -13,15 +13,32 @@ const workflowSteps = [
 
 type WorkflowStepId = (typeof workflowSteps)[number]["id"];
 type StepStatus = "pending" | "running" | "completed" | "error";
+type GuardResult = {
+  allowed?: boolean;
+  stage?: string;
+  normalized_sql?: string | null;
+  reason?: string | null;
+  warnings?: string[];
+};
+type Explainability = {
+  matched_tables?: string[];
+  matched_columns?: string[];
+  join_paths?: Record<string, any>[];
+  date_interpretation?: Record<string, unknown>;
+  guard_result?: GuardResult | null;
+};
 
 const question = ref("查询最近30天每日销售额和订单数");
 const isSubmitting = ref(false);
 const errorMessage = ref("");
+const errorStep = ref("");
 const stepStates = ref(createStepStates());
 const sql = ref("");
 const summary = ref("");
 const rows = ref<unknown[][]>([]);
 const columns = ref<string[]>([]);
+const explainability = ref<Explainability | null>(null);
+const guardResult = ref<GuardResult | null>(null);
 const apiTarget = computed(() => `${API_BASE_URL || "same origin"}/api/chat/query`);
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -39,12 +56,15 @@ async function submitQuestion() {
 
   isSubmitting.value = true;
   errorMessage.value = "";
+  errorStep.value = "";
   stepStates.value = createStepStates();
   setStepStatus("build_context", "running");
   sql.value = "";
   summary.value = "";
   rows.value = [];
   columns.value = [];
+  explainability.value = null;
+  guardResult.value = null;
 
   try {
     const response = await fetch(`${API_BASE_URL}/api/chat/query`, {
@@ -107,6 +127,21 @@ function failStep(stepId: string | undefined) {
   }
 }
 
+function formatJoinPath(path: Record<string, any>) {
+  const sourceTable = path.source_table ?? path.left_table;
+  const targetTable = path.target_table ?? path.right_table;
+  const sourceColumn = path.source_column ?? path.left_column;
+  const targetColumn = path.target_column ?? path.right_column;
+
+  if (sourceTable && targetTable && sourceColumn && targetColumn) {
+    return `${sourceTable}.${sourceColumn} -> ${targetTable}.${targetColumn}`;
+  }
+  if (sourceTable && targetTable) {
+    return `${sourceTable} -> ${targetTable}`;
+  }
+  return JSON.stringify(path);
+}
+
 async function readSseStream(body: ReadableStream<Uint8Array>) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -157,6 +192,9 @@ function handleSseChunk(chunk: string) {
 
   if (event === "step") {
     completeStep(payload.step);
+    if (payload.guard_result) {
+      guardResult.value = payload.guard_result;
+    }
   }
   if (event === "done") {
     stepStates.value = stepStates.value.map((step) => ({ ...step, status: "completed" }));
@@ -164,10 +202,15 @@ function handleSseChunk(chunk: string) {
     summary.value = payload.summary ?? "";
     columns.value = payload.result?.columns ?? [];
     rows.value = payload.result?.rows ?? [];
+    explainability.value = payload.explainability ?? null;
+    guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
   }
   if (event === "error") {
     failStep(payload.step);
+    errorStep.value = payload.step ?? "";
     errorMessage.value = payload.reason ?? "请求失败";
+    explainability.value = payload.explainability ?? null;
+    guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
   }
 }
 </script>
@@ -206,7 +249,24 @@ function handleSseChunk(chunk: string) {
             </div>
 
             <div v-else class="answer-stack">
-              <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
+              <section v-if="errorMessage" class="error-message">
+                <h2>请求被拒绝</h2>
+                <p>{{ errorMessage }}</p>
+                <dl v-if="guardResult || errorStep" class="detail-list">
+                  <div v-if="errorStep">
+                    <dt>步骤</dt>
+                    <dd>{{ errorStep }}</dd>
+                  </div>
+                  <div v-if="guardResult?.stage">
+                    <dt>Guard 阶段</dt>
+                    <dd>{{ guardResult.stage }}</dd>
+                  </div>
+                  <div v-if="guardResult?.reason">
+                    <dt>原因</dt>
+                    <dd>{{ guardResult.reason }}</dd>
+                  </div>
+                </dl>
+              </section>
 
               <section v-if="hasActivity" class="answer-section">
                 <h2>步骤流</h2>
@@ -249,6 +309,80 @@ function handleSseChunk(chunk: string) {
                     </tbody>
                   </table>
                 </div>
+              </section>
+
+              <section v-if="explainability" class="answer-section explain-section">
+                <h2>解释信息</h2>
+                <dl class="detail-list">
+                  <div v-if="explainability.matched_tables?.length">
+                    <dt>命中表</dt>
+                    <dd>
+                      <span
+                        v-for="table in explainability.matched_tables"
+                        :key="table"
+                        class="info-chip"
+                      >
+                        {{ table }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div v-if="explainability.matched_columns?.length">
+                    <dt>命中字段</dt>
+                    <dd>
+                      <span
+                        v-for="column in explainability.matched_columns"
+                        :key="column"
+                        class="info-chip"
+                      >
+                        {{ column }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div v-if="explainability.join_paths?.length">
+                    <dt>Join Path</dt>
+                    <dd>
+                      <span
+                        v-for="joinPath in explainability.join_paths"
+                        :key="formatJoinPath(joinPath)"
+                        class="info-chip"
+                      >
+                        {{ formatJoinPath(joinPath) }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div v-if="explainability.date_interpretation">
+                    <dt>时间解释</dt>
+                    <dd>
+                      <pre>{{ JSON.stringify(explainability.date_interpretation, null, 2) }}</pre>
+                    </dd>
+                  </div>
+                  <div v-if="guardResult">
+                    <dt>Guard 结果</dt>
+                    <dd>
+                      <span :class="['guard-pill', guardResult.allowed ? 'passed' : 'blocked']">
+                        {{ guardResult.allowed ? "passed" : "blocked" }}
+                      </span>
+                      <span
+                        v-if="guardResult.stage && guardResult.stage !== 'passed'"
+                        class="info-chip"
+                      >
+                        {{ guardResult.stage }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div v-if="guardResult?.warnings?.length">
+                    <dt>Guard 提示</dt>
+                    <dd>
+                      <span
+                        v-for="warning in guardResult.warnings"
+                        :key="warning"
+                        class="info-chip"
+                      >
+                        {{ warning }}
+                      </span>
+                    </dd>
+                  </div>
+                </dl>
               </section>
             </div>
           </div>

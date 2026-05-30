@@ -55,7 +55,27 @@ def _match_verified_query(question: str):
         verified_question = _normalize_text(query.question)
         if normalized_question == verified_question:
             return query
-        if "最近30天" in normalized_question and {"销售额", "订单数"}.issubset(set(_question_terms(normalized_question))):
+        query_tags = set(query.tags)
+        question_terms = set(_question_terms(normalized_question))
+        if "最近30天" in normalized_question and {"sales", "time_series"}.issubset(query_tags) and {
+            "销售额",
+            "订单数",
+        }.issubset(question_terms):
+            return query
+        if "最近30天" in normalized_question and {"sales", "region"}.issubset(query_tags) and {
+            "地区",
+            "销售额",
+        }.issubset(question_terms):
+            return query
+        if "最近30天" in normalized_question and {"sales", "channel"}.issubset(query_tags) and {
+            "渠道",
+            "销售额",
+        }.issubset(question_terms):
+            return query
+        if "最近30天" in normalized_question and {"product", "topn"}.issubset(query_tags) and {
+            "商品",
+            "销量",
+        }.issubset(question_terms):
             return query
     return None
 
@@ -76,4 +96,4 @@ def _normalize_text(text: str) -> str:
 
 
 def _question_terms(text: str) -> tuple[str, ...]:
-    return tuple(term for term in ("最近30天", "销售额", "订单数") if term in text)
+    return tuple(term for term in ("最近30天", "销售额", "订单数", "地区", "渠道", "商品", "销量") if term in text)

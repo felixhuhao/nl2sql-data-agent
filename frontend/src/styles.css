@@ -52,7 +52,10 @@ textarea {
 .steps-panel h2,
 .answer-section h2,
 .answer-section p,
-.error-message {
+.error-message,
+.error-message h2,
+.error-message p,
+.detail-list {
   margin: 0;
 }
 
@@ -276,12 +279,69 @@ textarea {
 }
 
 .error-message {
+  display: grid;
+  gap: 8px;
   border: 1px solid #efb6b6;
   border-radius: 8px;
   padding: 10px 12px;
   color: #8f1d1d;
   background: #fff5f5;
   font-size: 14px;
+}
+
+.error-message h2 {
+  font-size: 14px;
+}
+
+.detail-list {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-list div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.detail-list dt {
+  color: #667085;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.detail-list dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+
+.detail-list pre {
+  width: 100%;
+}
+
+.info-chip,
+.guard-pill {
+  border: 1px solid #cdd8e6;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #3d4656;
+  background: #f7f9fc;
+  font-size: 12px;
+}
+
+.guard-pill.passed {
+  border-color: #9fcbb8;
+  color: #265944;
+  background: #eefaf4;
+}
+
+.guard-pill.blocked {
+  border-color: #efb6b6;
+  color: #8f1d1d;
+  background: #fff5f5;
 }
 
 .composer {

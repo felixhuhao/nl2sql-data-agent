@@ -30,6 +30,54 @@ def test_mock_provider_matches_demo_question_with_spaces():
     assert result.matched_query_id == "recent_30d_daily_sales"
 
 
+def test_mock_provider_returns_region_sales_verified_sql():
+    provider = MockLLMProvider()
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="按地区统计最近30天销售额",
+            schema_context="# Schema Context",
+        )
+    )
+
+    assert result.matched_query_id == "recent_30d_region_sales"
+    assert "JOIN dim_regions r ON o.region_key = r.region_key" in result.sql
+    assert "r.region_group" in result.sql
+    assert "SUM(o.payment_amount) AS sales_amount" in result.sql
+
+
+def test_mock_provider_returns_channel_sales_verified_sql():
+    provider = MockLLMProvider()
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="按渠道统计最近30天销售额",
+            schema_context="# Schema Context",
+        )
+    )
+
+    assert result.matched_query_id == "recent_30d_channel_sales"
+    assert "JOIN dim_channels c ON o.channel_key = c.channel_key" in result.sql
+    assert "c.channel_name" in result.sql
+    assert "SUM(o.payment_amount) AS sales_amount" in result.sql
+
+
+def test_mock_provider_returns_top_products_verified_sql():
+    provider = MockLLMProvider()
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="最近30天销量最高的10个商品",
+            schema_context="# Schema Context",
+        )
+    )
+
+    assert result.matched_query_id == "recent_30d_top_products"
+    assert "JOIN dim_products p ON i.product_key = p.product_key" in result.sql
+    assert "SUM(i.quantity) AS quantity_sold" in result.sql
+    assert "LIMIT 10" in result.sql
+
+
 def test_mock_provider_returns_delete_sql_for_delete_question():
     provider = MockLLMProvider()
 
