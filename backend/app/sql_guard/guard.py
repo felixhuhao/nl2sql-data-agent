@@ -111,24 +111,31 @@ def _check_functions(sql: str, expression: exp.Expression) -> GuardResult | None
 
 
 def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult | None:
-    table_aliases = _table_aliases(expression)
-    referenced_tables = set(table_aliases.values())
-    projection_aliases = _projection_aliases(expression)
+    cte_names = _cte_names(expression)
+    selects = list(expression.find_all(exp.Select))
 
-    for table_name in sorted(referenced_tables):
-        if table_name not in scope.allowed_tables:
-            return _reject("scope_guard", f"Table {table_name} is not allowed.")
+    for select in selects:
+        physical_aliases, cte_aliases = _select_table_context(select, cte_names)
+        referenced_tables = set(physical_aliases.values())
+        projection_aliases = _projection_aliases(select)
 
-    for column in expression.find_all(exp.Column):
-        result = _check_column_scope(
-            column,
-            table_aliases,
-            referenced_tables,
-            projection_aliases,
-            scope,
-        )
-        if result is not None:
-            return result
+        for table_name in sorted(referenced_tables):
+            if table_name not in scope.allowed_tables:
+                return _reject("scope_guard", f"Table {table_name} is not allowed.")
+
+        for column in select.find_all(exp.Column):
+            if _nearest_select(column) is not select:
+                continue
+            result = _check_column_scope(
+                column,
+                physical_aliases,
+                cte_aliases,
+                referenced_tables,
+                projection_aliases,
+                scope,
+            )
+            if result is not None:
+                return result
 
     return None
 
@@ -175,18 +182,35 @@ def _literal_int(expression: exp.Expression | None) -> int | None:
         return None
 
 
-def _table_aliases(expression: exp.Expression) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for table in expression.find_all(exp.Table):
+def _cte_names(expression: exp.Expression) -> set[str]:
+    return {cte.alias_or_name for cte in expression.find_all(exp.CTE)}
+
+
+def _select_table_context(select: exp.Select, cte_names: set[str]) -> tuple[dict[str, str], dict[str, str]]:
+    physical_aliases: dict[str, str] = {}
+    cte_aliases: dict[str, str] = {}
+    for table in select.find_all(exp.Table):
+        if _nearest_select(table) is not select:
+            continue
         table_name = table.name
+        aliases = cte_aliases if table_name in cte_names else physical_aliases
         aliases[table_name] = table_name
         aliases[table.alias_or_name] = table_name
-    return aliases
+    return physical_aliases, cte_aliases
 
 
-def _projection_aliases(expression: exp.Expression) -> set[str]:
+def _nearest_select(expression: exp.Expression) -> exp.Select | None:
+    current: exp.Expression | None = expression
+    while current is not None:
+        if isinstance(current, exp.Select):
+            return current
+        current = current.parent
+    return None
+
+
+def _projection_aliases(select: exp.Select) -> set[str]:
     aliases: set[str] = set()
-    for projection in expression.expressions:
+    for projection in select.expressions:
         alias = projection.alias
         if alias:
             aliases.add(alias)
@@ -195,23 +219,27 @@ def _projection_aliases(expression: exp.Expression) -> set[str]:
 
 def _check_column_scope(
     column: exp.Column,
-    table_aliases: dict[str, str],
+    physical_aliases: dict[str, str],
+    cte_aliases: dict[str, str],
     referenced_tables: set[str],
     projection_aliases: set[str],
     scope: GuardScope,
 ) -> GuardResult | None:
     column_name = column.name
     if column_name == "*":
-        return _check_star_scope(column, table_aliases)
+        return _check_star_scope(column, physical_aliases, cte_aliases)
 
     qualifier = column.table
     if qualifier:
-        table_name = table_aliases.get(qualifier)
-        if table_name is None:
+        physical_table_name = physical_aliases.get(qualifier)
+        if physical_table_name is not None:
+            if column_name not in scope.columns_for_table(physical_table_name):
+                return _reject("scope_guard", f"Column {physical_table_name}.{column_name} is not allowed.")
+            return None
+        if qualifier in cte_aliases:
+            return None
+        if qualifier not in physical_aliases:
             return _reject("scope_guard", f"Unknown table qualifier {qualifier}.")
-        if column_name not in scope.columns_for_table(table_name):
-            return _reject("scope_guard", f"Column {table_name}.{column_name} is not allowed.")
-        return None
 
     if column_name in projection_aliases:
         return None
@@ -225,12 +253,18 @@ def _check_column_scope(
         return None
     if len(matching_tables) > 1:
         return _reject("scope_guard", f"Column {column_name} is ambiguous.")
+    if cte_aliases:
+        return None
     return _reject("scope_guard", f"Column {column_name} is not allowed.")
 
 
-def _check_star_scope(column: exp.Column, table_aliases: dict[str, str]) -> GuardResult | None:
+def _check_star_scope(
+    column: exp.Column,
+    physical_aliases: dict[str, str],
+    cte_aliases: dict[str, str],
+) -> GuardResult | None:
     qualifier = column.table
-    if qualifier and qualifier not in table_aliases:
+    if qualifier and qualifier not in physical_aliases and qualifier not in cte_aliases:
         return _reject("scope_guard", f"Unknown table qualifier {qualifier}.")
     return None
 

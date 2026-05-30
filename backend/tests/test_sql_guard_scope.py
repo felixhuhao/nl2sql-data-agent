@@ -90,6 +90,53 @@ def test_ambiguous_unqualified_column_is_rejected():
     assert result.reason == "Column region_key is ambiguous."
 
 
+def test_cte_name_is_not_checked_as_physical_table():
+    result = guard_sql(
+        """
+        WITH recent_orders AS (
+            SELECT order_id FROM fact_orders
+        )
+        SELECT * FROM recent_orders
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is True
+    assert result.stage == "passed"
+
+
+def test_cte_inner_non_whitelist_table_is_rejected():
+    result = guard_sql(
+        """
+        WITH recent_orders AS (
+            SELECT order_id FROM raw_orders
+        )
+        SELECT * FROM recent_orders
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is False
+    assert result.stage == "scope_guard"
+    assert result.reason == "Table raw_orders is not allowed."
+
+
+def test_cte_inner_non_whitelist_column_is_rejected():
+    result = guard_sql(
+        """
+        WITH recent_orders AS (
+            SELECT secret_note FROM fact_orders
+        )
+        SELECT * FROM recent_orders
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is False
+    assert result.stage == "scope_guard"
+    assert result.reason == "Column secret_note is not allowed."
+
+
 def _scope() -> GuardScope:
     return GuardScope(
         allowed_tables=frozenset({"fact_orders", "dim_date", "dim_regions"}),
