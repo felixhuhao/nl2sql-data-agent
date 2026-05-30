@@ -611,6 +611,8 @@ receive_question
 
 ## 6.5 Phase 2.5：Semantic Admin 管理能力（可选）
 
+状态：已完成。Phase 2.5 最终交付为语义资产 CRUD API、Admin UI、失效资产校验 API 和集成测试。
+
 ### 目标
 
 把 Phase 2 通过 seed 初始化的语义资产，升级为可维护的管理能力。这个阶段服务“平台感”和长期维护，不是 Agent 查询链路的必要前置。
@@ -629,21 +631,27 @@ receive_question
 ### Iteration 拆分
 
 ```text
-I2.5.1 Semantic Asset Read APIs
-  -> metrics / aliases / verified queries / analysis space / relationships 只读接口
-  -> 前端先能查看当前语义资产
+I2.5.1 Metrics + Aliases CRUD API
+  -> metrics / aliases 的列表、新增、编辑/删除、启停
+  -> 引用校验：表存在、字段存在、metric expression 引用有效
+  -> API 测试
 
-I2.5.2 Semantic Asset Write APIs
-  -> metrics / aliases / verified queries 的新增、编辑、启停
-  -> API 层做引用校验，不允许保存明显失效资产
+I2.5.2 Verified Queries + Analysis Space + Relationships API
+  -> verified queries 新增、编辑、启停
+  -> analysis space 单例编辑
+  -> relationships 元数据编辑
+  -> verified query 保存时走 SQL Guard
 
-I2.5.3 Analysis Space Editor
-  -> 编辑可问表、可用指标、allowed operations
-  -> SQL Guard 和 retrieval 立刻读取新配置
-
-I2.5.4 Admin UI
+I2.5.3 Admin UI
+  -> App 内部 Chat/Admin 切换，不引入 vue-router
+  -> 单文件 Admin.vue，5 个 Tab 视图
   -> 紧凑表格和侧边编辑面板
-  -> 不做复杂审批流和多租户权限
+
+I2.5.4 失效资产校验 + 集成测试
+  -> GET /api/metadata/validate
+  -> validate_semantic_assets()
+  -> 覆盖 metric / alias / verified query / analysis space / relationship 的断链检测
+  -> 全量 pytest 和 smoke eval 回归
 ```
 
 ### 验收标准
@@ -652,6 +660,8 @@ I2.5.4 Admin UI
 - 可以不用改代码就禁用一个 metric，并让 Agent 不再使用它。
 - 修改 analysis space 后，SQL Guard 和 retrieval 行为同步变化。
 - 所有写接口都有基础引用校验和测试。
+- `GET /api/metadata/validate` 可以检测语义资产断链。
+- Admin UI 可以管理 5 类语义资产。
 
 ### 建议用时
 
