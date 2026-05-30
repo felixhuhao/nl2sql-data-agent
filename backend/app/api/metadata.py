@@ -8,6 +8,7 @@ from backend.app.metadata.service import (
     list_tables,
     list_verified_queries,
 )
+from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.sync import sync_metadata
 
 router = APIRouter(prefix="/api/metadata", tags=["metadata"])
@@ -39,6 +40,13 @@ def schema_context_endpoint() -> dict[str, str]:
 @router.get("/explainability-context")
 def explainability_context_endpoint() -> dict:
     return build_explainability_context()
+
+
+@router.get("/retrieve")
+def retrieve_metadata_endpoint(question: str) -> dict:
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="question is required")
+    return retrieve_metadata_assets(question)
 
 
 @router.get("/analysis-space")
