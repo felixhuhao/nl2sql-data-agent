@@ -1,13 +1,17 @@
 import json
+import re
 
+import sqlglot
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlglot.errors import SqlglotError
 
 from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
     MetaAnalysisSpace,
     MetaColumn,
+    MetaColumnAlias,
     MetaMetric,
     MetaRelationship,
     MetaTable,
@@ -15,6 +19,17 @@ from backend.app.metadata.models import (
     create_metadata_schema,
 )
 from backend.app.metadata.retrieval import retrieve_metadata_assets
+from backend.app.schemas.metadata_admin import AliasCreate, MetricCreate, MetricUpdate
+
+
+QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
+
+
+class MetadataAdminError(ValueError):
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
 
 
 def list_tables() -> list[dict]:
@@ -95,6 +110,122 @@ def list_verified_queries() -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
         return [_verified_query_payload(query) for query in _verified_queries(session)]
+
+
+def list_metrics(enabled: bool | None = None) -> list[dict]:
+    _ensure_schema()
+    with sqlite_session() as session:
+        query = select(MetaMetric).order_by(MetaMetric.name)
+        if enabled is not None:
+            query = query.where(MetaMetric.enabled.is_(enabled))
+        return [_metric_payload(metric) for metric in session.scalars(query).all()]
+
+
+def create_metric(data: MetricCreate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        name = _required_text(data.name, "name")
+        if session.scalar(select(MetaMetric).where(MetaMetric.name == name)) is not None:
+            raise MetadataAdminError(409, f"Metric already exists: {name}")
+
+        expression = _required_text(data.expression, "expression")
+        default_time_column = _optional_text(data.default_time_column)
+        _validate_metric_definition(session, expression, default_time_column)
+
+        metric = MetaMetric(
+            name=name,
+            label=_required_text(data.label, "label"),
+            expression=expression,
+            description=_optional_text(data.description),
+            default_time_column=default_time_column,
+            allowed_dimensions=json.dumps(_clean_string_list(data.allowed_dimensions), ensure_ascii=False),
+            enabled=True,
+        )
+        session.add(metric)
+        session.flush()
+        return _metric_payload(metric)
+
+
+def update_metric(name: str, data: MetricUpdate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        metric = _metric_or_raise(session, name)
+        expression = _required_text(data.expression, "expression") if data.expression is not None else metric.expression
+        default_time_column = (
+            _optional_text(data.default_time_column)
+            if data.default_time_column is not None
+            else metric.default_time_column
+        )
+        _validate_metric_definition(session, expression, default_time_column)
+
+        if data.label is not None:
+            metric.label = _required_text(data.label, "label")
+        if data.expression is not None:
+            metric.expression = expression
+        if data.description is not None:
+            metric.description = _optional_text(data.description)
+        if data.default_time_column is not None:
+            metric.default_time_column = default_time_column
+        if data.allowed_dimensions is not None:
+            metric.allowed_dimensions = json.dumps(_clean_string_list(data.allowed_dimensions), ensure_ascii=False)
+        if data.enabled is not None:
+            metric.enabled = data.enabled
+        session.flush()
+        return _metric_payload(metric)
+
+
+def toggle_metric(name: str) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        metric = _metric_or_raise(session, name)
+        metric.enabled = not metric.enabled
+        session.flush()
+        return _metric_payload(metric)
+
+
+def list_aliases(table_name: str | None = None) -> list[dict]:
+    _ensure_schema()
+    with sqlite_session() as session:
+        query = select(MetaColumnAlias).order_by(
+            MetaColumnAlias.table_name,
+            MetaColumnAlias.column_name,
+            MetaColumnAlias.alias,
+        )
+        if table_name:
+            query = query.where(MetaColumnAlias.table_name == table_name)
+        return [_alias_payload(alias) for alias in session.scalars(query).all()]
+
+
+def create_alias(data: AliasCreate) -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        table_name = _required_text(data.table_name, "table_name")
+        column_name = _required_text(data.column_name, "column_name")
+        alias = _required_text(data.alias, "alias")
+        _require_column(session, table_name, column_name)
+        existing = session.scalar(
+            select(MetaColumnAlias).where(
+                MetaColumnAlias.table_name == table_name,
+                MetaColumnAlias.column_name == column_name,
+                MetaColumnAlias.alias == alias,
+            )
+        )
+        if existing is not None:
+            raise MetadataAdminError(409, f"Alias already exists: {table_name}.{column_name} -> {alias}")
+
+        row = MetaColumnAlias(table_name=table_name, column_name=column_name, alias=alias)
+        session.add(row)
+        session.flush()
+        return _alias_payload(row)
+
+
+def delete_alias(alias_id: int) -> None:
+    _ensure_schema()
+    with sqlite_session() as session:
+        alias = session.scalar(select(MetaColumnAlias).where(MetaColumnAlias.id == alias_id))
+        if alias is None:
+            raise MetadataAdminError(404, f"Alias not found: {alias_id}")
+        session.delete(alias)
 
 
 def build_schema_context() -> str:
@@ -487,6 +618,84 @@ def _metric_payload(metric: MetaMetric) -> dict:
         "allowed_dimensions": _parse_json_list(metric.allowed_dimensions),
         "enabled": metric.enabled,
     }
+
+
+def _alias_payload(alias: MetaColumnAlias) -> dict:
+    return {
+        "id": alias.id,
+        "table_name": alias.table_name,
+        "column_name": alias.column_name,
+        "alias": alias.alias,
+    }
+
+
+def _metric_or_raise(session: Session, name: str) -> MetaMetric:
+    metric = session.scalar(select(MetaMetric).where(MetaMetric.name == name))
+    if metric is None:
+        raise MetadataAdminError(404, f"Metric not found: {name}")
+    return metric
+
+
+def _validate_metric_definition(
+    session: Session,
+    expression: str,
+    default_time_column: str | None,
+) -> None:
+    try:
+        sqlglot.parse_one(f"SELECT {expression} AS metric_value", read="duckdb")
+    except SqlglotError as exc:
+        raise MetadataAdminError(422, f"Invalid metric expression: {exc}") from exc
+
+    qualified_columns = _qualified_columns(expression)
+    if not qualified_columns:
+        raise MetadataAdminError(422, "Metric expression must reference at least one qualified column.")
+    for table_name, column_name in qualified_columns:
+        _require_column(session, table_name, column_name)
+
+    if default_time_column:
+        table_name, column_name = _split_qualified_name(default_time_column)
+        if table_name is None or column_name is None:
+            raise MetadataAdminError(422, "default_time_column must use table.column format.")
+        _require_column(session, table_name, column_name)
+
+
+def _require_column(session: Session, table_name: str, column_name: str) -> None:
+    exists = session.scalar(
+        select(MetaColumn)
+        .join(MetaTable)
+        .where(MetaTable.table_name == table_name, MetaColumn.column_name == column_name)
+    )
+    if exists is None:
+        raise MetadataAdminError(422, f"Column not found: {table_name}.{column_name}")
+
+
+def _qualified_columns(text: str) -> set[tuple[str, str]]:
+    return set(QUALIFIED_COLUMN_RE.findall(text))
+
+
+def _split_qualified_name(value: str) -> tuple[str | None, str | None]:
+    parts = value.split(".", 1)
+    if len(parts) != 2:
+        return None, None
+    return parts[0], parts[1]
+
+
+def _required_text(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise MetadataAdminError(422, f"{field_name} is required")
+    return stripped
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _clean_string_list(values: list[str]) -> list[str]:
+    return [item.strip() for item in values if item.strip()]
 
 
 def _verified_query_payload(query: MetaVerifiedQuery) -> dict:

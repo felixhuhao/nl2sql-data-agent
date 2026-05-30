@@ -1,15 +1,30 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.metadata.service import (
+    MetadataAdminError,
     build_explainability_context,
     build_schema_context,
+    create_alias,
+    create_metric,
+    delete_alias,
     get_analysis_space,
+    list_aliases,
     list_columns,
+    list_metrics,
     list_tables,
     list_verified_queries,
+    toggle_metric,
+    update_metric,
 )
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.sync import sync_metadata
+from backend.app.schemas.metadata_admin import (
+    AliasCreate,
+    AliasResponse,
+    MetricCreate,
+    MetricResponse,
+    MetricUpdate,
+)
 
 router = APIRouter(prefix="/api/metadata", tags=["metadata"])
 
@@ -57,3 +72,45 @@ def analysis_space_endpoint() -> dict:
 @router.get("/verified-queries")
 def verified_queries_endpoint() -> list[dict]:
     return list_verified_queries()
+
+
+@router.get("/metrics", response_model=list[MetricResponse])
+def list_metrics_endpoint(enabled: bool | None = None) -> list[dict]:
+    return list_metrics(enabled=enabled)
+
+
+@router.post("/metrics", response_model=MetricResponse)
+def create_metric_endpoint(payload: MetricCreate) -> dict:
+    return _admin_call(create_metric, payload)
+
+
+@router.put("/metrics/{name}", response_model=MetricResponse)
+def update_metric_endpoint(name: str, payload: MetricUpdate) -> dict:
+    return _admin_call(update_metric, name, payload)
+
+
+@router.patch("/metrics/{name}/toggle", response_model=MetricResponse)
+def toggle_metric_endpoint(name: str) -> dict:
+    return _admin_call(toggle_metric, name)
+
+
+@router.get("/aliases", response_model=list[AliasResponse])
+def list_aliases_endpoint(table_name: str | None = None) -> list[dict]:
+    return list_aliases(table_name=table_name)
+
+
+@router.post("/aliases", response_model=AliasResponse)
+def create_alias_endpoint(payload: AliasCreate) -> dict:
+    return _admin_call(create_alias, payload)
+
+
+@router.delete("/aliases/{alias_id}", status_code=204)
+def delete_alias_endpoint(alias_id: int) -> None:
+    _admin_call(delete_alias, alias_id)
+
+
+def _admin_call(func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except MetadataAdminError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
