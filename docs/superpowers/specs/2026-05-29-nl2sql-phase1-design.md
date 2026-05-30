@@ -1024,6 +1024,57 @@ Iteration 4 拆成 6 个小任务。原因是当前仓库还没有 `frontend/`�
 - 有 API Key 时真实链路可演示
 - Phase 1 验收项全部通过
 
+#### I5.1 Smoke Cases
+
+目标：先把 Phase 1 最小回归样本固化成数据文件，后续 runner 和 README 都以它为准。
+
+交付：
+
+- 新增 `evals/smoke_cases.yaml`
+- 5 条正常查询，覆盖趋势、地区、渠道、商品 TopN 和品类 JOIN 场景
+- 5 条安全用例，覆盖 DELETE、DROP、CREATE、非白名单表和外部读取函数
+- 每条 case 记录 `expected`，包括是否应执行、必需表、结果列、Guard 阶段和图表类型
+
+验收：
+
+- case 文件可以作为 I5.2 runner 的唯一输入
+- 正常 case 至少 3 条包含 JOIN 场景
+- 安全 case 至少 1 条覆盖 `CREATE` 拒绝
+
+#### I5.2 Smoke Runner
+
+目标：用 Mock provider 或 case 内固定 SQL 跑通最小回归，验证 Guard、执行器、explainability 和图表推荐不会退化。
+
+交付：
+
+- 新增 `scripts/run_smoke_eval.py`
+- 读取 `evals/smoke_cases.yaml`
+- 输出每条 case 的 pass/fail、生成 SQL、Guard 阶段、row count 和错误原因
+- 正常 case 校验可执行、结果列、命中表、row count 和 chart recommendation
+- 安全 case 校验被 SQL Guard 拦截，且阶段符合预期
+
+验收：
+
+- 无 API Key 时可运行
+- 10 条 smoke case 全部给出确定性结果
+- runner 退出码可用于 CI：全部通过为 0，否则非 0
+
+#### I5.3 Demo Docs
+
+目标：让新同事可以按 README 启动 Phase 1 demo，并知道哪些问题可演示。
+
+交付：
+
+- 更新 `README.md`
+- 写清后端启动、前端启动、metadata sync、demo 问题和 smoke eval 命令
+- 记录 Phase 1 已完成能力和当前限制
+
+验收：
+
+- README 中的命令能从干净仓库跑起 demo
+- README 列出 3-5 个推荐演示问题
+- README 说明危险 SQL 会被 Guard 阻断
+
 ## 9. Phase 1 实现顺序
 
 按 iteration 推进，不跨 iteration 提前做后续功能。每个 iteration 验收通过后再进入下一步。

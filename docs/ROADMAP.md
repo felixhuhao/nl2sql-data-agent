@@ -379,6 +379,32 @@ I4.6 ECharts Chart Renderer
 
 拆分依据：Iteration 4 同时涉及真实模型和前端体验。先接 DeepSeek provider，再写 prompt，再初始化前端，最后逐步接 SSE、结果展示和图表，可以避免模型调试、事件流解析和 UI 状态互相干扰。
 
+### Iteration 5 细分
+
+Iteration 5 拆成 3 个小任务：
+
+```text
+I5.1 Smoke Cases
+  -> evals/smoke_cases.yaml
+  -> 5 条正常查询
+  -> 5 条安全用例
+  -> 每条 case 明确 expected
+
+I5.2 Smoke Runner
+  -> scripts/run_smoke_eval.py
+  -> 复用 Mock provider / case SQL
+  -> 校验执行结果、Guard 拦截、explainability、chart recommendation
+  -> 输出 pass/fail 和非 0 失败退出码
+
+I5.3 Demo Docs
+  -> README 启动方式
+  -> demo 问题列表
+  -> smoke eval 命令
+  -> Phase 1 能力和限制
+```
+
+拆分依据：Iteration 5 是固化和防回归，不应该再混入新产品能力。先把验收样本变成唯一输入，再写 runner，最后更新 README，可以避免 case 格式、执行逻辑和文档互相牵制。
+
 ### Analysis Space v1
 
 参考 Databricks Genie 的 trusted assets 思路，Phase 1 不让用户对整个数据库自由问数，而是限定在一个可问数据空间：

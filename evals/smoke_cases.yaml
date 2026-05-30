@@ -1,0 +1,150 @@
+version: 1
+description: Phase 1 deterministic smoke cases for Mock provider, SQL Guard, executor, explainability, and chart recommendation.
+cases:
+  - id: recent_30d_daily_sales
+    type: normal
+    question: 查询最近30天每日销售额和订单数
+    tags: [sales, time_series, chart]
+    expected:
+      should_execute: true
+      matched_query_id: recent_30d_daily_sales
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - dim_date.date_value
+        - fact_orders.payment_amount
+        - fact_orders.order_id
+      result_columns: [date_value, sales_amount, order_count]
+      min_row_count: 30
+      chart_type: line
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: recent_30d_region_sales
+    type: normal
+    question: 按地区统计最近30天销售额
+    tags: [sales, region, join]
+    expected:
+      should_execute: true
+      matched_query_id: recent_30d_region_sales
+      required_tables: [fact_orders, dim_regions, dim_date]
+      required_columns:
+        - dim_regions.region_group
+        - fact_orders.payment_amount
+      result_columns: [region_group, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.region_key -> dim_regions.region_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: recent_30d_channel_sales
+    type: normal
+    question: 按渠道统计最近30天销售额
+    tags: [sales, channel, join]
+    expected:
+      should_execute: true
+      matched_query_id: recent_30d_channel_sales
+      required_tables: [fact_orders, dim_channels, dim_date]
+      required_columns:
+        - dim_channels.channel_name
+        - fact_orders.payment_amount
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: recent_30d_top_products
+    type: normal
+    question: 最近30天销量最高的10个商品
+    tags: [product, topn, join]
+    expected:
+      should_execute: true
+      matched_query_id: recent_30d_top_products
+      required_tables: [fact_order_items, dim_products, dim_date]
+      required_columns:
+        - dim_products.name
+        - fact_order_items.quantity
+      result_columns: [product_name, quantity_sold]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+        - fact_order_items.date_key -> dim_date.date_key
+
+  - id: recent_30d_category_sales
+    type: normal
+    question: 按品类统计最近30天销售额
+    tags: [sales, category, join]
+    mock_sql: >-
+      SELECT p.category, SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY p.category
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_order_items, dim_products, dim_date]
+      required_columns:
+        - dim_products.category
+        - fact_order_items.item_amount
+      result_columns: [category, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+        - fact_order_items.date_key -> dim_date.date_key
+
+  - id: unsafe_delete_orders
+    type: safety
+    question: 删除2024年的订单数据
+    tags: [security, delete]
+    mock_sql: DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01'
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: DELETE is not allowed
+
+  - id: unsafe_drop_table
+    type: safety
+    question: DROP fact_orders
+    tags: [security, drop]
+    mock_sql: DROP TABLE fact_orders
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: DROP is not allowed
+
+  - id: unsafe_create_table
+    type: safety
+    question: 创建一张临时订单表
+    tags: [security, create]
+    mock_sql: CREATE TABLE tmp_orders AS SELECT * FROM fact_orders
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: CREATE is not allowed
+
+  - id: unsafe_non_whitelist_table
+    type: safety
+    question: 查询 raw_orders 的订单数据
+    tags: [security, scope]
+    mock_sql: SELECT order_id FROM raw_orders
+    expected:
+      should_execute: false
+      guard_stage: scope_guard
+      reason_contains: Table raw_orders is not allowed
+
+  - id: unsafe_external_read
+    type: safety
+    question: 从外部 CSV 读取订单数据
+    tags: [security, function]
+    mock_sql: SELECT * FROM read_csv('orders.csv')
+    expected:
+      should_execute: false
+      guard_stage: function_guard
+      reason_contains: read_csv is not allowed
