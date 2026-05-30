@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,10 +48,16 @@ class SmokeResult:
     focused_context_chars: int | None = None
     full_context_chars: int | None = None
     context_reduction_ratio: float | None = None
+    error_category: str | None = None
+    generated_sql: str | None = None
+    normalized_sql: str | None = None
+    elapsed_ms: int | None = None
 
-    def fail(self, message: str) -> None:
+    def fail(self, message: str, error_category: str | None = None) -> None:
         self.passed = False
         self.messages.append(message)
+        if error_category and self.error_category is None:
+            self.error_category = error_category
 
 
 def main() -> int:
@@ -99,50 +106,87 @@ def _run_case(
         case_type=case.get("type", ""),
         question=case["question"],
     )
-    expected = case.get("expected", {})
-    retrieval_result = retrieve_metadata_assets(case["question"])
-    _record_retrieval_result(result, retrieval_result)
-    _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
-    schema_context = build_focused_context_from_retrieval(retrieval_result)
-    result.focused_context_chars = len(schema_context)
-    result.full_context_chars = len(full_schema_context)
-    result.context_reduction_ratio = _context_reduction_ratio(
-        focused_chars=result.focused_context_chars,
-        full_chars=result.full_context_chars,
-    )
+    started_at = time.perf_counter()
+    try:
+        expected = case.get("expected", {})
+        try:
+            retrieval_result = retrieve_metadata_assets(case["question"])
+            _record_retrieval_result(result, retrieval_result)
+            _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
+            schema_context = build_focused_context_from_retrieval(retrieval_result)
+        except Exception as exc:
+            result.fail(f"retrieval/context failed: {exc}", "retrieval_miss")
+            return result
 
-    sql, matched_query_id = _resolve_sql(case, schema_context, provider)
-    result.sql = sql
+        result.focused_context_chars = len(schema_context)
+        result.full_context_chars = len(full_schema_context)
+        result.context_reduction_ratio = _context_reduction_ratio(
+            focused_chars=result.focused_context_chars,
+            full_chars=result.full_context_chars,
+        )
 
-    guard_result = guard_sql(sql, scope=scope)
-    result.guard_stage = guard_result.stage
-    explainability = build_query_explainability(
-        sql=guard_result.normalized_sql or sql,
-        question=case["question"],
-        guard_result=guard_result,
-    )
+        try:
+            sql, matched_query_id = _resolve_sql(case, schema_context, provider)
+        except Exception as exc:
+            result.fail(f"SQL generation failed: {exc}", "sql_generation_error")
+            return result
 
-    if expected.get("should_execute") is False:
-        _validate_safety_case(result, guard_result, expected)
+        result.sql = sql
+        result.generated_sql = sql
+        if not sql.strip():
+            result.fail("SQL generation returned empty SQL.", "sql_generation_error")
+            return result
+
+        try:
+            guard_result = guard_sql(sql, scope=scope)
+        except Exception as exc:
+            result.fail(f"SQL Guard failed: {exc}", "guard_blocked")
+            return result
+
+        result.guard_stage = guard_result.stage
+        result.normalized_sql = guard_result.normalized_sql
+        try:
+            explainability = build_query_explainability(
+                sql=guard_result.normalized_sql or sql,
+                question=case["question"],
+                guard_result=guard_result,
+            )
+        except Exception as exc:
+            result.fail(f"explainability failed: {exc}", "result_mismatch")
+            return result
+
+        if expected.get("should_execute") is False:
+            _validate_safety_case(result, guard_result, expected)
+            return result
+
+        if not guard_result.allowed:
+            error_category = "sql_invalid" if guard_result.stage == "syntax_guard" else "guard_blocked"
+            result.fail(
+                f"expected execution, but Guard rejected SQL: {guard_result.reason}",
+                error_category,
+            )
+            return result
+
+        try:
+            query_result = execute_guarded_sql(guard_result)
+        except Exception as exc:
+            result.fail(f"SQL execution failed: {exc}", "execution_error")
+            return result
+
+        result.row_count = query_result.row_count
+        chart_recommendation = recommend_chart(query_result)
+
+        _validate_normal_case(
+            result=result,
+            expected=expected,
+            matched_query_id=matched_query_id,
+            query_result=query_result,
+            explainability=explainability,
+            chart_type=chart_recommendation.chart_type,
+        )
         return result
-
-    if not guard_result.allowed:
-        result.fail(f"expected execution, but Guard rejected SQL: {guard_result.reason}")
-        return result
-
-    query_result = execute_guarded_sql(guard_result)
-    result.row_count = query_result.row_count
-    chart_recommendation = recommend_chart(query_result)
-
-    _validate_normal_case(
-        result=result,
-        expected=expected,
-        matched_query_id=matched_query_id,
-        query_result=query_result,
-        explainability=explainability,
-        chart_type=chart_recommendation.chart_type,
-    )
-    return result
+    finally:
+        result.elapsed_ms = round((time.perf_counter() - started_at) * 1000)
 
 
 def _record_retrieval_result(result: SmokeResult, retrieval_result: dict[str, Any]) -> None:
@@ -194,7 +238,8 @@ def _validate_retrieval(
     if expected_fallback is not None and retrieval_result.get("fallback_used") != expected_fallback:
         result.fail(
             f"expected retrieval fallback_used {expected_fallback}, "
-            f"got {retrieval_result.get('fallback_used')}"
+            f"got {retrieval_result.get('fallback_used')}",
+            "retrieval_miss",
         )
 
     _validate_retrieval_subset(
@@ -225,16 +270,22 @@ def _validate_retrieval(
 
 def _validate_safety_case(result: SmokeResult, guard_result, expected: dict[str, Any]) -> None:
     if guard_result.allowed:
-        result.fail("expected Guard rejection, but SQL was allowed")
+        result.fail("expected Guard rejection, but SQL was allowed", "guard_blocked")
         return
 
     expected_stage = expected.get("guard_stage")
     if expected_stage and guard_result.stage != expected_stage:
-        result.fail(f"expected Guard stage {expected_stage}, got {guard_result.stage}")
+        result.fail(
+            f"expected Guard stage {expected_stage}, got {guard_result.stage}",
+            "guard_blocked",
+        )
 
     reason_contains = expected.get("reason_contains")
     if reason_contains and reason_contains not in (guard_result.reason or ""):
-        result.fail(f"expected reason to contain {reason_contains!r}, got {guard_result.reason!r}")
+        result.fail(
+            f"expected reason to contain {reason_contains!r}, got {guard_result.reason!r}",
+            "guard_blocked",
+        )
 
 
 def _validate_normal_case(
@@ -246,19 +297,31 @@ def _validate_normal_case(
     chart_type: str,
 ) -> None:
     if matched_query_id != expected.get("matched_query_id"):
-        result.fail(f"expected matched_query_id {expected.get('matched_query_id')}, got {matched_query_id}")
+        result.fail(
+            f"expected matched_query_id {expected.get('matched_query_id')}, got {matched_query_id}",
+            "result_mismatch",
+        )
 
     expected_columns = expected.get("result_columns") or []
     if query_result.columns != expected_columns:
-        result.fail(f"expected result columns {expected_columns}, got {query_result.columns}")
+        result.fail(
+            f"expected result columns {expected_columns}, got {query_result.columns}",
+            "result_mismatch",
+        )
 
     min_row_count = expected.get("min_row_count")
     if min_row_count is not None and query_result.row_count < min_row_count:
-        result.fail(f"expected at least {min_row_count} rows, got {query_result.row_count}")
+        result.fail(
+            f"expected at least {min_row_count} rows, got {query_result.row_count}",
+            "result_mismatch",
+        )
 
     expected_chart_type = expected.get("chart_type")
     if expected_chart_type and chart_type != expected_chart_type:
-        result.fail(f"expected chart type {expected_chart_type}, got {chart_type}")
+        result.fail(
+            f"expected chart type {expected_chart_type}, got {chart_type}",
+            "result_mismatch",
+        )
 
     _validate_subset(
         result,
@@ -288,7 +351,7 @@ def _validate_subset(
 ) -> None:
     missing = sorted(set(expected) - set(actual))
     if missing:
-        result.fail(f"missing expected {label}: {missing}; actual={actual}")
+        result.fail(f"missing expected {label}: {missing}; actual={actual}", "result_mismatch")
 
 
 def _validate_retrieval_subset(
@@ -309,7 +372,7 @@ def _validate_retrieval_subset(
         )
     )
     if missing:
-        result.fail(f"missing expected {label}: {missing}; actual={actual}")
+        result.fail(f"missing expected {label}: {missing}; actual={actual}", "retrieval_miss")
 
 
 def _format_join_path(path: dict[str, Any]) -> str:
@@ -322,9 +385,11 @@ def _format_join_path(path: dict[str, Any]) -> str:
 def _print_results(results: list[SmokeResult], report_path: Path) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
-        details = f"guard={result.guard_stage}"
+        details = f"category={result.error_category or '-'} guard={result.guard_stage}"
         if result.row_count is not None:
             details += f" rows={result.row_count}"
+        if result.elapsed_ms is not None:
+            details += f" elapsed={_format_elapsed(result.elapsed_ms)}"
         print(f"[{status}] {result.case_id} ({details})")
         for message in result.messages:
             print(f"  - {message}")
@@ -337,7 +402,8 @@ def _print_results(results: list[SmokeResult], report_path: Path) -> None:
         f"avg={summary['avg_focused_context_chars']} chars, "
         f"full={summary['full_context_chars']} chars, "
         f"avg_reduction={_format_percent(summary['avg_context_reduction_ratio'])}, "
-        f"fallback={summary['fallback_cases']}/{len(results)}"
+        f"fallback={summary['fallback_cases']}/{len(results)}, "
+        f"avg_elapsed={_format_elapsed(summary['avg_elapsed_ms'])}"
     )
     print(f"report: {report_path}")
 
@@ -350,6 +416,7 @@ def _write_report(path: Path, results: list[SmokeResult]) -> None:
 def _render_report(results: list[SmokeResult]) -> str:
     summary = _summary_metrics(results)
     retrieval_stats = _retrieval_stats(results)
+    error_distribution = _error_distribution(results)
     lines = [
         "# Smoke Eval Report",
         "",
@@ -363,12 +430,30 @@ def _render_report(results: list[SmokeResult]) -> str:
         f"- Full schema context chars: {summary['full_context_chars']}",
         f"- Avg focused context chars: {summary['avg_focused_context_chars']}",
         f"- Avg focused context reduction: {_format_percent(summary['avg_context_reduction_ratio'])}",
+        f"- Avg elapsed: {_format_elapsed(summary['avg_elapsed_ms'])}",
         "",
-        "## Retrieval Expected Hits",
+        "## Error Distribution",
         "",
-        "| Asset | Hit | Expected | Rate |",
-        "|-------|-----|----------|------|",
+        "| Category | Count | Cases |",
+        "|----------|-------|-------|",
     ]
+    if error_distribution:
+        for category, case_ids in error_distribution.items():
+            lines.append(
+                f"| {_md_cell(category)} | {len(case_ids)} | {_md_cell(', '.join(case_ids))} |"
+            )
+    else:
+        lines.append("| n/a | 0 | - |")
+
+    lines.extend(
+        [
+            "",
+            "## Retrieval Expected Hits",
+            "",
+            "| Asset | Hit | Expected | Rate |",
+            "|-------|-----|----------|------|",
+        ]
+    )
     if retrieval_stats:
         for label, stats in retrieval_stats.items():
             lines.append(
@@ -383,8 +468,8 @@ def _render_report(results: list[SmokeResult]) -> str:
             "",
             "## Case Results",
             "",
-            "| Case | Status | Type | Fallback | Focused Chars | Reduction | Guard | Rows | Retrieved Tables | Retrieved Metrics |",
-            "|------|--------|------|----------|---------------|-----------|-------|------|------------------|-------------------|",
+            "| Case | Status | Type | Category | Fallback | Elapsed | Focused Chars | Reduction | Guard | Rows | SQL |",
+            "|------|--------|------|----------|----------|---------|---------------|-----------|-------|------|-----|",
         ]
     )
     for result in results:
@@ -395,13 +480,14 @@ def _render_report(results: list[SmokeResult]) -> str:
                     _md_cell(result.case_id),
                     "PASS" if result.passed else "FAIL",
                     _md_cell(result.case_type or "-"),
+                    _md_cell(result.error_category or "-"),
                     str(result.retrieval_fallback_used),
+                    _format_elapsed(result.elapsed_ms),
                     str(result.focused_context_chars),
                     _format_percent(result.context_reduction_ratio),
                     _md_cell(result.guard_stage or "-"),
                     str(result.row_count) if result.row_count is not None else "-",
-                    _md_cell(", ".join(result.retrieval_tables) or "-"),
-                    _md_cell(", ".join(result.retrieval_metrics) or "-"),
+                    _md_cell(_short_sql(result.generated_sql) or "-"),
                 ]
             )
             + " |"
@@ -414,8 +500,21 @@ def _render_report(results: list[SmokeResult]) -> str:
     else:
         for result in failures:
             lines.extend([f"### {result.case_id}", ""])
+            lines.extend(
+                [
+                    f"- Category: {result.error_category or '-'}",
+                    f"- Elapsed: {_format_elapsed(result.elapsed_ms)}",
+                    f"- Guard: {result.guard_stage or '-'}",
+                    f"- Retrieved tables: {', '.join(result.retrieval_tables) or '-'}",
+                    f"- Retrieved metrics: {', '.join(result.retrieval_metrics) or '-'}",
+                ]
+            )
             for message in result.messages:
                 lines.append(f"- {message}")
+            if result.generated_sql:
+                lines.extend(["", "Generated SQL:", "", "```sql", result.generated_sql, "```"])
+            if result.normalized_sql:
+                lines.extend(["", "Normalized SQL:", "", "```sql", result.normalized_sql, "```"])
             lines.append("")
 
     lines.extend(["", "## Retrieval Details", ""])
@@ -467,6 +566,9 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
         "full_context_chars": full_lengths[0] if full_lengths else 0,
         "avg_focused_context_chars": _average_int(focused_lengths),
         "avg_context_reduction_ratio": _average_float(reductions),
+        "avg_elapsed_ms": _average_int(
+            [result.elapsed_ms for result in results if result.elapsed_ms is not None]
+        ),
     }
 
 
@@ -480,6 +582,16 @@ def _retrieval_stats(results: list[SmokeResult]) -> dict[str, dict[str, int]]:
             label_stats["hits"] += len(expected & actual)
             label_stats["expected"] += len(expected)
     return stats
+
+
+def _error_distribution(results: list[SmokeResult]) -> dict[str, list[str]]:
+    distribution: dict[str, list[str]] = {}
+    for result in results:
+        if result.passed:
+            continue
+        category = result.error_category or "unknown"
+        distribution.setdefault(category, []).append(result.case_id)
+    return distribution
 
 
 def _average_int(values: list[int]) -> int:
@@ -504,6 +616,23 @@ def _format_percent(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value * 100:.1f}%"
+
+
+def _format_elapsed(value: int | None) -> str:
+    if value is None:
+        return "-"
+    if value >= 1000:
+        return f"{value / 1000:.1f}s"
+    return f"{value}ms"
+
+
+def _short_sql(value: str | None, limit: int = 140) -> str:
+    if not value:
+        return ""
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
 
 
 def _md_cell(value: str) -> str:
