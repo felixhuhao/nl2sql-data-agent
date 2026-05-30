@@ -41,7 +41,9 @@ NL2SQL 的质量上限首先取决于系统是否理解数据库。Schema 探知
 完整 value/cost 矩阵以 Phase 1 spec 的 `5.8 成熟产品能力取舍矩阵` 为唯一真源。ROADMAP 只保留阶段原则：
 
 - Phase 1 做高 value、低 cost、能增强可信度的能力：Analysis Space、Verified Queries 雏形、Explainability、SQL Guard。
-- Phase 2 做业务语义：Metric Layer、Relationship Safety、可编辑 semantic overlay、Feedback Loop。
+- Phase 2 做业务语义检索闭环：DB-backed semantic assets、Metric Layer、规则检索、focused context。
+- Phase 2.5 可选做语义资产管理：指标、别名、verified queries、analysis space 的 CRUD 和人工确认。
+- Phase 3 做评测体系和真实模型验证：扩大 case、生成报告、定位 retrieval / SQL / execution 错误。
 - Phase 4 再做召回增强：Value Recall、向量召回、混合召回。
 - 权限、血缘、成本治理进入后期，不干扰第一条闭环。
 
@@ -503,26 +505,35 @@ GET  /api/query/history
 
 3 到 5 天。
 
-## 6. Phase 2：元数据语义层
+## 6. Phase 2：DB-backed 语义层与规则检索
 
 ### 目标
 
-从“Schema Explorer v1”升级为“可编辑语义层 + 元数据检索”。
+从 Phase 1 的硬编码 demo 语义，升级为可落库、可检索、可审计的语义层。核心不是先做管理后台，而是让 Agent 查询链路运行时真正消费数据库里的 semantic assets，并用聚焦上下文替代全量 schema dump。
+
+当前状态：已完成。
 
 ### 能力
 
-1. 表描述管理。
-2. 字段描述管理。
-3. 字段别名管理。
-4. 指标口径管理。
-5. 示例 question-SQL 管理。
-6. 样例值采样。
-7. 规则检索 v1。
-8. relationship 人工确认和置信度调整。
-9. semantic overlay 从代码迁移到数据库或 YAML 配置。
-10. Metric Layer v1。
-11. Feedback Loop v1。
-12. Data Quality Profiling v1。
+1. `semantic_overlay.py`、`verified_queries.py`、`analysis_space.py` 降级为 seed 数据源，运行时不再直接读取代码常量。
+2. 表描述、字段描述、字段别名、指标口径、verified queries、analysis space 落到 SQLite metadata DB。
+3. Metric Layer v1：支持 `sales_amount`、`order_count`、`aov` 等结构化指标。
+4. 规则检索 v1：基于表名、字段名、中文别名、指标、verified query、sample values 检索相关资产。
+5. Focused context builder：只把命中的表、列、指标、join path、示例 SQL 放入 prompt。
+6. Fallback：检索无命中时回退到 Phase 1 全量 schema context，保证链路不中断。
+7. Agent v2：新增 `retrieve_context` 节点，SSE 输出检索步骤。
+8. Smoke eval 扩展到 15 条，并覆盖 Phase 2 retrieval/focused context。
+
+### 明确不做
+
+以下能力不属于 Phase 2 已完成范围，避免把语义检索阶段膨胀成管理平台：
+
+- 指标、别名、verified query、analysis space 的完整 CRUD。
+- 用户反馈沉淀为 verified query 或 eval case。
+- Data Quality Profiling。
+- embedding / vector recall / hybrid recall。
+- 多租户权限、审批流、血缘影响分析。
+- fact-only 查询默认强制补所有维表。
 
 ### Metric Layer v1
 
@@ -539,19 +550,6 @@ metric:
 
 指标需要和 relationship safety 联动，避免错误 join path 导致聚合膨胀。
 
-### Feedback Loop v1
-
-用户可以标记 SQL/结果是否正确，反馈沉淀为 verified query 或 eval case：
-
-```text
-question
-generated_sql
-final_sql
-user_feedback
-corrected_sql
-promoted_to_verified_query
-```
-
 ### 第一版不一定上向量库
 
 为了控制复杂度，Phase 2 可以先用规则检索：
@@ -561,19 +559,20 @@ promoted_to_verified_query
 - 指标名匹配。
 - 示例问题关键词匹配。
 
-向量检索放到 Phase 3。
+向量检索放到 Phase 4。Phase 3 先用评测报告证明规则检索的准确率、失败类型和瓶颈，再决定是否引入向量库。
 
 ### 数据模型
 
 需要建立这些表或等价存储：
 
 ```text
-datasources
-metadata_tables
-metadata_columns
-semantic_metrics
-business_terms
-query_examples
+meta_tables
+meta_columns
+meta_relationships
+meta_metrics
+meta_column_aliases
+meta_verified_queries
+meta_analysis_spaces
 ```
 
 ### Agent v2 流程
@@ -581,10 +580,8 @@ query_examples
 ```text
 receive_question
   -> normalize_question
-  -> retrieve_tables
-  -> retrieve_columns
-  -> retrieve_metrics
-  -> retrieve_examples
+  -> retrieve_metadata_assets
+  -> build_focused_context
   -> generate_sql
   -> sql_guard
   -> execute_sql
@@ -594,21 +591,77 @@ receive_question
 
 ### 验收标准
 
-- 不需要把全量 schema 塞进 prompt。
+- 普通命中场景不需要把全量 schema 塞进 prompt。
 - 可以通过字段别名理解问题。
 - 可以使用指标口径生成 SQL。
 - 可以展示本次查询命中的表、字段、指标和示例。
-- 至少支持 20 条 eval case。
+- SSE 可以展示 `retrieve_context` 步骤和 `fallback_used`。
+- smoke eval 至少 15 条通过。
+
+### 已知取舍
+
+- fact-only 匹配暂不默认补 `dim_date`。当前只在 metric default time column、verified query 或显式时间字段命中时补时间维。
+- join partner expansion 保持保守：维表命中且缺事实表时才反向补最多 3 个 fact partner；已有事实表时只补 join key。
+- 检索排序仍是规则打分，没有 embedding/vector recall。
+- CRUD 管理能力后移到 Phase 2.5。
 
 ### 建议用时
 
-5 到 8 天。
+已完成。后续只做回归修复，不再往 Phase 2 塞新产品能力。
 
-## 7. Phase 3：评测体系
+## 6.5 Phase 2.5：Semantic Admin 管理能力（可选）
 
 ### 目标
 
-建立项目可信度。让准确率、执行成功率、安全拦截能力、延迟和修复次数可以量化。
+把 Phase 2 通过 seed 初始化的语义资产，升级为可维护的管理能力。这个阶段服务“平台感”和长期维护，不是 Agent 查询链路的必要前置。
+
+如果目标是尽快证明 NL2SQL 准确率，优先做 Phase 3；如果目标是展示完整数据平台能力，再做 Phase 2.5。
+
+### 能力
+
+1. 指标列表、详情、新增、编辑、启停。
+2. 字段别名列表、新增、删除。
+3. verified query 列表、新增、编辑、启停。
+4. analysis space 表白名单、指标白名单、allowed operations 编辑。
+5. relationship 的人工确认、confidence、fanout_risk 编辑。
+6. 失效资产校验：字段不存在、表不存在、metric expression 引用失效。
+
+### Iteration 拆分
+
+```text
+I2.5.1 Semantic Asset Read APIs
+  -> metrics / aliases / verified queries / analysis space / relationships 只读接口
+  -> 前端先能查看当前语义资产
+
+I2.5.2 Semantic Asset Write APIs
+  -> metrics / aliases / verified queries 的新增、编辑、启停
+  -> API 层做引用校验，不允许保存明显失效资产
+
+I2.5.3 Analysis Space Editor
+  -> 编辑可问表、可用指标、allowed operations
+  -> SQL Guard 和 retrieval 立刻读取新配置
+
+I2.5.4 Admin UI
+  -> 紧凑表格和侧边编辑面板
+  -> 不做复杂审批流和多租户权限
+```
+
+### 验收标准
+
+- 可以不用改代码就新增一个字段别名，并让检索 API 命中它。
+- 可以不用改代码就禁用一个 metric，并让 Agent 不再使用它。
+- 修改 analysis space 后，SQL Guard 和 retrieval 行为同步变化。
+- 所有写接口都有基础引用校验和测试。
+
+### 建议用时
+
+3 到 5 天。
+
+## 7. Phase 3：评测体系与真实模型验证
+
+### 目标
+
+建立项目可信度。让检索命中率、SQL 生成正确率、执行成功率、安全拦截能力、延迟和错误类型可以量化，并用真实模型验证 Phase 2 规则检索是否足够。
 
 ### 能力
 
@@ -619,6 +672,35 @@ receive_question
 5. 保存错误原因。
 6. 生成 Markdown/HTML 报告。
 7. 支持模型和 prompt 版本对比。
+8. retrieval expected 校验：期望命中的表、字段、指标、verified query。
+9. 真实 DeepSeek 模型批量评测。
+10. 错误归因：retrieval miss、SQL invalid、guard blocked、execution error、result mismatch。
+
+### Iteration 拆分
+
+```text
+I3.1 Eval Report
+  -> smoke runner 输出 Markdown/HTML 报告
+  -> 记录 pass rate、失败 case、错误类型、耗时
+
+I3.2 Case Expansion
+  -> 扩展到 30+ cases
+  -> 覆盖时间、地区、渠道、品类、客单价、安全拦截、fallback
+  -> 每条 case 增加 retrieval expected
+
+I3.3 Real LLM Benchmark
+  -> 支持 DeepSeek provider 批量跑 eval
+  -> 保存 generated_sql、normalized_sql、guard_result、execution_result
+  -> 没有 API key 时自动跳过真实模型 case
+
+I3.4 Error Taxonomy
+  -> 自动归类 retrieval / generation / guard / execution / result mismatch
+  -> 报告按错误类型聚合，指导下一阶段增强
+
+I3.5 Docs + README
+  -> README 展示最新 eval 结果
+  -> 记录规则检索的已知短板和 Phase 4 向量召回动机
+```
 
 ### Eval Case 格式
 
@@ -642,6 +724,8 @@ receive_question
 
 ### 指标
 
+- Retrieval table hit rate。
+- Retrieval metric hit rate。
 - SQL parse success rate。
 - Guard pass rate。
 - Unsafe block rate。
@@ -656,6 +740,7 @@ receive_question
 - 命令行可以运行 `evals`。
 - 至少 30 条评测问题。
 - 报告能显示成功率、失败 case、错误类型。
+- 在 `DEEPSEEK_API_KEY` 可用时，可以跑真实模型评测。
 - README 中展示一张评测结果截图或表格。
 
 ### 建议用时
@@ -667,6 +752,8 @@ receive_question
 ### 目标
 
 让系统可以处理更大的 schema 和更自然的中文问题。
+
+Phase 4 的前提是 Phase 3 报告已经说明规则检索的瓶颈。只有当规则别名、指标和 verified query 不足以覆盖自然语言表达时，才引入向量库，避免为了技术栈完整而增加复杂度。
 
 ### 能力
 
@@ -692,6 +779,7 @@ Value Recall 参考 ThoughtSpot 和“掌柜问数”的做法，用于识别用
 - schema 扩展到多表后仍能选择相关表。
 - 前端可以展示召回上下文。
 - eval 报告可以对比“无向量召回”和“有向量召回”的效果。
+- Value Recall 可以识别“华东”“天猫”“美妆个护”这类业务值属于哪个字段。
 
 ### 建议用时
 
@@ -902,14 +990,16 @@ mcp_servers/olap_tools
 
 ### Milestone 2：具备语义层和评测能力
 
-覆盖 Phase 2 + Phase 3。
+覆盖 Phase 2 + Phase 3，Phase 2.5 作为可选平台管理增强。
 
 成果：
 
 - 元数据管理。
 - 指标口径。
 - 示例 SQL。
+- 规则检索和聚焦上下文。
 - eval runner。
+- 真实模型评测报告。
 
 这是项目从 Demo 变成“工程系统”的关键节点。
 
