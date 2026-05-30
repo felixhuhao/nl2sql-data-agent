@@ -14,6 +14,7 @@ class AgentState:
     guard_result: GuardResult | None = None
     query_result: QueryResult | None = None
     summary: str | None = None
+    explainability: dict | None = None
     error: str | None = None
     stopped_at: str | None = None
     completed_steps: list[str] = field(default_factory=list)

@@ -84,6 +84,11 @@ def test_run_query_workflow_executes_demo_question():
     assert state.matched_query_id == "recent_30d_daily_sales"
     assert state.guard_result is not None
     assert state.guard_result.allowed is True
+    assert state.explainability is not None
+    assert state.explainability["matched_tables"] == ["dim_date", "fact_orders"]
+    assert "fact_orders.payment_amount" in state.explainability["matched_columns"]
+    assert state.explainability["date_interpretation"]["matched"] is True
+    assert state.explainability["guard_result"]["allowed"] is True
     assert state.query_result is not None
     assert state.query_result.row_count == 1
     assert state.summary == "查询返回 1 行，字段：date_value, sales_amount, order_count。"
@@ -116,6 +121,9 @@ def test_run_query_workflow_stops_when_guard_rejects_sql():
     assert state.error == "DELETE is not allowed."
     assert state.guard_result is not None
     assert state.guard_result.allowed is False
+    assert state.explainability is not None
+    assert state.explainability["guard_result"]["allowed"] is False
+    assert state.explainability["guard_result"]["stage"] == "operation_guard"
     assert state.query_result is None
     assert executed == []
     assert state.completed_steps == ["build_context", "generate_sql", "sql_guard"]

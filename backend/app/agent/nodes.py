@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from backend.app.agent.state import AgentState
+from backend.app.agent.explainability import build_query_explainability
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationRequest
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
 from backend.app.metadata.service import build_schema_context
@@ -70,6 +71,11 @@ def sql_guard_node(
         raise ValueError("sql is required before SQL Guard.")
 
     state.guard_result = guard_sql(state.sql, scope=scope_builder())
+    state.explainability = build_query_explainability(
+        sql=state.guard_result.normalized_sql or state.sql,
+        question=state.question,
+        guard_result=state.guard_result,
+    )
     state.completed_steps.append("sql_guard")
     if not state.guard_result.allowed:
         state.error = state.guard_result.reason
