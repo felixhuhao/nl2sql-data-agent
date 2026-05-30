@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 
+from backend.app.api.chat import router as chat_router
 from backend.app.api.metadata import router as metadata_router
 
 
 app = FastAPI(title="NL2SQL Data Agent")
+app.include_router(chat_router)
 app.include_router(metadata_router)
 
 
