@@ -62,6 +62,80 @@ dim_date
 - 表格和图表展示。
 - Eval Runner。
 
+## Phase 1 快速启动
+
+生成本地 DuckDB 数据并同步元数据：
+
+```bash
+python scripts/generate_ecommerce_data.py
+python scripts/sync_metadata.py
+```
+
+启动后端：
+
+```bash
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+启动前端：
+
+```bash
+cd frontend
+npm install --cache .npm-cache --prefer-online
+npm run dev
+```
+
+访问：
+
+```text
+http://127.0.0.1:5174/
+```
+
+## Phase 1 Demo 问题
+
+推荐演示：
+
+- 查询最近30天每日销售额和订单数
+- 按地区统计最近30天销售额
+- 按渠道统计最近30天销售额
+- 最近30天销量最高的10个商品
+- 按品类统计最近30天销售额
+
+安全拦截演示：
+
+- 删除2024年的订单数据
+- DROP fact_orders
+- 创建一张临时订单表
+
+危险 SQL 会被 SQL Guard 阻断，前端会展示拒绝阶段和原因。
+
+## Smoke Eval
+
+运行 Phase 1 最小回归：
+
+```bash
+python scripts/run_smoke_eval.py
+```
+
+当前 smoke eval 覆盖：
+
+- 5 条正常查询：趋势、地区、渠道、商品 TopN、品类
+- 5 条安全用例：DELETE、DROP、CREATE、非白名单表、外部读取函数
+- SQL Guard、只读执行器、query-level explainability、chart recommendation
+
+通过时输出类似：
+
+```text
+10/10 smoke cases passed.
+```
+
+## Phase 1 当前限制
+
+- Mock provider 只覆盖少量 verified/demo 问题，不是完整自然语言泛化能力。
+- DeepSeek provider 已接入，但真实模型效果取决于 API Key、模型输出和 prompt 约束。
+- SQL 高亮目前是基础代码块展示，未接入完整语法高亮。
+- ECharts 当前只渲染 time-series line chart，其他结果使用表格 fallback。
+
 ## 暂不纳入 Scope
 
 - 金融/股票分析插件。
