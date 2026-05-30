@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from backend.app.dataspace.verified_queries import list_verified_queries
+from backend.app.metadata.service import list_verified_queries
 
 
 @dataclass(frozen=True)
@@ -29,18 +30,21 @@ class LLMProvider(Protocol):
 class MockLLMProvider:
     name = "mock"
 
+    def __init__(self, verified_queries_provider: Callable[[], list[dict]] = list_verified_queries):
+        self._verified_queries_provider = verified_queries_provider
+
     def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
         question = request.question.strip()
         unsafe_sql = _unsafe_sql_for_question(question)
         if unsafe_sql is not None:
             return SQLGenerationResult(sql=unsafe_sql, provider=self.name)
 
-        verified_query = _match_verified_query(question)
+        verified_query = _match_verified_query(question, self._verified_queries_provider())
         if verified_query is not None:
             return SQLGenerationResult(
-                sql=verified_query.sql,
+                sql=verified_query["sql"],
                 provider=self.name,
-                matched_query_id=verified_query.id,
+                matched_query_id=verified_query["id"],
             )
 
         return SQLGenerationResult(
@@ -49,13 +53,13 @@ class MockLLMProvider:
         )
 
 
-def _match_verified_query(question: str):
+def _match_verified_query(question: str, verified_queries: list[dict]) -> dict | None:
     normalized_question = _normalize_text(question)
-    for query in list_verified_queries():
-        verified_question = _normalize_text(query.question)
+    for query in verified_queries:
+        verified_question = _normalize_text(query["question"])
         if normalized_question == verified_question:
             return query
-        query_tags = set(query.tags)
+        query_tags = set(query["tags"])
         question_terms = set(_question_terms(normalized_question))
         if "最近30天" in normalized_question and {"sales", "time_series"}.issubset(query_tags) and {
             "销售额",

@@ -1,8 +1,9 @@
+from backend.app.dataspace.verified_queries import list_verified_queries
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 
 
 def test_mock_provider_returns_verified_demo_sql():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -18,7 +19,7 @@ def test_mock_provider_returns_verified_demo_sql():
 
 
 def test_mock_provider_matches_demo_question_with_spaces():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -31,7 +32,7 @@ def test_mock_provider_matches_demo_question_with_spaces():
 
 
 def test_mock_provider_returns_region_sales_verified_sql():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -47,7 +48,7 @@ def test_mock_provider_returns_region_sales_verified_sql():
 
 
 def test_mock_provider_returns_channel_sales_verified_sql():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -63,7 +64,7 @@ def test_mock_provider_returns_channel_sales_verified_sql():
 
 
 def test_mock_provider_returns_top_products_verified_sql():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -79,7 +80,7 @@ def test_mock_provider_returns_top_products_verified_sql():
 
 
 def test_mock_provider_returns_delete_sql_for_delete_question():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -92,7 +93,7 @@ def test_mock_provider_returns_delete_sql_for_delete_question():
 
 
 def test_mock_provider_returns_drop_sql_for_drop_question():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -105,7 +106,7 @@ def test_mock_provider_returns_drop_sql_for_drop_question():
 
 
 def test_mock_provider_returns_create_sql_for_create_question():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -118,7 +119,7 @@ def test_mock_provider_returns_create_sql_for_create_question():
 
 
 def test_mock_provider_returns_fallback_select():
-    provider = MockLLMProvider()
+    provider = _provider()
 
     result = provider.generate_sql(
         SQLGenerationRequest(
@@ -130,3 +131,20 @@ def test_mock_provider_returns_fallback_select():
     assert result.provider == "mock"
     assert result.matched_query_id is None
     assert result.sql == "SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 20"
+
+
+def _provider() -> MockLLMProvider:
+    return MockLLMProvider(verified_queries_provider=_verified_query_payloads)
+
+
+def _verified_query_payloads() -> list[dict]:
+    return [
+        {
+            "id": query.id,
+            "question": query.question,
+            "sql": query.sql,
+            "tags": list(query.tags),
+            "verified_by": query.verified_by,
+        }
+        for query in list_verified_queries()
+    ]

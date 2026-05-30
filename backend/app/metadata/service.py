@@ -5,28 +5,15 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
-from backend.app.dataspace.analysis_space import get_default_analysis_space
-from backend.app.dataspace.verified_queries import list_verified_queries
-from backend.app.metadata.models import MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
-
-
-METRIC_DEFINITIONS = [
-    {
-        "name": "sales_amount",
-        "label": "销售额",
-        "expression": "SUM(fact_orders.payment_amount)",
-    },
-    {
-        "name": "order_count",
-        "label": "订单数",
-        "expression": "COUNT(DISTINCT fact_orders.order_id)",
-    },
-    {
-        "name": "aov",
-        "label": "客单价",
-        "expression": "SUM(fact_orders.payment_amount) / COUNT(DISTINCT fact_orders.order_id)",
-    },
-]
+from backend.app.metadata.models import (
+    MetaAnalysisSpace,
+    MetaColumn,
+    MetaMetric,
+    MetaRelationship,
+    MetaTable,
+    MetaVerifiedQuery,
+    create_metadata_schema,
+)
 
 
 def list_tables() -> list[dict]:
@@ -96,12 +83,28 @@ def list_relationships() -> list[dict]:
         ]
 
 
+def get_analysis_space() -> dict:
+    _ensure_schema()
+    with sqlite_session() as session:
+        analysis_space = _active_analysis_space(session)
+        return _analysis_space_payload(analysis_space) if analysis_space else {}
+
+
+def list_verified_queries() -> list[dict]:
+    _ensure_schema()
+    with sqlite_session() as session:
+        return [_verified_query_payload(query) for query in _verified_queries(session)]
+
+
 def build_schema_context() -> str:
     _ensure_schema()
     settings = get_settings()
-    analysis_space = get_default_analysis_space()
-    allowed_tables = set(analysis_space.tables)
     with sqlite_session() as session:
+        analysis_space = _active_analysis_space(session)
+        analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
+        allowed_tables = set(analysis_space_payload["tables"])
+        metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]))
+        verified_queries = _verified_queries(session)
         tables = session.scalars(
             select(MetaTable)
             .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
@@ -119,11 +122,11 @@ def build_schema_context() -> str:
             "# Schema Context",
             "",
             "## Analysis Space",
-            f"name = {analysis_space.name}",
-            f"datasource = {analysis_space.datasource}",
-            f"allowed_operations = {', '.join(analysis_space.allowed_operations)}",
-            f"enabled_metrics = {', '.join(analysis_space.enabled_metrics)}",
-            f"allowed_tables = {', '.join(analysis_space.tables)}",
+            f"name = {analysis_space_payload['name']}",
+            f"datasource = {analysis_space_payload['datasource']}",
+            f"allowed_operations = {', '.join(analysis_space_payload['allowed_operations'])}",
+            f"enabled_metrics = {', '.join(analysis_space_payload['enabled_metrics'])}",
+            f"allowed_tables = {', '.join(analysis_space_payload['tables'])}",
             "",
             f"dataset_current_date = {settings.dataset_current_date}",
             "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31",
@@ -155,25 +158,19 @@ def build_schema_context() -> str:
                 f"({relationship.relationship_type}; source={relationship.source}; "
                 f"confidence={relationship.confidence:.2f}; fanout_risk={relationship.fanout_risk})"
             )
-        lines.extend(
-            [
-                "",
-                "## Metric Definitions",
-                "- 销售额 = SUM(payment_amount)",
-                "- 订单数 = COUNT(DISTINCT order_id)",
-                "- 客单价 = SUM(payment_amount) / COUNT(DISTINCT order_id)",
-            ]
-        )
-        verified_queries = list_verified_queries()
+        if metrics:
+            lines.extend(["", "## Metric Definitions"])
+            for metric in metrics:
+                lines.append(f"- {metric.label} ({metric.name}) = {metric.expression}")
         if verified_queries:
             lines.extend(["", "## Verified Queries"])
             for query in verified_queries:
                 lines.extend(
                     [
-                        f"- id: {query.id}",
+                        f"- id: {query.query_id}",
                         f"  question: {query.question}",
                         f"  sql: {query.sql}",
-                        f"  tags: {', '.join(query.tags)}",
+                        f"  tags: {', '.join(_parse_json_list(query.tags))}",
                     ]
                 )
         return "\n".join(lines)
@@ -182,9 +179,11 @@ def build_schema_context() -> str:
 def build_explainability_context() -> dict:
     _ensure_schema()
     settings = get_settings()
-    analysis_space = get_default_analysis_space()
-    allowed_tables = set(analysis_space.tables)
     with sqlite_session() as session:
+        analysis_space = _active_analysis_space(session)
+        analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
+        allowed_tables = set(analysis_space_payload["tables"])
+        metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]))
         tables = session.scalars(
             select(MetaTable)
             .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
@@ -199,13 +198,7 @@ def build_explainability_context() -> dict:
             .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
         ).all()
         return {
-            "analysis_space": {
-                "name": analysis_space.name,
-                "datasource": analysis_space.datasource,
-                "allowed_tables": list(analysis_space.tables),
-                "enabled_metrics": list(analysis_space.enabled_metrics),
-                "allowed_operations": list(analysis_space.allowed_operations),
-            },
+            "analysis_space": analysis_space_payload,
             "date_rule": {
                 "dataset_current_date": settings.dataset_current_date,
                 "relative_rules": {
@@ -216,22 +209,9 @@ def build_explainability_context() -> dict:
                 },
             },
             "tables": [_table_explainability(session, table) for table in tables],
-            "metrics": [
-                metric
-                for metric in METRIC_DEFINITIONS
-                if metric["name"] in analysis_space.enabled_metrics
-            ],
+            "metrics": [_metric_payload(metric) for metric in metrics],
             "join_paths": [_relationship_explainability(relationship) for relationship in relationships],
-            "verified_queries": [
-                {
-                    "id": query.id,
-                    "question": query.question,
-                    "sql": query.sql,
-                    "tags": list(query.tags),
-                    "verified_by": query.verified_by,
-                }
-                for query in list_verified_queries()
-            ],
+            "verified_queries": [_verified_query_payload(query) for query in _verified_queries(session)],
         }
 
 
@@ -276,6 +256,86 @@ def _relationship_explainability(relationship: MetaRelationship) -> dict:
         "fanout_risk": relationship.fanout_risk,
         "description": relationship.description,
     }
+
+
+def _active_analysis_space(session: Session) -> MetaAnalysisSpace | None:
+    return session.scalar(
+        select(MetaAnalysisSpace)
+        .where(MetaAnalysisSpace.enabled.is_(True))
+        .order_by(MetaAnalysisSpace.id)
+    )
+
+
+def _enabled_metrics(session: Session, enabled_metric_names: set[str]) -> list[MetaMetric]:
+    if not enabled_metric_names:
+        return []
+    return session.scalars(
+        select(MetaMetric)
+        .where(MetaMetric.enabled.is_(True), MetaMetric.name.in_(enabled_metric_names))
+        .order_by(MetaMetric.id)
+    ).all()
+
+
+def _verified_queries(session: Session) -> list[MetaVerifiedQuery]:
+    return session.scalars(
+        select(MetaVerifiedQuery)
+        .where(MetaVerifiedQuery.enabled.is_(True))
+        .order_by(MetaVerifiedQuery.id)
+    ).all()
+
+
+def _analysis_space_payload(analysis_space: MetaAnalysisSpace) -> dict:
+    return {
+        "name": analysis_space.name,
+        "datasource": analysis_space.datasource,
+        "tables": _parse_json_list(analysis_space.tables),
+        "allowed_tables": _parse_json_list(analysis_space.tables),
+        "enabled_metrics": _parse_json_list(analysis_space.enabled_metrics),
+        "allowed_operations": _parse_json_list(analysis_space.allowed_operations),
+    }
+
+
+def _empty_analysis_space_payload() -> dict:
+    return {
+        "name": "",
+        "datasource": "",
+        "tables": [],
+        "allowed_tables": [],
+        "enabled_metrics": [],
+        "allowed_operations": [],
+    }
+
+
+def _metric_payload(metric: MetaMetric) -> dict:
+    return {
+        "name": metric.name,
+        "label": metric.label,
+        "expression": metric.expression,
+        "description": metric.description,
+        "default_time_column": metric.default_time_column,
+        "allowed_dimensions": _parse_json_list(metric.allowed_dimensions),
+        "enabled": metric.enabled,
+    }
+
+
+def _verified_query_payload(query: MetaVerifiedQuery) -> dict:
+    return {
+        "id": query.query_id,
+        "question": query.question,
+        "sql": query.sql,
+        "tags": _parse_json_list(query.tags),
+        "verified_by": query.verified_by,
+    }
+
+
+def _parse_json_list(value: str | None) -> list:
+    if value is None:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _parse_sample_values(sample_values: str | None) -> list | None:
