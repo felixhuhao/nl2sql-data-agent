@@ -54,7 +54,8 @@ dim_date
 - DuckDB 本地数据源。
 - 电商数仓示例数据生成。
 - 元数据同步。
-- 轻量语义层。
+- DB-backed 语义层、指标、别名、Analysis Space 和 Verified Queries。
+- 规则检索和 focused schema context。
 - NL2SQL Agent 工作流。
 - SQL Guard。
 - 只读 SQL 执行。
@@ -111,7 +112,7 @@ http://127.0.0.1:5174/
 
 ## Smoke Eval
 
-运行 Phase 1 最小回归：
+运行最小回归：
 
 ```bash
 python scripts/run_smoke_eval.py
@@ -119,14 +120,14 @@ python scripts/run_smoke_eval.py
 
 当前 smoke eval 覆盖：
 
-- 5 条正常查询：趋势、地区、渠道、商品 TopN、品类
+- 10 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、指标/别名检索、fallback
 - 5 条安全用例：DELETE、DROP、CREATE、非白名单表、外部读取函数
-- SQL Guard、只读执行器、query-level explainability、chart recommendation
+- retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation
 
 通过时输出类似：
 
 ```text
-10/10 smoke cases passed.
+15/15 smoke cases passed.
 ```
 
 ## Phase 1 当前限制

@@ -6,12 +6,14 @@ from backend.app.agent.state import AgentState
 from backend.app.agent.explainability import build_query_explainability
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationRequest
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
-from backend.app.metadata.service import build_schema_context
+from backend.app.metadata.retrieval import retrieve_metadata_assets
+from backend.app.metadata.service import build_focused_context, build_focused_context_from_retrieval
 from backend.app.sql_guard.guard import guard_sql
 from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
 
 
 SchemaContextBuilder = Callable[[], str]
+Retriever = Callable[[str], dict]
 ScopeBuilder = Callable[[], GuardScope]
 SQLExecutor = Callable[..., QueryResult]
 
@@ -19,11 +21,14 @@ SQLExecutor = Callable[..., QueryResult]
 def run_query_workflow(
     question: str,
     provider: LLMProvider | None = None,
-    schema_context_builder: SchemaContextBuilder = build_schema_context,
+    schema_context_builder: SchemaContextBuilder | None = None,
+    retriever: Retriever = retrieve_metadata_assets,
     scope_builder: ScopeBuilder = build_default_guard_scope,
     executor: SQLExecutor = execute_guarded_sql,
 ) -> AgentState:
     state = AgentState(question=question)
+    if schema_context_builder is None:
+        retrieve_context_node(state, retriever=retriever)
     build_context_node(state, schema_context_builder=schema_context_builder)
     generate_sql_node(state, provider=provider or MockLLMProvider())
     sql_guard_node(state, scope_builder=scope_builder)
@@ -34,11 +39,25 @@ def run_query_workflow(
     return state
 
 
+def retrieve_context_node(
+    state: AgentState,
+    retriever: Retriever = retrieve_metadata_assets,
+) -> AgentState:
+    state.retrieval_result = retriever(state.question)
+    state.completed_steps.append("retrieve_context")
+    return state
+
+
 def build_context_node(
     state: AgentState,
-    schema_context_builder: SchemaContextBuilder = build_schema_context,
+    schema_context_builder: SchemaContextBuilder | None = None,
 ) -> AgentState:
-    state.schema_context = schema_context_builder()
+    if schema_context_builder is not None:
+        state.schema_context = schema_context_builder()
+    elif state.retrieval_result is not None:
+        state.schema_context = build_focused_context_from_retrieval(state.retrieval_result)
+    else:
+        state.schema_context = build_focused_context(state.question)
     state.completed_steps.append("build_context")
     return state
 

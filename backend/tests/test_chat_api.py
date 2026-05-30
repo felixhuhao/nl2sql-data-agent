@@ -3,6 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from backend.app import main
+import backend.app.agent.nodes as nodes_module
 from backend.app.api.chat import iter_chat_events
 from backend.app.execution.runner import QueryResult
 from backend.app.sql_guard.models import GuardResult
@@ -50,6 +51,63 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
     assert events[-1]["data"]["result"]["row_count"] == 1
     assert events[-1]["data"]["chart_recommendation"]["chart_type"] == "line"
     assert events[-1]["data"]["explainability"]["guard_result"]["allowed"] is True
+
+
+def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda retrieval_result: "# Focused Schema Context",
+    )
+
+    def fake_retriever(question: str) -> dict:
+        assert question == "查询最近30天每日销售额和订单数"
+        return {
+            "question": question,
+            "fallback_used": False,
+            "tables": [{"table_name": "fact_orders"}],
+            "columns": [{"table_name": "fact_orders", "column_name": "payment_amount"}],
+            "metrics": [{"name": "sales_amount"}],
+            "verified_queries": [{"id": "recent_30d_daily_sales"}],
+        }
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        return QueryResult(
+            columns=["date_value", "sales_amount", "order_count"],
+            rows=[["2025-12-31", 100, 2]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询最近30天每日销售额和订单数",
+            retriever=fake_retriever,
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    assert events[0] == {
+        "event": "step",
+        "data": {
+            "step": "retrieve_context",
+            "status": "completed",
+            "fallback_used": False,
+            "tables": ["fact_orders"],
+            "columns": ["fact_orders.payment_amount"],
+            "metrics": ["sales_amount"],
+            "verified_queries": ["recent_30d_daily_sales"],
+        },
+    }
+    assert [event["data"].get("step") for event in events[:-1]] == [
+        "retrieve_context",
+        "build_context",
+        "generate_sql",
+        "sql_guard",
+        "execute",
+        "summarize",
+        "recommend_chart",
+    ]
 
 
 def test_iter_chat_events_returns_error_event_for_guard_rejection():

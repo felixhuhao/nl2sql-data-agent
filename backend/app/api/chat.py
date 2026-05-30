@@ -11,13 +11,14 @@ from backend.app.agent.nodes import (
     build_context_node,
     execute_node,
     generate_sql_node,
+    retrieve_context_node,
     sql_guard_node,
     summarize_node,
 )
 from backend.app.agent.state import AgentState
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
-from backend.app.metadata.service import build_schema_context
+from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
 from backend.app.visualization.recommender import recommend_chart
 
@@ -40,12 +41,17 @@ def query_endpoint(request: ChatQueryRequest) -> StreamingResponse:
 def iter_chat_events(
     question: str,
     provider: LLMProvider | None = None,
-    schema_context_builder=build_schema_context,
+    schema_context_builder=None,
+    retriever=retrieve_metadata_assets,
     scope_builder=build_default_guard_scope,
     executor=execute_guarded_sql,
 ) -> Iterator[str]:
     state = AgentState(question=question)
     try:
+        if schema_context_builder is None:
+            retrieve_context_node(state, retriever=retriever)
+            yield _sse_event("step", _retrieval_step_payload(state.retrieval_result))
+
         build_context_node(state, schema_context_builder=schema_context_builder)
         yield _sse_event("step", {"step": "build_context", "status": "completed"})
 
@@ -144,3 +150,19 @@ def _model_dump(value):
     if value is None:
         return None
     return value.model_dump()
+
+
+def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
+    retrieval_result = retrieval_result or {}
+    return {
+        "step": "retrieve_context",
+        "status": "completed",
+        "fallback_used": retrieval_result.get("fallback_used", False),
+        "tables": [table["table_name"] for table in retrieval_result.get("tables", [])],
+        "columns": [
+            f"{column['table_name']}.{column['column_name']}"
+            for column in retrieval_result.get("columns", [])
+        ],
+        "metrics": [metric["name"] for metric in retrieval_result.get("metrics", [])],
+        "verified_queries": [query["id"] for query in retrieval_result.get("verified_queries", [])],
+    }

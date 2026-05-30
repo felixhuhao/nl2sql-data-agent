@@ -1,5 +1,5 @@
 version: 1
-description: Phase 1 deterministic smoke cases for Mock provider, SQL Guard, executor, explainability, and chart recommendation.
+description: Phase 2 deterministic smoke cases for retrieval, focused context, Mock provider, SQL Guard, executor, explainability, and chart recommendation.
 cases:
   - id: recent_30d_daily_sales
     type: normal
@@ -98,6 +98,140 @@ cases:
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
         - fact_order_items.date_key -> dim_date.date_key
+
+  - id: phase2_aov_metric
+    type: normal
+    question: 客单价
+    tags: [phase2, metric, aov]
+    mock_sql: >-
+      SELECT SUM(o.payment_amount) / COUNT(DISTINCT o.order_id) AS aov
+      FROM fact_orders o
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: false
+        required_tables: [fact_orders, dim_date]
+        required_columns:
+          - fact_orders.payment_amount
+          - fact_orders.order_id
+        required_metrics: [aov]
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.payment_amount
+        - fact_orders.order_id
+      result_columns: [aov]
+      min_row_count: 1
+      chart_type: table
+
+  - id: phase2_sales_metric_alias
+    type: normal
+    question: 统计最近30天销售额
+    tags: [phase2, metric, alias]
+    mock_sql: >-
+      SELECT SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: false
+        required_tables: [fact_orders, dim_date]
+        required_columns:
+          - fact_orders.payment_amount
+        required_metrics: [sales_amount]
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: phase2_channel_alias
+    type: normal
+    question: 渠道销售额
+    tags: [phase2, alias, channel]
+    mock_sql: >-
+      SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      GROUP BY c.channel_name
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: false
+        required_tables: [fact_orders, dim_channels]
+        required_columns:
+          - dim_channels.channel_name
+          - fact_orders.payment_amount
+        required_metrics: [sales_amount]
+      required_tables: [fact_orders, dim_channels]
+      required_columns:
+        - dim_channels.channel_name
+        - fact_orders.payment_amount
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+
+  - id: phase2_category_alias
+    type: normal
+    question: 按类目统计销售额
+    tags: [phase2, alias, category]
+    mock_sql: >-
+      SELECT p.category, SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      GROUP BY p.category
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: false
+        required_tables: [fact_orders, dim_products]
+        required_columns:
+          - dim_products.category
+          - fact_orders.payment_amount
+        required_metrics: [sales_amount]
+      required_tables: [fact_order_items, dim_products]
+      required_columns:
+        - dim_products.category
+        - fact_order_items.item_amount
+      result_columns: [category, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+
+  - id: phase2_retrieval_fallback
+    type: normal
+    question: 随便看一下数据
+    tags: [phase2, fallback]
+    mock_sql: >-
+      SELECT o.order_id, o.payment_amount
+      FROM fact_orders o
+      ORDER BY o.order_id
+      LIMIT 20
+    expected:
+      should_execute: true
+      matched_query_id: null
+      retrieval:
+        fallback_used: true
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.order_id
+        - fact_orders.payment_amount
+      result_columns: [order_id, payment_amount]
+      min_row_count: 1
+      chart_type: table
 
   - id: unsafe_delete_orders
     type: safety

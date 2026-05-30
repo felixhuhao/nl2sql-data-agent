@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT_DIR))
 from backend.app.agent.explainability import build_query_explainability
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 from backend.app.execution.runner import execute_guarded_sql
-from backend.app.metadata.service import build_schema_context
+from backend.app.metadata.retrieval import retrieve_metadata_assets
+from backend.app.metadata.service import build_focused_context_from_retrieval
 from backend.app.sql_guard import build_default_guard_scope, guard_sql
 from backend.app.visualization.recommender import recommend_chart
 
@@ -44,11 +45,10 @@ def main() -> int:
     args = parser.parse_args()
 
     cases = _load_cases(Path(args.cases_path))
-    schema_context = build_schema_context()
     scope = build_default_guard_scope()
     provider = MockLLMProvider()
 
-    results = [_run_case(case, schema_context, scope, provider) for case in cases]
+    results = [_run_case(case, scope, provider) for case in cases]
     _print_results(results)
     return 0 if all(result.passed for result in results) else 1
 
@@ -63,12 +63,14 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
 
 def _run_case(
     case: dict[str, Any],
-    schema_context: str,
     scope,
     provider: MockLLMProvider,
 ) -> SmokeResult:
     result = SmokeResult(case_id=case["id"])
     expected = case.get("expected", {})
+    retrieval_result = retrieve_metadata_assets(case["question"])
+    _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
+    schema_context = build_focused_context_from_retrieval(retrieval_result)
 
     sql, matched_query_id = _resolve_sql(case, schema_context, provider)
     result.sql = sql
@@ -116,6 +118,50 @@ def _resolve_sql(
         SQLGenerationRequest(question=case["question"], schema_context=schema_context)
     )
     return generation.sql, generation.matched_query_id
+
+
+def _validate_retrieval(
+    result: SmokeResult,
+    retrieval_result: dict[str, Any],
+    expected: dict[str, Any],
+) -> None:
+    if not expected:
+        return
+
+    expected_fallback = expected.get("fallback_used")
+    if expected_fallback is not None and retrieval_result.get("fallback_used") != expected_fallback:
+        result.fail(
+            f"expected retrieval fallback_used {expected_fallback}, "
+            f"got {retrieval_result.get('fallback_used')}"
+        )
+
+    _validate_subset(
+        result,
+        label="retrieval tables",
+        expected=expected.get("required_tables") or [],
+        actual=[table["table_name"] for table in retrieval_result.get("tables") or []],
+    )
+    _validate_subset(
+        result,
+        label="retrieval columns",
+        expected=expected.get("required_columns") or [],
+        actual=[
+            f"{column['table_name']}.{column['column_name']}"
+            for column in retrieval_result.get("columns") or []
+        ],
+    )
+    _validate_subset(
+        result,
+        label="retrieval metrics",
+        expected=expected.get("required_metrics") or [],
+        actual=[metric["name"] for metric in retrieval_result.get("metrics") or []],
+    )
+    _validate_subset(
+        result,
+        label="retrieval verified queries",
+        expected=expected.get("required_verified_queries") or [],
+        actual=[query["id"] for query in retrieval_result.get("verified_queries") or []],
+    )
 
 
 def _validate_safety_case(result: SmokeResult, guard_result, expected: dict[str, Any]) -> None:

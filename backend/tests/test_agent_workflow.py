@@ -1,17 +1,28 @@
 import pytest
 
+import backend.app.agent.nodes as nodes_module
 from backend.app.agent.nodes import (
     build_context_node,
     execute_node,
     generate_sql_node,
+    retrieve_context_node,
     run_query_workflow,
     sql_guard_node,
 )
 from backend.app.agent.state import AgentState
-from backend.app.core.llm_provider import MockLLMProvider
+from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest, SQLGenerationResult
 from backend.app.execution.runner import QueryResult
 from backend.app.sql_guard.models import GuardResult
 from backend.app.sql_guard.scope import GuardScope
+
+
+def test_retrieve_context_node_sets_result_and_step():
+    state = AgentState(question="test")
+
+    retrieve_context_node(state, retriever=lambda question: {"question": question, "tables": []})
+
+    assert state.retrieval_result == {"question": "test", "tables": []}
+    assert state.completed_steps == ["retrieve_context"]
 
 
 def test_build_context_node_sets_context_and_step():
@@ -20,6 +31,30 @@ def test_build_context_node_sets_context_and_step():
     build_context_node(state, schema_context_builder=lambda: "# Context")
 
     assert state.schema_context == "# Context"
+    assert state.completed_steps == ["build_context"]
+
+
+def test_build_context_node_uses_retrieval_result(monkeypatch):
+    state = AgentState(question="test", retrieval_result={"fallback_used": False})
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda retrieval_result: f"# Focused {retrieval_result['fallback_used']}",
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Focused False"
+    assert state.completed_steps == ["build_context"]
+
+
+def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch):
+    state = AgentState(question="test")
+    monkeypatch.setattr(nodes_module, "build_focused_context", lambda question: f"# Focused {question}")
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Focused test"
     assert state.completed_steps == ["build_context"]
 
 
@@ -101,6 +136,48 @@ def test_run_query_workflow_executes_demo_question():
     ]
     assert executed_sql
     assert "LIMIT 500" in executed_sql[0]
+
+
+def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypatch):
+    captured_schema_context = []
+
+    class CapturingProvider:
+        name = "capturing"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            captured_schema_context.append(request.schema_context)
+            return SQLGenerationResult(
+                sql="SELECT order_id FROM fact_orders",
+                provider=self.name,
+            )
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        return QueryResult(columns=["order_id"], rows=[["O1"]], row_count=1)
+
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda retrieval_result: "# Focused Context",
+    )
+
+    state = run_query_workflow(
+        "查询订单",
+        provider=CapturingProvider(),
+        retriever=lambda question: {"question": question, "fallback_used": False},
+        scope_builder=_scope,
+        executor=fake_executor,
+    )
+
+    assert state.retrieval_result == {"question": "查询订单", "fallback_used": False}
+    assert captured_schema_context == ["# Focused Context"]
+    assert state.completed_steps == [
+        "retrieve_context",
+        "build_context",
+        "generate_sql",
+        "sql_guard",
+        "execute",
+        "summarize",
+    ]
 
 
 def test_run_query_workflow_stops_when_guard_rejects_sql():

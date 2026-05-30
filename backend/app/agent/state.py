@@ -7,6 +7,7 @@ from backend.app.sql_guard.models import GuardResult
 @dataclass
 class AgentState:
     question: str
+    retrieval_result: dict | None = None
     schema_context: str | None = None
     sql: str | None = None
     provider: str | None = None
