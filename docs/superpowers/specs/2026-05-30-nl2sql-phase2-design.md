@@ -1,7 +1,7 @@
 # NL2SQL Phase 2 设计文档
 
 > 日期: 2026-05-30
-> 状态: 已确认
+> 状态: 已完成
 > 前置: Phase 1 工业化最小闭环已完成
 > 范围: 元数据语义层（核心 5 项能力）
 
@@ -12,7 +12,7 @@
 | 检索方式 | 规则匹配 | Phase 2 不引入向量 DB，先验证检索架构 |
 | 语义层数据源 | SQLite | 与 Phase 1 元数据同库，零额外依赖 |
 | 上下文策略 | 聚焦 + fallback | 先扩展必要 join partner，仍不足时回退全量 schema |
-| 语义迁移方式 | seed 函数 + CRUD | seed 提供初始值，运行时完全读 DB，默认不覆盖用户编辑 |
+| 语义迁移方式 | seed 函数，CRUD 后移 | seed 提供初始值，运行时完全读 DB，管理能力放到 Phase 2.5 |
 | 不做 | Feedback Loop、Data Quality | 推到后续 Phase，避免 Phase 2 范围膨胀 |
 
 ## 2. Phase 2 核心能力
@@ -369,6 +369,7 @@ I2.8 Retrieval API
 ```
 I2.9 AgentState + retrieve_context_node + build_context_node 改用聚焦上下文
 I2.10 SSE 流更新（retrieve_context 事件）+ Smoke eval 扩展（15 cases）+ README 更新
+I2.11 Phase 2 Eval Closeout：输出 retrieval/focused context 指标和 Markdown 小报告
 ```
 
 ## 10. 验收标准
@@ -383,6 +384,7 @@ I2.10 SSE 流更新（retrieve_context 事件）+ Smoke eval 扩展（15 cases�
 - [x] 检索 API 可展示 matched tables / columns / metrics / verified queries / join paths
 - [x] SSE 流包含 retrieve_context 步骤
 - [x] 15/15 smoke cases 通过
+- [x] smoke eval 输出 retrieval 命中率、focused/full context 对比和 Markdown 报告
 - [x] 所有现有 pytest 不受影响
 
 新增 5 条 Phase 2 smoke cases：
@@ -393,7 +395,27 @@ I2.10 SSE 流更新（retrieve_context 事件）+ Smoke eval 扩展（15 cases�
 - 品类别名：验证 "品类" 能命中 `dim_products.category` 并补 join path。
 - fallback：验证无法检索的普通查询会回退到 Phase 1 全量 schema，且不会破坏默认查询链路。
 
-## 11. 已知取舍与后续增强
+## 11. Phase 2 Eval Closeout
+
+`scripts/run_smoke_eval.py` 不再只输出 pass/fail，而是同时输出检索和上下文压缩指标，并生成 `evals/reports/smoke_latest.md`。
+
+当前基线：
+
+- smoke cases：15/15 passed
+- normal cases：10
+- safety cases：5
+- fallback used：1/15
+- full schema context：7155 chars
+- avg focused context：2448 chars
+- avg focused context reduction：65.8%
+- retrieval expected hits：
+  - tables：8/8
+  - columns：7/7
+  - metrics：4/4
+
+这个 closeout 作为 Phase 2.5 之前的基线。后续如果增加 semantic asset CRUD，需要用同一份 smoke report 判断配置变更有没有破坏 retrieval/focused context。
+
+## 12. 已知取舍与后续增强
 
 - fact-only 匹配暂不默认补 `dim_date`。当前只在 metric default time column、verified query、或显式时间字段命中时补时间维；如果后续泛查询 smoke case 暴露问题，再加 `fact_orders -> dim_date` 默认补齐规则。
 - join partner expansion 当前保持保守：只在维表命中且缺事实表时反向补最多 3 个 fact partner；已有事实表时只补两端 join key，避免 focused context 退化成全量 schema。

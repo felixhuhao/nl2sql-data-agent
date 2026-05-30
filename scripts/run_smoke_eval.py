@@ -15,19 +15,38 @@ from backend.app.agent.explainability import build_query_explainability
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.retrieval import retrieve_metadata_assets
-from backend.app.metadata.service import build_focused_context_from_retrieval
+from backend.app.metadata.service import build_focused_context_from_retrieval, build_schema_context
 from backend.app.sql_guard import build_default_guard_scope, guard_sql
 from backend.app.visualization.recommender import recommend_chart
 
 
 @dataclass
+class RetrievalCheck:
+    label: str
+    expected: list[str]
+    actual: list[str]
+    missing: list[str]
+
+
+@dataclass
 class SmokeResult:
     case_id: str
+    case_type: str
+    question: str
     passed: bool = True
     messages: list[str] = field(default_factory=list)
     sql: str | None = None
     guard_stage: str | None = None
     row_count: int | None = None
+    retrieval_fallback_used: bool | None = None
+    retrieval_tables: list[str] = field(default_factory=list)
+    retrieval_columns: list[str] = field(default_factory=list)
+    retrieval_metrics: list[str] = field(default_factory=list)
+    retrieval_verified_queries: list[str] = field(default_factory=list)
+    retrieval_checks: list[RetrievalCheck] = field(default_factory=list)
+    focused_context_chars: int | None = None
+    full_context_chars: int | None = None
+    context_reduction_ratio: float | None = None
 
     def fail(self, message: str) -> None:
         self.passed = False
@@ -35,21 +54,29 @@ class SmokeResult:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Phase 1 smoke eval cases.")
+    parser = argparse.ArgumentParser(description="Run deterministic smoke eval cases.")
     parser.add_argument(
         "cases_path",
         nargs="?",
         default="evals/smoke_cases.yaml",
         help="Path to smoke case YAML file.",
     )
+    parser.add_argument(
+        "--report-path",
+        default="evals/reports/smoke_latest.md",
+        help="Path for the Markdown smoke eval report.",
+    )
     args = parser.parse_args()
 
     cases = _load_cases(Path(args.cases_path))
     scope = build_default_guard_scope()
     provider = MockLLMProvider()
+    full_schema_context = build_schema_context()
 
-    results = [_run_case(case, scope, provider) for case in cases]
-    _print_results(results)
+    results = [_run_case(case, scope, provider, full_schema_context) for case in cases]
+    report_path = Path(args.report_path)
+    _write_report(report_path, results)
+    _print_results(results, report_path)
     return 0 if all(result.passed for result in results) else 1
 
 
@@ -65,12 +92,24 @@ def _run_case(
     case: dict[str, Any],
     scope,
     provider: MockLLMProvider,
+    full_schema_context: str,
 ) -> SmokeResult:
-    result = SmokeResult(case_id=case["id"])
+    result = SmokeResult(
+        case_id=case["id"],
+        case_type=case.get("type", ""),
+        question=case["question"],
+    )
     expected = case.get("expected", {})
     retrieval_result = retrieve_metadata_assets(case["question"])
+    _record_retrieval_result(result, retrieval_result)
     _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
     schema_context = build_focused_context_from_retrieval(retrieval_result)
+    result.focused_context_chars = len(schema_context)
+    result.full_context_chars = len(full_schema_context)
+    result.context_reduction_ratio = _context_reduction_ratio(
+        focused_chars=result.focused_context_chars,
+        full_chars=result.full_context_chars,
+    )
 
     sql, matched_query_id = _resolve_sql(case, schema_context, provider)
     result.sql = sql
@@ -106,6 +145,29 @@ def _run_case(
     return result
 
 
+def _record_retrieval_result(result: SmokeResult, retrieval_result: dict[str, Any]) -> None:
+    result.retrieval_fallback_used = bool(retrieval_result.get("fallback_used"))
+    result.retrieval_tables = [
+        table["table_name"] for table in retrieval_result.get("tables") or []
+    ]
+    result.retrieval_columns = [
+        f"{column['table_name']}.{column['column_name']}"
+        for column in retrieval_result.get("columns") or []
+    ]
+    result.retrieval_metrics = [
+        metric["name"] for metric in retrieval_result.get("metrics") or []
+    ]
+    result.retrieval_verified_queries = [
+        query["id"] for query in retrieval_result.get("verified_queries") or []
+    ]
+
+
+def _context_reduction_ratio(focused_chars: int, full_chars: int) -> float | None:
+    if full_chars <= 0:
+        return None
+    return 1 - focused_chars / full_chars
+
+
 def _resolve_sql(
     case: dict[str, Any],
     schema_context: str,
@@ -135,32 +197,29 @@ def _validate_retrieval(
             f"got {retrieval_result.get('fallback_used')}"
         )
 
-    _validate_subset(
+    _validate_retrieval_subset(
         result,
         label="retrieval tables",
         expected=expected.get("required_tables") or [],
-        actual=[table["table_name"] for table in retrieval_result.get("tables") or []],
+        actual=result.retrieval_tables,
     )
-    _validate_subset(
+    _validate_retrieval_subset(
         result,
         label="retrieval columns",
         expected=expected.get("required_columns") or [],
-        actual=[
-            f"{column['table_name']}.{column['column_name']}"
-            for column in retrieval_result.get("columns") or []
-        ],
+        actual=result.retrieval_columns,
     )
-    _validate_subset(
+    _validate_retrieval_subset(
         result,
         label="retrieval metrics",
         expected=expected.get("required_metrics") or [],
-        actual=[metric["name"] for metric in retrieval_result.get("metrics") or []],
+        actual=result.retrieval_metrics,
     )
-    _validate_subset(
+    _validate_retrieval_subset(
         result,
         label="retrieval verified queries",
         expected=expected.get("required_verified_queries") or [],
-        actual=[query["id"] for query in retrieval_result.get("verified_queries") or []],
+        actual=result.retrieval_verified_queries,
     )
 
 
@@ -232,6 +291,27 @@ def _validate_subset(
         result.fail(f"missing expected {label}: {missing}; actual={actual}")
 
 
+def _validate_retrieval_subset(
+    result: SmokeResult,
+    label: str,
+    expected: list[str],
+    actual: list[str],
+) -> None:
+    if not expected:
+        return
+    missing = sorted(set(expected) - set(actual))
+    result.retrieval_checks.append(
+        RetrievalCheck(
+            label=label,
+            expected=sorted(set(expected)),
+            actual=actual,
+            missing=missing,
+        )
+    )
+    if missing:
+        result.fail(f"missing expected {label}: {missing}; actual={actual}")
+
+
 def _format_join_path(path: dict[str, Any]) -> str:
     return (
         f"{path.get('source_table')}.{path.get('source_column')}"
@@ -239,7 +319,7 @@ def _format_join_path(path: dict[str, Any]) -> str:
     )
 
 
-def _print_results(results: list[SmokeResult]) -> None:
+def _print_results(results: list[SmokeResult], report_path: Path) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
         details = f"guard={result.guard_stage}"
@@ -251,6 +331,183 @@ def _print_results(results: list[SmokeResult]) -> None:
 
     passed = sum(1 for result in results if result.passed)
     print(f"\n{passed}/{len(results)} smoke cases passed.")
+    summary = _summary_metrics(results)
+    print(
+        "focused context: "
+        f"avg={summary['avg_focused_context_chars']} chars, "
+        f"full={summary['full_context_chars']} chars, "
+        f"avg_reduction={_format_percent(summary['avg_context_reduction_ratio'])}, "
+        f"fallback={summary['fallback_cases']}/{len(results)}"
+    )
+    print(f"report: {report_path}")
+
+
+def _write_report(path: Path, results: list[SmokeResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_render_report(results), encoding="utf-8")
+
+
+def _render_report(results: list[SmokeResult]) -> str:
+    summary = _summary_metrics(results)
+    retrieval_stats = _retrieval_stats(results)
+    lines = [
+        "# Smoke Eval Report",
+        "",
+        "## Summary",
+        "",
+        f"- Cases: {summary['total_cases']}",
+        f"- Passed: {summary['passed_cases']}/{summary['total_cases']}",
+        f"- Normal cases: {summary['normal_cases']}",
+        f"- Safety cases: {summary['safety_cases']}",
+        f"- Fallback used: {summary['fallback_cases']}/{summary['total_cases']}",
+        f"- Full schema context chars: {summary['full_context_chars']}",
+        f"- Avg focused context chars: {summary['avg_focused_context_chars']}",
+        f"- Avg focused context reduction: {_format_percent(summary['avg_context_reduction_ratio'])}",
+        "",
+        "## Retrieval Expected Hits",
+        "",
+        "| Asset | Hit | Expected | Rate |",
+        "|-------|-----|----------|------|",
+    ]
+    if retrieval_stats:
+        for label, stats in retrieval_stats.items():
+            lines.append(
+                f"| {_md_cell(label)} | {stats['hits']} | {stats['expected']} | "
+                f"{_format_percent(_safe_rate(stats['hits'], stats['expected']))} |"
+            )
+    else:
+        lines.append("| n/a | 0 | 0 | n/a |")
+
+    lines.extend(
+        [
+            "",
+            "## Case Results",
+            "",
+            "| Case | Status | Type | Fallback | Focused Chars | Reduction | Guard | Rows | Retrieved Tables | Retrieved Metrics |",
+            "|------|--------|------|----------|---------------|-----------|-------|------|------------------|-------------------|",
+        ]
+    )
+    for result in results:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(result.case_id),
+                    "PASS" if result.passed else "FAIL",
+                    _md_cell(result.case_type or "-"),
+                    str(result.retrieval_fallback_used),
+                    str(result.focused_context_chars),
+                    _format_percent(result.context_reduction_ratio),
+                    _md_cell(result.guard_stage or "-"),
+                    str(result.row_count) if result.row_count is not None else "-",
+                    _md_cell(", ".join(result.retrieval_tables) or "-"),
+                    _md_cell(", ".join(result.retrieval_metrics) or "-"),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(["", "## Failure Details", ""])
+    failures = [result for result in results if not result.passed]
+    if not failures:
+        lines.append("No failures.")
+    else:
+        for result in failures:
+            lines.extend([f"### {result.case_id}", ""])
+            for message in result.messages:
+                lines.append(f"- {message}")
+            lines.append("")
+
+    lines.extend(["", "## Retrieval Details", ""])
+    for result in results:
+        lines.extend(
+            [
+                f"### {result.case_id}",
+                "",
+                f"- Question: {result.question}",
+                f"- Tables: {', '.join(result.retrieval_tables) or '-'}",
+                f"- Columns: {', '.join(result.retrieval_columns) or '-'}",
+                f"- Metrics: {', '.join(result.retrieval_metrics) or '-'}",
+                f"- Verified queries: {', '.join(result.retrieval_verified_queries) or '-'}",
+            ]
+        )
+        if result.retrieval_checks:
+            lines.append("- Expected retrieval checks:")
+            for check in result.retrieval_checks:
+                status = "PASS" if not check.missing else "FAIL"
+                lines.append(
+                    f"  - {check.label}: {status}; expected={check.expected}; missing={check.missing}"
+                )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
+    focused_lengths = [
+        result.focused_context_chars
+        for result in results
+        if result.focused_context_chars is not None
+    ]
+    reductions = [
+        result.context_reduction_ratio
+        for result in results
+        if result.context_reduction_ratio is not None
+    ]
+    full_lengths = [
+        result.full_context_chars
+        for result in results
+        if result.full_context_chars is not None
+    ]
+    return {
+        "total_cases": len(results),
+        "passed_cases": sum(1 for result in results if result.passed),
+        "normal_cases": sum(1 for result in results if result.case_type == "normal"),
+        "safety_cases": sum(1 for result in results if result.case_type == "safety"),
+        "fallback_cases": sum(1 for result in results if result.retrieval_fallback_used),
+        "full_context_chars": full_lengths[0] if full_lengths else 0,
+        "avg_focused_context_chars": _average_int(focused_lengths),
+        "avg_context_reduction_ratio": _average_float(reductions),
+    }
+
+
+def _retrieval_stats(results: list[SmokeResult]) -> dict[str, dict[str, int]]:
+    stats: dict[str, dict[str, int]] = {}
+    for result in results:
+        for check in result.retrieval_checks:
+            expected = set(check.expected)
+            actual = set(check.actual)
+            label_stats = stats.setdefault(check.label, {"hits": 0, "expected": 0})
+            label_stats["hits"] += len(expected & actual)
+            label_stats["expected"] += len(expected)
+    return stats
+
+
+def _average_int(values: list[int]) -> int:
+    if not values:
+        return 0
+    return round(sum(values) / len(values))
+
+
+def _average_float(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _safe_rate(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _format_percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.1f}%"
+
+
+def _md_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
 
 
 if __name__ == "__main__":

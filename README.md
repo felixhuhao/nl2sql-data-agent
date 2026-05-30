@@ -128,7 +128,11 @@ python scripts/run_smoke_eval.py
 
 ```text
 15/15 smoke cases passed.
+focused context: avg=2448 chars, full=7155 chars, avg_reduction=65.8%, fallback=1/15
+report: evals\reports\smoke_latest.md
 ```
+
+报告会写入 `evals/reports/smoke_latest.md`，包含 retrieval expected hit rate、full schema vs focused context 对比、每条 case 的检索资产和失败详情。
 
 ## Phase 1 当前限制
 
