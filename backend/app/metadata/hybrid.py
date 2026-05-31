@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.metadata.vector.searcher import VectorRetrievalResult, retrieve_vector_assets
+from backend.app.metadata.vector.searcher import (
+    ValueHit,
+    VectorRetrievalResult,
+    retrieve_vector_assets,
+    search_values,
+)
 from backend.app.metadata.vector.store import VectorSearchHit
 
 
@@ -42,6 +47,13 @@ def hybrid_merge(
         _verified_query_payload,
         merged,
     )
+    if vector_result.vector_used and vector_result.index_status == "ready":
+        _merge_value_hits(
+            table_matches,
+            column_matches,
+            _safe_search_values(question, query_vector=vector_result.query_vector),
+            merged,
+        )
 
     merged["tables"] = _rank_with_hybrid_score(table_matches.values(), table_limit, "table")
     merged["columns"] = _rank_with_hybrid_score(column_matches.values(), column_limit, "column")
@@ -97,6 +109,63 @@ def _merge_vector_hits(
         if reason not in matches[key]["reasons"]:
             matches[key]["reasons"].append(reason)
         _add_sources(result["retrieval_meta"]["sources"], _asset_key(asset_type, payload), [reason])
+
+
+def _merge_value_hits(
+    table_matches: dict[Any, dict],
+    column_matches: dict[Any, dict],
+    value_hits: list[ValueHit],
+    result: dict,
+) -> None:
+    for hit in value_hits:
+        table_payload = {
+            "table_name": hit.table_name,
+            "source": "value_recall",
+        }
+        table_key = hit.table_name
+        if table_key not in table_matches:
+            table_matches[table_key] = {**table_payload, "score": 0, "reasons": []}
+        table_matches[table_key]["_vector_score"] = max(table_matches[table_key].get("_vector_score", 0.0), hit.score)
+
+        column_key = (hit.table_name, hit.column_name)
+        if column_key not in column_matches:
+            column_matches[column_key] = {
+                "table_name": hit.table_name,
+                "column_name": hit.column_name,
+                "matched_aliases": [],
+                "score": 0,
+                "reasons": [],
+            }
+        column_matches[column_key]["_vector_score"] = max(
+            column_matches[column_key].get("_vector_score", 0.0),
+            hit.score,
+        )
+
+        reason = f"value:{hit.matched_value}"
+        for item in (table_matches[table_key], column_matches[column_key]):
+            if reason not in item["reasons"]:
+                item["reasons"].append(reason)
+
+        result["retrieval_meta"]["value_hits"].append(
+            {
+                "table_name": hit.table_name,
+                "column_name": hit.column_name,
+                "matched_value": hit.matched_value,
+                "source": hit.source,
+                "score": hit.score,
+            }
+        )
+        _add_sources(result["retrieval_meta"]["sources"], f"table:{hit.table_name}", [reason])
+        _add_sources(result["retrieval_meta"]["sources"], f"column:{hit.column_asset_id}", [reason])
+
+
+def _safe_search_values(question: str, *, query_vector: list[float] | None = None) -> list[ValueHit]:
+    try:
+        if query_vector is None:
+            return search_values(question)
+        return search_values(question, query_vector=query_vector)
+    except Exception:
+        return []
 
 
 def _rank_with_hybrid_score(items, limit: int, asset_type: str) -> list[dict]:

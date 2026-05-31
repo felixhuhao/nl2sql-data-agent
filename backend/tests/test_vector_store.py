@@ -18,8 +18,8 @@ def test_ensure_tables_creates_all_vector_tables(monkeypatch):
     assert db.tables[store.METADATA_TABLE_NAME].schema == "metadata"
 
 
-def test_upsert_search_and_delete(monkeypatch):
-    db = FakeDB.with_tables(["metric_vectors"])
+def test_upsert_search_list_values_and_delete(monkeypatch):
+    db = FakeDB.with_tables(["metric_vectors", "value_vectors"])
     monkeypatch.setattr(store, "_records_to_arrow_table", lambda records: records)
     vector_store = store.LanceVectorStore(db_path=Path("unused"), db=db)
 
@@ -48,6 +48,11 @@ def test_upsert_search_and_delete(monkeypatch):
         )
     ]
     assert db.tables["metric_vectors"].queries[0].where_clause == "asset_type = 'metric'"
+
+    values = vector_store.list_values(limit=5)
+    assert values == []
+    assert db.tables["value_vectors"].queries[0].vector is None
+    assert db.tables["value_vectors"].queries[0].limit_value == 5
 
     vector_store.delete_by_ids("metric_vectors", ["metric:sales_amount", "metric:aov's"])
     assert db.tables["metric_vectors"].deleted_predicates == [

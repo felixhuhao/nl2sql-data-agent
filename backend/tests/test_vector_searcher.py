@@ -64,18 +64,96 @@ def test_retrieve_vector_assets_searches_ready_index_and_filters_threshold(monke
     }
 
 
+def test_search_values_prefers_exact_and_deduplicates(monkeypatch):
+    fake_store = FakeVectorStore(
+        status=VectorIndexStatus(status="ready"),
+        value_hits=[
+            VectorSearchHit(
+                "value",
+                "dim_regions.region_group:华东",
+                "华东",
+                0.0,
+                0.5,
+                {"table_name": "dim_regions", "column_name": "region_group", "value": "华东"},
+            ),
+            VectorSearchHit(
+                "value",
+                "dim_channels.channel_name:天猫",
+                "天猫",
+                0.0,
+                0.5,
+                {"table_name": "dim_channels", "column_name": "channel_name", "value": "天猫"},
+            ),
+        ],
+        hits={
+            "value_vectors": [
+                VectorSearchHit(
+                    "value",
+                    "dim_regions.region_group:华东",
+                    "华东",
+                    0.1,
+                    0.9,
+                    {"table_name": "dim_regions", "column_name": "region_group", "value": "华东"},
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(threshold=0.7))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+
+    hits = searcher.search_values("华东地区天猫渠道销售额", query_vector=[0.1, 0.2, 0.3])
+
+    assert {
+        (hit.table_name, hit.column_name, hit.matched_value, hit.source, hit.score)
+        for hit in hits
+    } == {
+        ("dim_regions", "region_group", "华东", "exact", 1.0),
+        ("dim_channels", "channel_name", "天猫", "exact", 1.0),
+    }
+
+
+def test_search_values_embeds_question_for_vector_value_search(monkeypatch):
+    fake_store = FakeVectorStore(
+        status=VectorIndexStatus(status="ready"),
+        hits={
+            "value_vectors": [
+                VectorSearchHit(
+                    "value",
+                    "dim_products.category:美妆个护",
+                    "美妆个护",
+                    0.1,
+                    0.9,
+                    {"table_name": "dim_products", "column_name": "category", "value": "美妆个护"},
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(threshold=0.7))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+    monkeypatch.setattr(searcher, "embed_text", lambda question: [0.1, 0.2, 0.3])
+
+    hits = searcher.search_values("彩妆护肤销售额")
+
+    assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source, hit.score) for hit in hits] == [
+        ("dim_products", "category", "美妆个护", "vector", 0.9)
+    ]
+    assert fake_store.search_calls == [("value_vectors", [0.1, 0.2, 0.3], 20)]
+
+
 def _settings(vector_enabled=True, embedding_model="D:/Models/BAAI/bge-m3", threshold=0.7):
     return SimpleNamespace(
         vector_enabled=vector_enabled,
         embedding_model=embedding_model,
         vector_similarity_threshold=threshold,
+        value_vector_similarity_threshold=threshold,
     )
 
 
 class FakeVectorStore:
-    def __init__(self, status, hits=None) -> None:
+    def __init__(self, status, hits=None, value_hits=None) -> None:
         self._status = status
         self._hits = hits or {}
+        self._value_hits = value_hits or []
         self.search_calls = []
 
     def status(self, expected_model=None, expected_dimension=None):
@@ -86,3 +164,6 @@ class FakeVectorStore:
     def search(self, table_name, vector, limit=10):
         self.search_calls.append((table_name, vector, limit))
         return self._hits.get(table_name, [])
+
+    def list_values(self):
+        return self._value_hits

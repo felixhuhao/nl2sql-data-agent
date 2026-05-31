@@ -140,6 +140,10 @@ class LanceVectorStore:
         records = query.limit(limit).to_list()
         return [_hit_from_record(record) for record in records]
 
+    def list_values(self, *, limit: int = 10_000) -> list[VectorSearchHit]:
+        records = self._database().open_table("value_vectors").search().limit(limit).to_list()
+        return [_hit_from_record(record) for record in records]
+
     def write_metadata(self, metadata: VectorIndexMetadata) -> None:
         table = self._database().open_table(METADATA_TABLE_NAME)
         data = _records_to_arrow_table([metadata.to_record()])

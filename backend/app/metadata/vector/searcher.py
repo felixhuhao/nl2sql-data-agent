@@ -16,9 +16,23 @@ class VectorRetrievalResult:
     index_status: str
     hits: dict[str, list[VectorSearchHit]] = field(default_factory=dict)
     stale_reason: str | None = None
+    query_vector: list[float] | None = None
 
     def has_hits(self) -> bool:
         return any(self.hits.values())
+
+
+@dataclass(frozen=True)
+class ValueHit:
+    table_name: str
+    column_name: str
+    matched_value: str
+    source: str
+    score: float
+
+    @property
+    def column_asset_id(self) -> str:
+        return f"{self.table_name}.{self.column_name}"
 
 
 def retrieve_vector_assets(question: str, *, limit: int = DEFAULT_VECTOR_LIMIT) -> VectorRetrievalResult:
@@ -63,7 +77,27 @@ def retrieve_vector_assets(question: str, *, limit: int = DEFAULT_VECTOR_LIMIT) 
             threshold,
         ),
     }
-    return VectorRetrievalResult(vector_used=True, index_status="ready", hits=hits)
+    return VectorRetrievalResult(vector_used=True, index_status="ready", hits=hits, query_vector=query_vector)
+
+
+def search_values(
+    question: str,
+    *,
+    query_vector: list[float] | None = None,
+    limit: int = DEFAULT_VECTOR_LIMIT * 2,
+) -> list[ValueHit]:
+    settings = get_settings()
+    vector_store = get_vector_store()
+    exact_hits = _exact_value_hits(question, vector_store.list_values())
+    vector_hits: list[ValueHit] = []
+    if query_vector is None:
+        query_vector = embed_text(question)
+    if query_vector is not None:
+        vector_hits = _vector_value_hits(
+            vector_store.search("value_vectors", query_vector, limit=limit),
+            settings.value_vector_similarity_threshold,
+        )
+    return _deduplicate_value_hits([*exact_hits, *vector_hits])
 
 
 def _filter_hits(hits: list[VectorSearchHit], threshold: float) -> list[VectorSearchHit]:
@@ -76,3 +110,52 @@ def _result_from_status(status: VectorIndexStatus) -> VectorRetrievalResult:
         index_status=status.status,
         stale_reason=status.stale_reason,
     )
+
+
+def _exact_value_hits(question: str, hits: list[VectorSearchHit]) -> list[ValueHit]:
+    normalized_question = _normalize_value(question)
+    value_hits = []
+    for hit in hits:
+        value = str(hit.metadata.get("value") or hit.text).strip()
+        normalized_value = _normalize_value(value)
+        if normalized_value and normalized_value in normalized_question:
+            value_hits.append(_value_hit(hit, value, "exact", 1.0))
+    return value_hits
+
+
+def _vector_value_hits(hits: list[VectorSearchHit], threshold: float) -> list[ValueHit]:
+    return [
+        _value_hit(hit, str(hit.metadata.get("value") or hit.text), "vector", hit.score)
+        for hit in hits
+        if hit.score >= threshold
+    ]
+
+
+def _value_hit(hit: VectorSearchHit, value: str, source: str, score: float) -> ValueHit:
+    table_name, column_name = _split_value_asset_id(hit.asset_id)
+    return ValueHit(
+        table_name=str(hit.metadata.get("table_name") or table_name),
+        column_name=str(hit.metadata.get("column_name") or column_name),
+        matched_value=value,
+        source=source,
+        score=score,
+    )
+
+
+def _deduplicate_value_hits(hits: list[ValueHit]) -> list[ValueHit]:
+    best: dict[tuple[str, str, str], ValueHit] = {}
+    for hit in hits:
+        key = (hit.table_name, hit.column_name, hit.matched_value)
+        if key not in best or hit.score > best[key].score:
+            best[key] = hit
+    return sorted(best.values(), key=lambda hit: (-hit.score, hit.table_name, hit.column_name, hit.matched_value))
+
+
+def _split_value_asset_id(asset_id: str) -> tuple[str, str]:
+    qualified_column, _, _ = asset_id.partition(":")
+    table_name, _, column_name = qualified_column.partition(".")
+    return table_name, column_name
+
+
+def _normalize_value(value: str) -> str:
+    return "".join(str(value).lower().split())
