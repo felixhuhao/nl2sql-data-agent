@@ -2,19 +2,68 @@ from backend.app.core.llm_provider import SQLGenerationRequest
 
 
 def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[str, str]]:
+    user_message = {
+        "role": "user",
+        "content": (
+            f"Schema context:\n{request.schema_context}\n\n"
+            f"Question:\n{request.question}"
+        ),
+    }
+    if request.repair is not None:
+        return [
+            {
+                "role": "system",
+                "content": _system_prompt(),
+            },
+            user_message,
+            {
+                "role": "assistant",
+                "content": request.repair.original_sql,
+            },
+            {
+                "role": "user",
+                "content": _repair_prompt(request),
+            },
+        ]
+
     return [
         {
             "role": "system",
             "content": _system_prompt(),
         },
-        {
-            "role": "user",
-            "content": (
-                f"Schema context:\n{request.schema_context}\n\n"
-                f"Question:\n{request.question}"
-            ),
-        },
+        user_message,
     ]
+
+
+def _repair_prompt(request: SQLGenerationRequest) -> str:
+    if request.repair is None:
+        raise ValueError("repair context is required.")
+
+    lines = [
+        "The previous SQL attempt failed.",
+        f"Attempt: {request.repair.attempt}",
+        f"Error stage: {request.repair.error_stage}",
+        f"Error kind: {request.repair.error_kind}",
+        f"Error reason: {request.repair.error_reason}",
+    ]
+    if request.repair.normalized_sql:
+        lines.extend(["", "Normalized SQL:", request.repair.normalized_sql])
+    if request.repair.error_kind == "fanout_guard":
+        lines.extend(
+            [
+                "",
+                "If the error is fanout_guard, do not aggregate fact_orders.payment_amount after joining fact_order_items.",
+                "For product/category sales, use fact_order_items.item_amount.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Fix the SQL using only the provided schema context.",
+            "Return corrected SQL only.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _system_prompt() -> str:

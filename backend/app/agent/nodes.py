@@ -4,7 +4,12 @@ from collections.abc import Callable
 
 from backend.app.agent.state import AgentState
 from backend.app.agent.explainability import build_query_explainability
-from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationRequest
+from backend.app.core.llm_provider import (
+    LLMProvider,
+    MockLLMProvider,
+    SQLGenerationRequest,
+    SQLRepairContext,
+)
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context, build_focused_context_from_retrieval
@@ -112,6 +117,41 @@ def generate_sql_node(
     state.provider = result.provider
     state.matched_query_id = result.matched_query_id
     state.completed_steps.append("generate_sql")
+    return state
+
+
+def repair_sql_node(
+    state: AgentState,
+    provider: LLMProvider,
+    repair_context: SQLRepairContext,
+) -> AgentState:
+    if state.schema_context is None:
+        raise ValueError("schema_context is required before SQL repair.")
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question=state.question,
+            schema_context=state.schema_context,
+            repair=repair_context,
+        )
+    )
+    state.sql = result.sql
+    state.provider = result.provider
+    state.matched_query_id = result.matched_query_id
+    state.repair_history.append(
+        {
+            "attempt": repair_context.attempt,
+            "original_sql": repair_context.original_sql,
+            "repaired_sql": result.sql,
+            "error_stage": repair_context.error_stage,
+            "error_kind": repair_context.error_kind,
+            "error_reason": repair_context.error_reason,
+            "normalized_sql": repair_context.normalized_sql,
+            "succeeded": None,
+            "final_stage": None,
+        }
+    )
+    state.completed_steps.append("repair_sql")
     return state
 
 

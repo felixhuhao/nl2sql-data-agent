@@ -8,9 +8,20 @@ from backend.app.metadata.service import list_verified_queries
 
 
 @dataclass(frozen=True)
+class SQLRepairContext:
+    attempt: int
+    original_sql: str
+    error_stage: str
+    error_kind: str
+    error_reason: str
+    normalized_sql: str | None = None
+
+
+@dataclass(frozen=True)
 class SQLGenerationRequest:
     question: str
     schema_context: str
+    repair: SQLRepairContext | None = None
 
 
 @dataclass(frozen=True)

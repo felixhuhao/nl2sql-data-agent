@@ -6,12 +6,18 @@ from backend.app.agent.nodes import (
     execute_node,
     generate_sql_node,
     intent_guard_node,
+    repair_sql_node,
     retrieve_context_node,
     run_query_workflow,
     sql_guard_node,
 )
 from backend.app.agent.state import AgentState
-from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest, SQLGenerationResult
+from backend.app.core.llm_provider import (
+    MockLLMProvider,
+    SQLGenerationRequest,
+    SQLGenerationResult,
+    SQLRepairContext,
+)
 from backend.app.execution.runner import QueryResult
 from backend.app.sql_guard.models import GuardResult
 from backend.app.sql_guard.scope import GuardScope
@@ -81,6 +87,59 @@ def test_generate_sql_node_requires_schema_context():
 
     with pytest.raises(ValueError, match="schema_context"):
         generate_sql_node(state, provider=MockLLMProvider())
+
+
+def test_repair_sql_node_records_repair_history():
+    captured_requests = []
+
+    class RepairProvider:
+        name = "repair-provider"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="SELECT payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    repair_context = SQLRepairContext(
+        attempt=1,
+        original_sql="SELECT product_id FROM fact_orders",
+        error_stage="sql_guard",
+        error_kind="scope_guard",
+        error_reason="Column fact_orders.product_id is not allowed.",
+    )
+    state = AgentState(
+        question="按类目统计销售额",
+        schema_context="# Schema Context",
+        sql=repair_context.original_sql,
+    )
+
+    repair_sql_node(state, provider=RepairProvider(), repair_context=repair_context)
+
+    assert captured_requests == [
+        SQLGenerationRequest(
+            question="按类目统计销售额",
+            schema_context="# Schema Context",
+            repair=repair_context,
+        )
+    ]
+    assert state.sql == "SELECT payment_amount FROM fact_orders"
+    assert state.provider == "repair-provider"
+    assert state.completed_steps == ["repair_sql"]
+    assert state.repair_history == [
+        {
+            "attempt": 1,
+            "original_sql": "SELECT product_id FROM fact_orders",
+            "repaired_sql": "SELECT payment_amount FROM fact_orders",
+            "error_stage": "sql_guard",
+            "error_kind": "scope_guard",
+            "error_reason": "Column fact_orders.product_id is not allowed.",
+            "normalized_sql": None,
+            "succeeded": None,
+            "final_stage": None,
+        }
+    ]
 
 
 def test_sql_guard_node_requires_sql():

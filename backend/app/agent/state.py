@@ -16,6 +16,8 @@ class AgentState:
     query_result: QueryResult | None = None
     summary: str | None = None
     explainability: dict | None = None
+    execution_error: str | None = None
     error: str | None = None
     stopped_at: str | None = None
+    repair_history: list[dict] = field(default_factory=list)
     completed_steps: list[str] = field(default_factory=list)
