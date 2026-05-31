@@ -70,6 +70,25 @@ export type Relationship = {
   description: string | null;
 };
 
+export type VectorIndexStatus = {
+  vector_enabled: boolean;
+  status: string;
+  embedding_model?: string | null;
+  embedding_dimension?: number | null;
+  built_at?: string | null;
+  asset_counts?: Record<string, number>;
+  stale_reason?: string | null;
+  qdrant_url?: string;
+  qdrant_collection_prefix?: string;
+};
+
+export type VectorIndexBuildResult = {
+  embedding_model: string;
+  embedding_dimension: number;
+  built_at: string;
+  asset_counts: Record<string, number>;
+};
+
 export type MetricPayload = {
   name?: string;
   label?: string;
@@ -193,6 +212,16 @@ export async function updateRelationship(id: number, payload: RelationshipPayloa
   return requestJson<Relationship>(`/api/metadata/relationships/${id}`, {
     method: "PUT",
     body: payload,
+  });
+}
+
+export async function getVectorIndexStatus() {
+  return requestJson<VectorIndexStatus>("/api/metadata/vector/status");
+}
+
+export async function rebuildVectorIndex() {
+  return requestJson<VectorIndexBuildResult>("/api/metadata/vector/rebuild", {
+    method: "POST",
   });
 }
 

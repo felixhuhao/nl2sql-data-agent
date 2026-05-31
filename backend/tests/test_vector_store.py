@@ -131,6 +131,25 @@ def test_status_reports_missing_and_stale():
     assert "Missing Qdrant collections" in (missing_store.status().stale_reason or "")
 
 
+def test_mark_stale_persists_stale_reason():
+    client = FakeQdrantClient.with_collections(f"test_{name}" for name in store.ALL_TABLE_NAMES)
+    vector_store = store.QdrantVectorStore(client=client, collection_prefix="test")
+    vector_store.write_metadata(
+        store.VectorIndexMetadata(
+            embedding_model="model-a",
+            embedding_dimension=3,
+            built_at="2026-05-31T10:00:00Z",
+            asset_counts={"metric": 3},
+        )
+    )
+
+    vector_store.mark_stale("Metric changed.")
+
+    status = vector_store.status(expected_model="model-a", expected_dimension=3)
+    assert status.status == "stale"
+    assert status.stale_reason == "Metric changed."
+
+
 def test_invalid_table_name_is_rejected():
     vector_store = store.QdrantVectorStore(client=FakeQdrantClient(), collection_prefix="test")
 

@@ -52,6 +52,45 @@ def test_retrieve_metadata_endpoint_rejects_blank_question():
     assert response.json()["detail"] == "question is required"
 
 
+def test_vector_status_endpoint_returns_index_status(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.api.metadata.get_vector_index_status",
+        lambda: {
+            "vector_enabled": False,
+            "status": "disabled",
+            "asset_counts": {},
+        },
+    )
+    client = TestClient(main.app)
+
+    response = client.get("/api/metadata/vector/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "vector_enabled": False,
+        "status": "disabled",
+        "asset_counts": {},
+    }
+
+
+def test_rebuild_vector_index_endpoint_returns_build_result(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.api.metadata.rebuild_vector_index_payload",
+        lambda: {
+            "embedding_model": "/models/BAAI/bge-m3",
+            "embedding_dimension": 1024,
+            "built_at": "2026-05-31T10:00:00Z",
+            "asset_counts": {"metric": 3},
+        },
+    )
+    client = TestClient(main.app)
+
+    response = client.post("/api/metadata/vector/rebuild")
+
+    assert response.status_code == 200
+    assert response.json()["asset_counts"] == {"metric": 3}
+
+
 def test_create_alias_endpoint_makes_retrieval_hit_alias(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
@@ -74,6 +113,29 @@ def test_create_alias_endpoint_makes_retrieval_hit_alias(monkeypatch):
         (column["table_name"], column["column_name"])
         for column in retrieve_response.json()["columns"]
     } == {("fact_orders", "payment_amount")}
+
+
+def test_admin_mutation_marks_vector_index_stale(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    stale_reasons = []
+    monkeypatch.setattr(
+        "backend.app.api.metadata.mark_vector_index_stale",
+        lambda reason: stale_reasons.append(reason),
+    )
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/metadata/aliases",
+        json={
+            "table_name": "fact_orders",
+            "column_name": "payment_amount",
+            "alias": "成交金额",
+        },
+    )
+
+    assert response.status_code == 200
+    assert stale_reasons == ["Alias changed."]
 
 
 def test_create_alias_endpoint_rejects_duplicate_and_invalid_column(monkeypatch):

@@ -62,6 +62,7 @@ dim_date
 - SSE 查询步骤流。
 - 表格和图表展示。
 - Eval Runner。
+- Qdrant 向量召回、Value Recall 和向量/规则对比评测。
 
 ## 快速启动
 
@@ -92,6 +93,33 @@ npm run dev
 http://127.0.0.1:5174/
 ```
 
+## 向量索引
+
+Phase 4 使用 Qdrant 作为向量数据库，embedding 模型必须显式配置，不做隐式 fallback。
+
+本地开发需要先启动 Qdrant，例如：
+
+```bash
+docker run -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
+```
+
+后端 `.env` 示例：
+
+```env
+VECTOR_ENABLED=true
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION_PREFIX=nl2sql
+EMBEDDING_MODEL=D:/Models/BAAI/bge-m3
+```
+
+重建索引：
+
+```bash
+python scripts/rebuild_vector_index.py
+```
+
+也可以在前端管理页的“向量索引”Tab 查看状态并触发重建。
+
 ## Phase 1 Demo 问题
 
 推荐演示：
@@ -120,7 +148,7 @@ python scripts/run_smoke_eval.py
 
 当前 smoke eval 覆盖：
 
-- 22 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback
+- 28 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback、Value Recall、语义向量召回
 - 9 条安全用例：DELETE、DROP、CREATE、UPDATE、TRUNCATE、非白名单表、外部读取函数、fanout 风险
 - retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation
 - 错误归因：retrieval_miss、sql_generation_error、sql_generation_timeout、sql_generation_mismatch、sql_invalid、guard_blocked、fanout_risk、guard_mismatch、execution_error、result_mismatch、chart_mismatch、explainability_error、explainability_mismatch
@@ -128,8 +156,8 @@ python scripts/run_smoke_eval.py
 通过时输出类似：
 
 ```text
-30/30 smoke cases passed.
-focused context: avg=2293 chars, full=7155 chars, avg_reduction=68.0%, fallback=2/30
+37/37 smoke cases passed.
+focused context: avg=2288 chars, full=7155 chars, avg_reduction=68.0%, fallback=3/37
 report: evals\reports\smoke_latest.md
 ```
 
@@ -142,6 +170,14 @@ python scripts/run_smoke_eval.py --provider deepseek --report-path evals/reports
 ```
 
 Real eval 需要配置 `DEEPSEEK_API_KEY`。显式 `--provider deepseek` 且缺少 key 时，runner 会直接报错退出；Mock eval 不需要 key。
+
+运行规则检索和向量检索对比：
+
+```bash
+python scripts/run_smoke_eval.py --provider mock --vector-compare --report-path evals/reports/phase4_compare.md
+```
+
+`--vector-compare` 会分别执行 rule-only 和 rule+vector 两组。真正验证向量效果需要 Qdrant 已启动、`VECTOR_ENABLED=true` 且已重建索引。
 
 ## 当前限制
 
@@ -176,3 +212,4 @@ Real eval 需要配置 `DEEPSEEK_API_KEY`。显式 `--provider deepseek` 且缺�
 - [NL2SQL_RESEARCH.md](docs/NL2SQL_RESEARCH.md)
 - [ROADMAP.md](docs/ROADMAP.md)
 - [Phase 3 Design](docs/superpowers/specs/2026-05-30-nl2sql-phase3-design.md)
+- [Phase 4 Design](docs/superpowers/specs/2026-05-30-nl2sql-phase4-design.md)

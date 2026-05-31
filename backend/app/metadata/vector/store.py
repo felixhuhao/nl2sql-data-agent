@@ -53,6 +53,7 @@ class VectorIndexMetadata:
     built_at: str
     asset_counts: dict[str, int] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
+    stale_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,7 @@ class QdrantVectorStore:
                         "embedding_dimension": metadata.embedding_dimension,
                         "built_at": metadata.built_at,
                         "asset_counts": metadata.asset_counts,
+                        "stale_reason": metadata.stale_reason,
                     },
                 }
             ],
@@ -216,6 +218,8 @@ class QdrantVectorStore:
             built_at=metadata.built_at,
             asset_counts=metadata.asset_counts,
         )
+        if metadata.stale_reason:
+            return _stale(status, metadata.stale_reason)
         if metadata.schema_version != SCHEMA_VERSION:
             return _stale(status, f"Schema version mismatch: {metadata.schema_version} != {SCHEMA_VERSION}.")
         if expected_model is not None and metadata.embedding_model != expected_model:
@@ -223,6 +227,22 @@ class QdrantVectorStore:
         if expected_dimension is not None and metadata.embedding_dimension != expected_dimension:
             return _stale(status, "Embedding dimension mismatch.")
         return status
+
+    def mark_stale(self, reason: str) -> None:
+        metadata = self.read_metadata()
+        if metadata is None:
+            # Missing metadata means the index has not been built successfully yet.
+            return
+        self.write_metadata(
+            VectorIndexMetadata(
+                embedding_model=metadata.embedding_model,
+                embedding_dimension=metadata.embedding_dimension,
+                built_at=metadata.built_at,
+                asset_counts=metadata.asset_counts,
+                schema_version=metadata.schema_version,
+                stale_reason=reason,
+            )
+        )
 
     def _search_points(
         self,
@@ -321,6 +341,7 @@ def _metadata_from_payload(payload: dict[str, Any]) -> VectorIndexMetadata:
             str(key): int(value)
             for key, value in _dict_or_empty(payload.get("asset_counts")).items()
         },
+        stale_reason=payload.get("stale_reason"),
     )
 
 

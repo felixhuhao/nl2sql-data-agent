@@ -6,12 +6,14 @@ import {
   createVerifiedQuery,
   deleteAlias,
   getAnalysisSpace,
+  getVectorIndexStatus,
   listAliases,
   listColumns,
   listMetrics,
   listRelationships,
   listTables,
   listVerifiedQueries,
+  rebuildVectorIndex,
   toggleMetric,
   toggleVerifiedQuery,
   updateAnalysisSpace,
@@ -24,10 +26,11 @@ import {
   type MetadataTable,
   type Metric,
   type Relationship,
+  type VectorIndexStatus,
   type VerifiedQuery,
 } from "./api/admin";
 
-type AdminTab = "metrics" | "aliases" | "verified" | "space" | "relationships";
+type AdminTab = "metrics" | "aliases" | "verified" | "space" | "relationships" | "vector";
 type Editor = "metric" | "alias" | "verified" | "relationship" | null;
 
 const tabs: { id: AdminTab; label: string }[] = [
@@ -36,12 +39,14 @@ const tabs: { id: AdminTab; label: string }[] = [
   { id: "verified", label: "验证查询" },
   { id: "space", label: "分析空间" },
   { id: "relationships", label: "关系" },
+  { id: "vector", label: "向量索引" },
 ];
 
 const activeTab = ref<AdminTab>("metrics");
 const editor = ref<Editor>(null);
 const isLoading = ref(false);
 const isSaving = ref(false);
+const isRebuilding = ref(false);
 const errorMessage = ref("");
 const noticeMessage = ref("");
 const tables = ref<MetadataTable[]>([]);
@@ -51,6 +56,7 @@ const aliases = ref<Alias[]>([]);
 const verifiedQueries = ref<VerifiedQuery[]>([]);
 const analysisSpace = ref<AnalysisSpace | null>(null);
 const relationships = ref<Relationship[]>([]);
+const vectorStatus = ref<VectorIndexStatus | null>(null);
 const editingMetricName = ref("");
 const editingVerifiedId = ref("");
 const editingRelationshipId = ref<number | null>(null);
@@ -106,13 +112,14 @@ async function loadAdminData() {
   isLoading.value = true;
   errorMessage.value = "";
   try {
-    const [tableRows, metricRows, aliasRows, queryRows, space, relationshipRows] = await Promise.all([
+    const [tableRows, metricRows, aliasRows, queryRows, space, relationshipRows, indexStatus] = await Promise.all([
       listTables(),
       listMetrics(),
       listAliases(),
       listVerifiedQueries(),
       getAnalysisSpace(),
       listRelationships(),
+      getVectorIndexStatus(),
     ]);
     tables.value = tableRows;
     metrics.value = metricRows;
@@ -120,6 +127,7 @@ async function loadAdminData() {
     verifiedQueries.value = queryRows;
     analysisSpace.value = space;
     relationships.value = relationshipRows;
+    vectorStatus.value = indexStatus;
     analysisForm.value = {
       tables: [...(space.tables ?? [])],
       enabled_metrics: [...(space.enabled_metrics ?? [])],
@@ -315,6 +323,21 @@ async function removeAlias(alias: Alias) {
   }, false);
 }
 
+async function rebuildIndex() {
+  isRebuilding.value = true;
+  errorMessage.value = "";
+  noticeMessage.value = "";
+  try {
+    await rebuildVectorIndex();
+    vectorStatus.value = await getVectorIndexStatus();
+    noticeMessage.value = "索引已重建";
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "重建失败";
+  } finally {
+    isRebuilding.value = false;
+  }
+}
+
 function toggleAnalysisTable(tableName: string) {
   toggleArrayItem(analysisForm.value.tables, tableName);
 }
@@ -346,6 +369,15 @@ function optionalText(value: string) {
 
 function formatRelationship(relationship: Relationship) {
   return `${relationship.source_table}.${relationship.source_column} -> ${relationship.target_table}.${relationship.target_column}`;
+}
+
+function formatAssetCounts(counts: Record<string, number> | undefined) {
+  if (!counts || !Object.keys(counts).length) {
+    return "-";
+  }
+  return Object.entries(counts)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(", ");
 }
 </script>
 
@@ -538,6 +570,62 @@ function formatRelationship(relationship: Relationship) {
             </tr>
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <section v-if="activeTab === 'vector'" class="admin-section">
+      <div class="vector-status">
+        <dl class="detail-list">
+          <div>
+            <dt>状态</dt>
+            <dd>
+              <span :class="['info-chip', vectorStatus?.status === 'ready' ? 'source-vector' : '']">
+                {{ vectorStatus?.status ?? "-" }}
+              </span>
+              <span v-if="vectorStatus && !vectorStatus.vector_enabled" class="info-chip">
+                disabled
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>模型</dt>
+            <dd>{{ vectorStatus?.embedding_model || "-" }}</dd>
+          </div>
+          <div>
+            <dt>维度</dt>
+            <dd>{{ vectorStatus?.embedding_dimension ?? "-" }}</dd>
+          </div>
+          <div>
+            <dt>构建时间</dt>
+            <dd>{{ vectorStatus?.built_at || "-" }}</dd>
+          </div>
+          <div>
+            <dt>资产数</dt>
+            <dd>{{ formatAssetCounts(vectorStatus?.asset_counts) }}</dd>
+          </div>
+          <div>
+            <dt>Qdrant</dt>
+            <dd>
+              {{ vectorStatus?.qdrant_url || "-" }}
+              <span v-if="vectorStatus?.qdrant_collection_prefix">
+                / {{ vectorStatus.qdrant_collection_prefix }}
+              </span>
+            </dd>
+          </div>
+          <div v-if="vectorStatus?.stale_reason">
+            <dt>提示</dt>
+            <dd>{{ vectorStatus.stale_reason }}</dd>
+          </div>
+        </dl>
+      </div>
+      <div class="admin-actions">
+        <button
+          type="button"
+          :disabled="isRebuilding || !vectorStatus?.vector_enabled"
+          @click="rebuildIndex"
+        >
+          {{ isRebuilding ? "重建中" : "重建索引" }}
+        </button>
       </div>
     </section>
 

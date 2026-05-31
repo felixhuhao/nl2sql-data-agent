@@ -629,6 +629,13 @@ textarea {
   font-size: 14px;
 }
 
+.vector-status {
+  border: 1px solid #d5dce7;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
 .edit-panel {
   position: fixed;
   top: 0;
