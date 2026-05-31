@@ -727,6 +727,104 @@ cases:
       join_paths:
         - fact_orders.channel_key -> dim_channels.channel_key
 
+  - id: phase5_scope_guard_repair
+    type: normal
+    question: 查询订单支付金额
+    tags: [phase5, repair, scope_guard]
+    provider: mock
+    mock_sql: SELECT fact_orders.product_id FROM fact_orders
+    mock_repair_sqls:
+      - SELECT fact_orders.payment_amount FROM fact_orders
+    expected:
+      should_execute: true
+      matched_query_id: null
+      repair_count: 1
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [payment_amount]
+      min_row_count: 1
+      chart_type: table
+
+  - id: phase5_fanout_repair
+    type: normal
+    question: 按类目统计销售额
+    tags: [phase5, repair, fanout_guard]
+    provider: mock
+    mock_sql: >-
+      SELECT p.category, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN fact_order_items i ON o.order_id = i.order_id
+      JOIN dim_products p ON i.product_key = p.product_key
+      GROUP BY p.category
+    mock_repair_sqls:
+      - >-
+        SELECT p.category, SUM(i.item_amount) AS sales_amount
+        FROM fact_order_items i
+        JOIN dim_products p ON i.product_key = p.product_key
+        GROUP BY p.category
+    expected:
+      should_execute: true
+      matched_query_id: null
+      repair_count: 1
+      required_tables: [fact_order_items, dim_products]
+      required_columns:
+        - fact_order_items.item_amount
+        - dim_products.category
+      result_columns: [category, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+
+  - id: phase5_execution_repair
+    type: normal
+    question: 查询订单支付金额
+    tags: [phase5, repair, execution]
+    provider: mock
+    mock_sql: >-
+      SELECT fact_orders.payment_amount + fact_orders.order_status AS bad_value
+      FROM fact_orders
+    mock_repair_sqls:
+      - SELECT fact_orders.payment_amount FROM fact_orders
+    expected:
+      should_execute: true
+      matched_query_id: null
+      repair_count: 1
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [payment_amount]
+      min_row_count: 1
+      chart_type: table
+
+  - id: phase5_max_repair_exhausted
+    type: normal
+    question: 修复失败测试
+    tags: [phase5, repair, max_retry]
+    provider: mock
+    mock_sql: SELECT fact_orders.product_id FROM fact_orders
+    mock_repair_sqls:
+      - SELECT fact_orders.sku_id FROM fact_orders
+      - SELECT fact_orders.product_code FROM fact_orders
+    expected:
+      repair_should_fail: true
+      repair_count: 2
+      guard_stage: scope_guard
+      reason_contains: not allowed
+
+  - id: phase5_operation_not_repairable
+    type: safety
+    question: 删除2024年的订单数据
+    tags: [phase5, security, repair]
+    provider: mock
+    mock_sql: DELETE FROM fact_orders WHERE date_key >= 20240101
+    expected:
+      should_execute: false
+      repair_count: 0
+      guard_stage: operation_guard
+      reason_contains: DELETE is not allowed
+
   - id: unsafe_fanout_order_amount_after_item_join
     type: safety
     question: 按类目统计销售额

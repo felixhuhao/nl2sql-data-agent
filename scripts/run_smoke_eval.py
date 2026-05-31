@@ -13,10 +13,17 @@ import yaml
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.app.agent.explainability import build_query_explainability
+from backend.app.agent.nodes import generate_sql_node
+from backend.app.agent.repair import iter_sql_repair_events
+from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
 from backend.app.core.deepseek_provider import DeepSeekProvider
-from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationRequest
+from backend.app.core.llm_provider import (
+    LLMProvider,
+    MockLLMProvider,
+    SQLGenerationRequest,
+    SQLGenerationResult,
+)
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context_from_retrieval, build_schema_context
@@ -61,12 +68,28 @@ class SmokeResult:
     chart_type: str | None = None
     guard_reason: str | None = None
     elapsed_ms: int | None = None
+    repair_count: int = 0
 
     def fail(self, message: str, error_category: str | None = None) -> None:
         self.passed = False
         self.messages.append(message)
         if error_category and self.error_category is None:
             self.error_category = error_category
+
+
+class ScriptedRepairProvider:
+    name = "mock"
+
+    def __init__(self, *, initial_sql: str, repair_sqls: list[str] | None = None):
+        self._initial_sql = initial_sql
+        self._repair_sqls = list(repair_sqls or [])
+
+    def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+        if request.repair is None:
+            return SQLGenerationResult(sql=self._initial_sql, provider=self.name)
+        if self._repair_sqls:
+            return SQLGenerationResult(sql=self._repair_sqls.pop(0), provider=self.name)
+        return SQLGenerationResult(sql=self._initial_sql, provider=self.name)
 
 
 def main() -> int:
@@ -116,7 +139,14 @@ def main() -> int:
         )
 
     results = [
-        _run_case(case, scope, provider, full_schema_context, provider_name=args.provider)
+        _run_case(
+            case,
+            scope,
+            provider,
+            full_schema_context,
+            provider_name=args.provider,
+            use_vector=False,
+        )
         for case in selected_cases
     ]
     report_path = Path(args.report_path)
@@ -247,13 +277,10 @@ def _run_case(
             full_chars=result.full_context_chars,
         )
 
+        state = AgentState(question=case["question"], schema_context=schema_context)
+        case_provider = _case_provider(case, provider=provider, provider_name=provider_name)
         try:
-            sql, matched_query_id = _resolve_sql(
-                case=case,
-                schema_context=schema_context,
-                provider=provider,
-                provider_name=provider_name,
-            )
+            generate_sql_node(state, provider=case_provider)
         except httpx.ReadTimeout as exc:
             result.fail(f"SQL generation timed out: {exc}", "sql_generation_timeout")
             return result
@@ -261,59 +288,62 @@ def _run_case(
             result.fail(f"SQL generation failed: {exc}", "sql_generation_error")
             return result
 
-        result.sql = sql
-        result.generated_sql = sql
-        if not sql.strip():
+        result.sql = state.sql
+        result.generated_sql = state.sql
+        if not (state.sql or "").strip():
             result.fail("SQL generation returned empty SQL.", "sql_generation_error")
             return result
 
-        try:
-            guard_result = guard_sql(sql, scope=scope)
-        except Exception as exc:
-            result.fail(f"SQL Guard failed: {exc}", "guard_blocked")
+        if expected.get("should_execute") is False and not expected.get("repair_should_fail"):
+            _run_guard_only_case(result=result, state=state, scope=scope, expected=expected)
             return result
 
-        result.guard_stage = guard_result.stage
-        result.guard_reason = guard_result.reason
-        result.normalized_sql = guard_result.normalized_sql
         try:
-            explainability = build_query_explainability(
-                sql=guard_result.normalized_sql or sql,
-                question=case["question"],
-                guard_result=guard_result,
+            repair_events = list(
+                iter_sql_repair_events(
+                    state,
+                    provider=case_provider,
+                    scope_builder=lambda: scope,
+                    executor=execute_guarded_sql,
+                )
             )
         except Exception as exc:
-            result.fail(f"explainability failed: {exc}", "explainability_error")
+            result.fail(f"SQL repair workflow failed: {exc}", "repair_error")
             return result
 
-        if expected.get("should_execute") is False:
-            _validate_safety_case(result, guard_result, expected)
+        _record_state_result(result, state)
+        _validate_repair_expectations(result, expected)
+
+        final_event = repair_events[-1] if repair_events else None
+        if expected.get("repair_should_fail"):
+            _validate_expected_repair_failure(result, final_event, expected)
             return result
 
-        if not guard_result.allowed:
-            error_category = _guard_error_category(guard_result.stage)
+        if final_event and final_event.step == "error":
+            error_category = (
+                _guard_error_category(final_event.error_kind)
+                if final_event.error_stage == "sql_guard"
+                else "execution_error"
+            )
             result.fail(
-                f"expected execution, but Guard rejected SQL: {guard_result.reason}",
+                f"expected execution, but repair workflow failed: {final_event.error_reason}",
                 error_category,
             )
             return result
 
-        try:
-            query_result = execute_guarded_sql(guard_result)
-        except Exception as exc:
-            result.fail(f"SQL execution failed: {exc}", "execution_error")
+        if state.query_result is None:
+            result.fail("repair workflow finished without query result.", "execution_error")
             return result
 
-        result.row_count = query_result.row_count
-        chart_recommendation = recommend_chart(query_result)
+        chart_recommendation = recommend_chart(state.query_result)
         result.chart_type = chart_recommendation.chart_type
 
         _validate_normal_case(
             result=result,
             expected=expected,
-            matched_query_id=matched_query_id,
-            query_result=query_result,
-            explainability=explainability,
+            matched_query_id=state.matched_query_id,
+            query_result=state.query_result,
+            explainability=state.explainability or {},
             chart_type=chart_recommendation.chart_type,
             provider_name=provider_name,
         )
@@ -352,19 +382,85 @@ def _context_reduction_ratio(focused_chars: int, full_chars: int) -> float | Non
     return 1 - focused_chars / full_chars
 
 
-def _resolve_sql(
+def _case_provider(
     case: dict[str, Any],
-    schema_context: str,
+    *,
     provider: LLMProvider,
     provider_name: str,
-) -> tuple[str, str | None]:
+) -> LLMProvider:
     if provider_name == "mock" and case.get("mock_sql"):
-        return case["mock_sql"], None
+        return ScriptedRepairProvider(
+            initial_sql=case["mock_sql"],
+            repair_sqls=case.get("mock_repair_sqls") or [],
+        )
+    return provider
 
-    generation = provider.generate_sql(
-        SQLGenerationRequest(question=case["question"], schema_context=schema_context)
-    )
-    return generation.sql, generation.matched_query_id
+
+def _run_guard_only_case(
+    *,
+    result: SmokeResult,
+    state: AgentState,
+    scope,
+    expected: dict[str, Any],
+) -> None:
+    try:
+        guard_result = guard_sql(state.sql or "", scope=scope)
+    except Exception as exc:
+        result.fail(f"SQL Guard failed: {exc}", "guard_blocked")
+        return
+
+    state.guard_result = guard_result
+    result.guard_stage = guard_result.stage
+    result.guard_reason = guard_result.reason
+    result.normalized_sql = guard_result.normalized_sql
+    _validate_safety_case(result, guard_result, expected)
+    _validate_repair_expectations(result, expected)
+
+
+def _record_state_result(result: SmokeResult, state: AgentState) -> None:
+    result.sql = state.sql
+    result.generated_sql = state.sql
+    result.repair_count = len(state.repair_history)
+    if state.guard_result is not None:
+        result.guard_stage = state.guard_result.stage
+        result.guard_reason = state.guard_result.reason
+        result.normalized_sql = state.guard_result.normalized_sql
+    if state.query_result is not None:
+        result.row_count = state.query_result.row_count
+
+
+def _validate_repair_expectations(result: SmokeResult, expected: dict[str, Any]) -> None:
+    expected_count = expected.get("repair_count")
+    if expected_count is not None and result.repair_count != expected_count:
+        result.fail(
+            f"expected repair_count {expected_count}, got {result.repair_count}",
+            "repair_mismatch",
+        )
+
+
+def _validate_expected_repair_failure(
+    result: SmokeResult,
+    final_event,
+    expected: dict[str, Any],
+) -> None:
+    if final_event is None or final_event.step != "error":
+        result.fail("expected repair workflow failure, but query succeeded.", "repair_mismatch")
+        return
+
+    expected_stage = expected.get("guard_stage")
+    if expected_stage and final_event.error_kind != expected_stage:
+        result.fail(
+            f"expected final guard stage {expected_stage}, got {final_event.error_kind}",
+            "repair_mismatch",
+        )
+
+    reason_contains = expected.get("reason_contains")
+    if reason_contains and reason_contains not in (final_event.error_reason or ""):
+        result.fail(
+            f"expected final reason to contain {reason_contains!r}, "
+            f"got {final_event.error_reason!r}",
+            "repair_mismatch",
+        )
 
 
 def _validate_retrieval(
@@ -613,6 +709,8 @@ def _print_results(
     for result in results:
         status = "PASS" if result.passed else "FAIL"
         details = f"category={result.error_category or '-'} guard={result.guard_stage}"
+        if result.repair_count:
+            details += f" repairs={result.repair_count}"
         if result.row_count is not None:
             details += f" rows={result.row_count}"
         if result.elapsed_ms is not None:
@@ -632,6 +730,7 @@ def _print_results(
         f"full={summary['full_context_chars']} chars, "
         f"avg_reduction={_format_percent(summary['avg_context_reduction_ratio'])}, "
         f"fallback={summary['fallback_cases']}/{len(results)}, "
+        f"repair_cases={summary['repair_cases']}/{len(results)}, "
         f"avg_elapsed={_format_elapsed(summary['avg_elapsed_ms'])}"
     )
     print(f"report: {report_path}")
@@ -798,6 +897,8 @@ def _render_report(
         f"- Provider: {provider_name}",
         f"- Skipped cases: {len(skipped_case_ids)}",
         f"- Fallback used: {summary['fallback_cases']}/{summary['total_cases']}",
+        f"- Repair cases: {summary['repair_cases']}/{summary['total_cases']}",
+        f"- Total repair attempts: {summary['total_repair_attempts']}",
         f"- Full schema context chars: {summary['full_context_chars']}",
         f"- Avg focused context chars: {summary['avg_focused_context_chars']}",
         f"- Avg focused context reduction: {_format_percent(summary['avg_context_reduction_ratio'])}",
@@ -847,8 +948,8 @@ def _render_report(
             "",
             "## Case Results",
             "",
-            "| Case | Status | Type | Category | Fallback | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
-            "|------|--------|------|----------|----------|---------|---------------|-----------|-------|------|-------|-----|",
+            "| Case | Status | Type | Category | Fallback | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
+            "|------|--------|------|----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
         ]
     )
     for result in results:
@@ -861,6 +962,7 @@ def _render_report(
                     _md_cell(result.case_type or "-"),
                     _md_cell(result.error_category or "-"),
                     str(result.retrieval_fallback_used),
+                    str(result.repair_count),
                     _format_elapsed(result.elapsed_ms),
                     str(result.focused_context_chars),
                     _format_percent(result.context_reduction_ratio),
@@ -886,6 +988,7 @@ def _render_report(
                     f"- Elapsed: {_format_elapsed(result.elapsed_ms)}",
                     f"- Guard: {result.guard_stage or '-'}",
                     f"- Guard reason: {result.guard_reason or '-'}",
+                    f"- Repair count: {result.repair_count}",
                     f"- Chart: {result.chart_type or '-'}",
                     f"- Retrieved tables: {', '.join(result.retrieval_tables) or '-'}",
                     f"- Retrieved metrics: {', '.join(result.retrieval_metrics) or '-'}",
@@ -945,6 +1048,8 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
         "normal_cases": sum(1 for result in results if result.case_type == "normal"),
         "safety_cases": sum(1 for result in results if result.case_type == "safety"),
         "fallback_cases": sum(1 for result in results if result.retrieval_fallback_used),
+        "repair_cases": sum(1 for result in results if result.repair_count > 0),
+        "total_repair_attempts": sum(result.repair_count for result in results),
         "full_context_chars": full_lengths[0] if full_lengths else 0,
         "avg_focused_context_chars": _average_int(focused_lengths),
         "avg_context_reduction_ratio": _average_float(reductions),

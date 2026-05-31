@@ -421,7 +421,7 @@ expected:
 
 验收：
 
-- 现有 37 条 smoke case 全部通过
+- 扩展后 42 条 smoke case 全部通过
 - Phase 5 scripted repair cases 通过
 - 报告包含 `repair_count`
 - 修复失败 case 的错误归因明确
@@ -475,7 +475,7 @@ expected:
 
 ### 6.3 验收标准
 
-1. 不回归：现有 37 条 smoke case 全部通过
+1. 不回归：扩展后 42 条 smoke case 全部通过
 2. 可修复：scope/fanout/执行错误能被自动修复
 3. 安全：修复后 SQL 必须经过完整 Guard 检查
 4. 限制：最多修复 2 次，不无限循环
