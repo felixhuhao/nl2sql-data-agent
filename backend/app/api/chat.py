@@ -192,6 +192,7 @@ def _model_dump(value):
 
 def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
     retrieval_result = retrieval_result or {}
+    retrieval_meta = retrieval_result.get("retrieval_meta") or {}
     return {
         "step": "retrieve_context",
         "status": "completed",
@@ -203,4 +204,9 @@ def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
         ],
         "metrics": [metric["name"] for metric in retrieval_result.get("metrics", [])],
         "verified_queries": [query["id"] for query in retrieval_result.get("verified_queries", [])],
+        "vector_used": retrieval_meta.get("vector_used", False),
+        "index_status": retrieval_meta.get("index_status"),
+        "stale_reason": retrieval_meta.get("stale_reason"),
+        "value_hits": retrieval_meta.get("value_hits", []),
+        "retrieval_sources": retrieval_meta.get("sources", {}),
     }

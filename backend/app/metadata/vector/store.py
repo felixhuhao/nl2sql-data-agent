@@ -304,6 +304,7 @@ def _hit_from_point(point) -> VectorSearchHit:
         asset_type=str(payload["asset_type"]),
         asset_id=str(payload["asset_id"]),
         text=str(payload.get("text") or ""),
+        # Qdrant cosine search returns similarity as score, so distance is derived for compatibility.
         distance=round(max(0.0, 1.0 - score), 12),
         score=score,
         metadata=_dict_or_empty(payload.get("metadata")),

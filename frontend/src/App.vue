@@ -40,6 +40,20 @@ type Explainability = {
   date_interpretation?: Record<string, unknown>;
   guard_result?: GuardResult | null;
 };
+type RetrievalValueHit = {
+  table_name?: string;
+  column_name?: string;
+  matched_value?: string;
+  source?: string;
+  score?: number;
+};
+type RetrievalMeta = {
+  vector_used?: boolean;
+  index_status?: string | null;
+  stale_reason?: string | null;
+  value_hits?: RetrievalValueHit[];
+  retrieval_sources?: Record<string, string[]>;
+};
 type ChartRecommendation = {
   chart_type?: string;
   x_column?: string | null;
@@ -62,6 +76,7 @@ const summary = ref("");
 const rows = ref<unknown[][]>([]);
 const columns = ref<string[]>([]);
 const explainability = ref<Explainability | null>(null);
+const retrievalMeta = ref<RetrievalMeta | null>(null);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
 const chartContainer = ref<HTMLDivElement | null>(null);
@@ -120,6 +135,7 @@ async function submitQuestion() {
   rows.value = [];
   columns.value = [];
   explainability.value = null;
+  retrievalMeta.value = null;
   guardResult.value = null;
   chartRecommendation.value = null;
   disposeChart();
@@ -231,6 +247,27 @@ function formatJoinPath(path: Record<string, any>) {
   return JSON.stringify(path);
 }
 
+function formatValueHit(hit: RetrievalValueHit) {
+  const column = [hit.table_name, hit.column_name].filter(Boolean).join(".");
+  if (hit.matched_value && column) {
+    return `${hit.matched_value} -> ${column}`;
+  }
+  return hit.matched_value ?? column;
+}
+
+function retrievalSourceClass(source: string) {
+  if (source.startsWith("value:")) {
+    return "source-value";
+  }
+  if (source.startsWith("vector:")) {
+    return "source-vector";
+  }
+  if (source.startsWith("rule:")) {
+    return "source-rule";
+  }
+  return "";
+}
+
 async function readSseStream(body: ReadableStream<Uint8Array>) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -281,6 +318,15 @@ function handleSseChunk(chunk: string) {
 
   if (event === "step") {
     completeStep(payload.step);
+    if (payload.step === "retrieve_context") {
+      retrievalMeta.value = {
+        vector_used: Boolean(payload.vector_used),
+        index_status: payload.index_status ?? null,
+        stale_reason: payload.stale_reason ?? null,
+        value_hits: payload.value_hits ?? [],
+        retrieval_sources: payload.retrieval_sources ?? {},
+      };
+    }
     if (payload.guard_result) {
       guardResult.value = payload.guard_result;
     }
@@ -500,14 +546,64 @@ function switchView(view: "chat" | "admin") {
                 </div>
               </section>
 
-              <section v-if="explainability" class="answer-section explain-section">
+              <section v-if="explainability || retrievalMeta" class="answer-section explain-section">
                 <h2>解释信息</h2>
                 <dl class="detail-list">
-                  <div v-if="explainability.matched_tables?.length">
+                  <div v-if="retrievalMeta?.index_status">
+                    <dt>召回状态</dt>
+                    <dd>
+                      <span
+                        :class="['info-chip', retrievalMeta.vector_used ? 'source-vector' : 'source-rule']"
+                      >
+                        {{ retrievalMeta.vector_used ? "vector" : "rule-only" }}
+                      </span>
+                      <span class="info-chip">{{ retrievalMeta.index_status }}</span>
+                      <span v-if="retrievalMeta.stale_reason" class="info-chip">
+                        {{ retrievalMeta.stale_reason }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div v-if="retrievalMeta?.value_hits?.length">
+                    <dt>Value Recall</dt>
+                    <dd>
+                      <span
+                        v-for="hit in retrievalMeta.value_hits"
+                        :key="`${hit.table_name}.${hit.column_name}:${hit.matched_value}`"
+                        class="info-chip source-value"
+                      >
+                        {{ formatValueHit(hit) }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div
+                    v-if="
+                      retrievalMeta?.retrieval_sources &&
+                      Object.keys(retrievalMeta.retrieval_sources).length
+                    "
+                  >
+                    <dt>召回来源</dt>
+                    <dd class="source-list">
+                      <div
+                        v-for="(sources, assetKey) in retrievalMeta.retrieval_sources"
+                        :key="assetKey"
+                        class="source-row"
+                      >
+                        <span class="source-asset">{{ assetKey }}</span>
+                        <span
+                          v-for="source in sources"
+                          :key="`${assetKey}:${source}`"
+                          :class="['info-chip', retrievalSourceClass(source)]"
+                        >
+                          {{ source }}
+                        </span>
+                      </div>
+                    </dd>
+                  </div>
+                  <div v-if="explainability?.matched_tables?.length">
                     <dt>命中表</dt>
                     <dd>
                       <span
-                        v-for="table in explainability.matched_tables"
+                        v-for="table in explainability?.matched_tables ?? []"
                         :key="table"
                         class="info-chip"
                       >
@@ -515,11 +611,11 @@ function switchView(view: "chat" | "admin") {
                       </span>
                     </dd>
                   </div>
-                  <div v-if="explainability.matched_columns?.length">
+                  <div v-if="explainability?.matched_columns?.length">
                     <dt>命中字段</dt>
                     <dd>
                       <span
-                        v-for="column in explainability.matched_columns"
+                        v-for="column in explainability?.matched_columns ?? []"
                         :key="column"
                         class="info-chip"
                       >
@@ -527,11 +623,11 @@ function switchView(view: "chat" | "admin") {
                       </span>
                     </dd>
                   </div>
-                  <div v-if="explainability.join_paths?.length">
+                  <div v-if="explainability?.join_paths?.length">
                     <dt>Join Path</dt>
                     <dd>
                       <span
-                        v-for="joinPath in explainability.join_paths"
+                        v-for="joinPath in explainability?.join_paths ?? []"
                         :key="formatJoinPath(joinPath)"
                         class="info-chip"
                       >
@@ -539,7 +635,7 @@ function switchView(view: "chat" | "admin") {
                       </span>
                     </dd>
                   </div>
-                  <div v-if="explainability.date_interpretation">
+                  <div v-if="explainability?.date_interpretation">
                     <dt>时间解释</dt>
                     <dd>
                       <pre>{{ JSON.stringify(explainability.date_interpretation, null, 2) }}</pre>

@@ -75,6 +75,21 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
             "columns": [{"table_name": "fact_orders", "column_name": "payment_amount"}],
             "metrics": [{"name": "sales_amount"}],
             "verified_queries": [{"id": "recent_30d_daily_sales"}],
+            "retrieval_meta": {
+                "vector_used": True,
+                "index_status": "ready",
+                "stale_reason": None,
+                "sources": {"metric:sales_amount": ["vector:0.91"]},
+                "value_hits": [
+                    {
+                        "table_name": "dim_regions",
+                        "column_name": "region_group",
+                        "matched_value": "华东",
+                        "source": "exact",
+                        "score": 1.0,
+                    }
+                ],
+            },
         }
 
     def fake_executor(guard_result: GuardResult) -> QueryResult:
@@ -111,6 +126,19 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
             "columns": ["fact_orders.payment_amount"],
             "metrics": ["sales_amount"],
             "verified_queries": ["recent_30d_daily_sales"],
+            "vector_used": True,
+            "index_status": "ready",
+            "stale_reason": None,
+            "value_hits": [
+                {
+                    "table_name": "dim_regions",
+                    "column_name": "region_group",
+                    "matched_value": "华东",
+                    "source": "exact",
+                    "score": 1.0,
+                }
+            ],
+            "retrieval_sources": {"metric:sales_amount": ["vector:0.91"]},
         },
     }
     assert [event["data"].get("step") for event in events[:-1]] == [

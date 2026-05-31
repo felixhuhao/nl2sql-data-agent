@@ -374,6 +374,44 @@ textarea {
   font-size: 12px;
 }
 
+.source-list {
+  display: grid;
+  gap: 6px;
+}
+
+.source-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.source-asset {
+  overflow-wrap: anywhere;
+  color: #3d4656;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.source-rule {
+  border-color: #cdd8e6;
+  color: #3d4656;
+  background: #f7f9fc;
+}
+
+.source-vector {
+  border-color: #9fcbb8;
+  color: #265944;
+  background: #eefaf4;
+}
+
+.source-value {
+  border-color: #d7b46a;
+  color: #6c4a05;
+  background: #fff8e7;
+}
+
 .guard-pill.passed {
   border-color: #9fcbb8;
   color: #265944;
