@@ -412,6 +412,35 @@ textarea {
   background: #fff8e7;
 }
 
+.repair-summary {
+  color: #6b2b2b;
+  font-size: 13px;
+}
+
+.repair-list {
+  display: grid;
+  gap: 8px;
+}
+
+.repair-item {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.repair-item header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.repair-item p {
+  margin: 0;
+  color: #667085;
+  font-size: 13px;
+}
+
 .guard-pill.passed {
   border-color: #9fcbb8;
   color: #265944;

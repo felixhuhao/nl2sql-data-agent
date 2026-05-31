@@ -19,6 +19,7 @@ const workflowSteps = [
   { id: "build_context", label: "构建上下文" },
   { id: "generate_sql", label: "生成 SQL" },
   { id: "sql_guard", label: "SQL Guard" },
+  { id: "repair_sql", label: "SQL 修复" },
   { id: "execute", label: "执行查询" },
   { id: "summarize", label: "生成回答" },
   { id: "recommend_chart", label: "推荐图表" },
@@ -54,6 +55,17 @@ type RetrievalMeta = {
   value_hits?: RetrievalValueHit[];
   retrieval_sources?: Record<string, string[]>;
 };
+type RepairHistoryItem = {
+  attempt?: number;
+  original_sql?: string | null;
+  repaired_sql?: string | null;
+  error_stage?: string | null;
+  error_kind?: string | null;
+  error_reason?: string | null;
+  normalized_sql?: string | null;
+  succeeded?: boolean | null;
+  final_stage?: string | null;
+};
 type ChartRecommendation = {
   chart_type?: string;
   x_column?: string | null;
@@ -77,6 +89,7 @@ const rows = ref<unknown[][]>([]);
 const columns = ref<string[]>([]);
 const explainability = ref<Explainability | null>(null);
 const retrievalMeta = ref<RetrievalMeta | null>(null);
+const repairHistory = ref<RepairHistoryItem[]>([]);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
 const chartContainer = ref<HTMLDivElement | null>(null);
@@ -136,6 +149,7 @@ async function submitQuestion() {
   columns.value = [];
   explainability.value = null;
   retrievalMeta.value = null;
+  repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
   disposeChart();
@@ -330,6 +344,9 @@ function handleSseChunk(chunk: string) {
     if (payload.guard_result) {
       guardResult.value = payload.guard_result;
     }
+    if (payload.repair_history) {
+      repairHistory.value = payload.repair_history;
+    }
   }
   if (event === "done") {
     stepStates.value = stepStates.value.map((step) => ({ ...step, status: "completed" }));
@@ -339,6 +356,7 @@ function handleSseChunk(chunk: string) {
     rows.value = payload.result?.rows ?? [];
     chartRecommendation.value = payload.chart_recommendation ?? null;
     explainability.value = payload.explainability ?? null;
+    repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     void nextTick(renderLineChart);
   }
@@ -348,6 +366,7 @@ function handleSseChunk(chunk: string) {
     errorKind.value = payload.error_kind === "blocked" ? "blocked" : "failure";
     errorMessage.value = payload.reason ?? "请求失败";
     explainability.value = payload.explainability ?? null;
+    repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     chartRecommendation.value = null;
     disposeChart();
@@ -496,6 +515,9 @@ function switchView(view: "chat" | "admin") {
                     <dd>{{ guardResult.reason }}</dd>
                   </div>
                 </dl>
+                <div v-if="repairHistory.length" class="repair-summary">
+                  已尝试修复 {{ repairHistory.length }} 次
+                </div>
               </section>
 
               <section v-if="hasActivity" class="answer-section">
@@ -597,6 +619,37 @@ function switchView(view: "chat" | "admin") {
                           {{ source }}
                         </span>
                       </div>
+                    </dd>
+                  </div>
+                  <div v-if="repairHistory.length">
+                    <dt>修复记录</dt>
+                    <dd class="repair-list">
+                      <article
+                        v-for="repair in repairHistory"
+                        :key="repair.attempt"
+                        class="repair-item"
+                      >
+                        <header>
+                          <span class="info-chip">attempt {{ repair.attempt }}</span>
+                          <span
+                            :class="[
+                              'guard-pill',
+                              repair.succeeded ? 'passed' : 'blocked',
+                            ]"
+                          >
+                            {{ repair.succeeded ? "fixed" : "failed" }}
+                          </span>
+                          <span v-if="repair.final_stage" class="info-chip">
+                            {{ repair.final_stage }}
+                          </span>
+                        </header>
+                        <p>
+                          {{ repair.error_stage }} / {{ repair.error_kind }}:
+                          {{ repair.error_reason }}
+                        </p>
+                        <pre v-if="repair.original_sql">{{ repair.original_sql }}</pre>
+                        <pre v-if="repair.repaired_sql">{{ repair.repaired_sql }}</pre>
+                      </article>
                     </dd>
                   </div>
                   <div v-if="explainability?.matched_tables?.length">
