@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
+    vector_enabled: bool = False
+    vector_db_path: Path = Field(default=PROJECT_ROOT / "data" / "vector_index.lance")
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
+    vector_similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    value_vector_similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / "backend" / ".env",
@@ -29,6 +35,9 @@ class Settings(BaseSettings):
 
     def resolved_sqlite_path(self) -> Path:
         return self._resolve_path(self.sqlite_path)
+
+    def resolved_vector_db_path(self) -> Path:
+        return self._resolve_path(self.vector_db_path)
 
     @staticmethod
     def _resolve_path(path: Path) -> Path:
