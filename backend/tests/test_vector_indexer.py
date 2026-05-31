@@ -35,7 +35,9 @@ def test_build_vector_assets_creates_all_asset_types():
     assert "100" in column_asset.text
     assert column_asset.metadata["aliases"] == ["销售额"]
     assert _asset(assets, "metric", "sales_amount").text.startswith("sales_amount 销售额")
-    assert _asset(assets, "verified_query", "recent_sales").text == "recent_sales 最近销售额 销售额"
+    verified_query_asset = _asset(assets, "verified_query", "recent_sales")
+    assert verified_query_asset.text == "recent_sales 最近销售额 销售额"
+    assert verified_query_asset.metadata["sql"] == "SELECT SUM(payment_amount) FROM fact_orders"
     assert _asset(assets, "value", "fact_orders.payment_amount:100").text == "100"
 
 

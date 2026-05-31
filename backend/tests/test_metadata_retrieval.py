@@ -114,6 +114,42 @@ def test_retrieve_assets_handles_empty_analysis_space(monkeypatch):
     assert result["verified_queries"] == []
 
 
+def test_retrieve_assets_can_force_vector_off(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+    monkeypatch.setattr(retrieval, "get_settings", lambda: type("Settings", (), {"vector_enabled": True})())
+    monkeypatch.setattr(
+        retrieval,
+        "hybrid_merge",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("hybrid should not run")),
+    )
+
+    result = retrieval.retrieve_metadata_assets("销售额", use_vector=False)
+
+    assert "sales_amount" in _names(result["metrics"], "name")
+
+
+def test_retrieve_assets_uses_vector_before_fallback(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+    monkeypatch.setattr(retrieval, "get_settings", lambda: type("Settings", (), {"vector_enabled": True})())
+
+    def fake_hybrid(rule_result, question, **kwargs):
+        return {
+            **rule_result,
+            "metrics": [{"name": "sales_amount", "score": 0.5, "reasons": ["vector:0.90"]}],
+            "retrieval_meta": {"vector_used": True, "index_status": "ready", "sources": {}, "value_hits": []},
+        }
+
+    monkeypatch.setattr(retrieval, "hybrid_merge", fake_hybrid)
+
+    result = retrieval.retrieve_metadata_assets("规则无法命中但向量命中", use_vector=None)
+
+    assert result["fallback_used"] is False
+    assert result["tables"] == []
+    assert result["metrics"][0]["name"] == "sales_amount"
+
+
 def _patch_retrieval_db(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     create_metadata_schema(engine)

@@ -132,6 +132,7 @@ def _table_assets(session: Session) -> list[VectorAsset]:
             metadata={
                 "table_name": table.table_name,
                 "display_name": table.display_name,
+                "description": table.description,
                 "domain": table.domain,
                 "row_count": table.row_count,
             },
@@ -172,9 +173,11 @@ def _column_assets(
                     "table_name": table_name,
                     "column_name": column.column_name,
                     "data_type": column.data_type,
+                    "description": column.description,
                     "is_dimension": column.is_dimension,
                     "is_metric": column.is_metric,
                     "aliases": alias_values,
+                    "sample_values": sample_values,
                 },
             )
         )
@@ -204,6 +207,7 @@ def _metric_assets(session: Session) -> list[VectorAsset]:
                 "name": metric.name,
                 "label": metric.label,
                 "expression": metric.expression,
+                "description": metric.description,
                 "default_time_column": metric.default_time_column,
                 "allowed_dimensions": _parse_json_list(metric.allowed_dimensions),
             },
@@ -227,6 +231,7 @@ def _verified_query_assets(session: Session) -> list[VectorAsset]:
             metadata={
                 "query_id": query.query_id,
                 "question": query.question,
+                "sql": query.sql,
                 "tags": _parse_json_list(query.tags),
                 "verified_by": query.verified_by,
             },

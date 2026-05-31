@@ -9,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlglot import exp
 
+from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
+from backend.app.metadata.hybrid import hybrid_merge
 from backend.app.metadata.models import (
     MetaAnalysisSpace,
     MetaColumn,
@@ -34,6 +36,7 @@ def retrieve_metadata_assets(
     column_limit: int = DEFAULT_COLUMN_LIMIT,
     metric_limit: int = DEFAULT_METRIC_LIMIT,
     verified_query_limit: int = DEFAULT_VERIFIED_QUERY_LIMIT,
+    use_vector: bool | None = None,
 ) -> dict:
     _ensure_schema()
     normalized_question = _normalize_text(question)
@@ -78,27 +81,46 @@ def retrieve_metadata_assets(
                 verified_query_matches,
             )
 
-        fallback_used = not any(
-            (
-                table_matches,
-                column_matches,
-                metric_matches,
-                verified_query_matches,
-            )
-        )
-        if fallback_used:
-            for table in tables:
-                _add_table_match(table_matches, table, 1, "fallback", source="fallback")
-
-        return {
+        result = {
             "question": question,
             "normalized_question": normalized_question,
-            "fallback_used": fallback_used,
+            "fallback_used": False,
             "tables": _rank(table_matches.values(), table_limit),
             "columns": _rank(column_matches.values(), column_limit),
             "metrics": _rank(metric_matches.values(), metric_limit),
             "verified_queries": _rank(verified_query_matches.values(), verified_query_limit),
         }
+        if _should_use_vector(use_vector):
+            result = hybrid_merge(
+                result,
+                question,
+                table_limit=table_limit,
+                column_limit=column_limit,
+                metric_limit=metric_limit,
+                verified_query_limit=verified_query_limit,
+            )
+
+        fallback_used = not any(
+            (
+                result["tables"],
+                result["columns"],
+                result["metrics"],
+                result["verified_queries"],
+            )
+        )
+        if fallback_used:
+            fallback_table_matches: dict[str, dict] = {}
+            for table in tables:
+                _add_table_match(fallback_table_matches, table, 1, "fallback", source="fallback")
+            result["tables"] = _rank(fallback_table_matches.values(), table_limit)
+            result["fallback_used"] = True
+        return result
+
+
+def _should_use_vector(use_vector: bool | None) -> bool:
+    if use_vector is not None:
+        return use_vector
+    return get_settings().vector_enabled
 
 
 def _match_table(normalized_question: str, table: MetaTable, table_matches: dict[str, dict]) -> None:
