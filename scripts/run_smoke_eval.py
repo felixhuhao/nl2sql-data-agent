@@ -47,6 +47,10 @@ class SmokeResult:
     retrieval_columns: list[str] = field(default_factory=list)
     retrieval_metrics: list[str] = field(default_factory=list)
     retrieval_verified_queries: list[str] = field(default_factory=list)
+    retrieval_vector_used: bool | None = None
+    retrieval_index_status: str | None = None
+    retrieval_stale_reason: str | None = None
+    retrieval_value_hits: list[str] = field(default_factory=list)
     retrieval_checks: list[RetrievalCheck] = field(default_factory=list)
     focused_context_chars: int | None = None
     full_context_chars: int | None = None
@@ -84,6 +88,11 @@ def main() -> int:
         default="mock",
         help="SQL generation provider to evaluate.",
     )
+    parser.add_argument(
+        "--vector-compare",
+        action="store_true",
+        help="Run each selected case in rule-only and rule+vector modes, then write a comparison report.",
+    )
     args = parser.parse_args()
 
     cases = _load_cases(Path(args.cases_path))
@@ -95,6 +104,16 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     full_schema_context = build_schema_context()
+    if args.vector_compare:
+        return _run_vector_compare(
+            selected_cases=selected_cases,
+            scope=scope,
+            provider=provider,
+            full_schema_context=full_schema_context,
+            provider_name=args.provider,
+            report_path=Path(args.report_path),
+            skipped_case_ids=skipped_case_ids,
+        )
 
     results = [
         _run_case(case, scope, provider, full_schema_context, provider_name=args.provider)
@@ -104,6 +123,50 @@ def main() -> int:
     _write_report(report_path, results, provider_name=args.provider, skipped_case_ids=skipped_case_ids)
     _print_results(results, report_path, provider_name=args.provider, skipped_case_ids=skipped_case_ids)
     return 0 if all(result.passed for result in results) else 1
+
+
+def _run_vector_compare(
+    *,
+    selected_cases: list[dict[str, Any]],
+    scope,
+    provider: LLMProvider,
+    full_schema_context: str,
+    provider_name: str,
+    report_path: Path,
+    skipped_case_ids: list[str],
+) -> int:
+    rule_results = [
+        _run_case(
+            case,
+            scope,
+            provider,
+            full_schema_context,
+            provider_name=provider_name,
+            use_vector=False,
+        )
+        for case in selected_cases
+    ]
+    vector_results = [
+        _run_case(
+            case,
+            scope,
+            provider,
+            full_schema_context,
+            provider_name=provider_name,
+            use_vector=True,
+            validate_vector_expectations=True,
+        )
+        for case in selected_cases
+    ]
+    _write_vector_compare_report(
+        report_path,
+        rule_results=rule_results,
+        vector_results=vector_results,
+        provider_name=provider_name,
+        skipped_case_ids=skipped_case_ids,
+    )
+    _print_vector_compare_results(rule_results, vector_results, report_path)
+    return 0 if all(result.passed for result in [*rule_results, *vector_results]) else 1
 
 
 def _load_cases(path: Path) -> list[dict[str, Any]]:
@@ -155,6 +218,8 @@ def _run_case(
     provider: LLMProvider,
     full_schema_context: str,
     provider_name: str,
+    use_vector: bool | None = None,
+    validate_vector_expectations: bool = False,
 ) -> SmokeResult:
     result = SmokeResult(
         case_id=case["id"],
@@ -165,9 +230,11 @@ def _run_case(
     try:
         expected = case.get("expected", {})
         try:
-            retrieval_result = retrieve_metadata_assets(case["question"])
+            retrieval_result = retrieve_metadata_assets(case["question"], use_vector=use_vector)
             _record_retrieval_result(result, retrieval_result)
             _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
+            if validate_vector_expectations:
+                _validate_vector_retrieval(result, expected.get("vector") or {})
             schema_context = build_focused_context_from_retrieval(retrieval_result)
         except Exception as exc:
             result.fail(f"retrieval/context failed: {exc}", "retrieval_miss")
@@ -256,6 +323,7 @@ def _run_case(
 
 
 def _record_retrieval_result(result: SmokeResult, retrieval_result: dict[str, Any]) -> None:
+    retrieval_meta = retrieval_result.get("retrieval_meta") or {}
     result.retrieval_fallback_used = bool(retrieval_result.get("fallback_used"))
     result.retrieval_tables = [
         table["table_name"] for table in retrieval_result.get("tables") or []
@@ -269,6 +337,12 @@ def _record_retrieval_result(result: SmokeResult, retrieval_result: dict[str, An
     ]
     result.retrieval_verified_queries = [
         query["id"] for query in retrieval_result.get("verified_queries") or []
+    ]
+    result.retrieval_vector_used = retrieval_meta.get("vector_used")
+    result.retrieval_index_status = retrieval_meta.get("index_status")
+    result.retrieval_stale_reason = retrieval_meta.get("stale_reason")
+    result.retrieval_value_hits = [
+        _format_value_hit(hit) for hit in retrieval_meta.get("value_hits") or []
     ]
 
 
@@ -332,6 +406,53 @@ def _validate_retrieval(
         label="retrieval verified queries",
         expected=expected.get("required_verified_queries") or [],
         actual=result.retrieval_verified_queries,
+    )
+
+
+def _validate_vector_retrieval(
+    result: SmokeResult,
+    expected: dict[str, Any],
+) -> None:
+    if not expected:
+        return
+
+    expected_vector_used = expected.get("vector_used")
+    if expected_vector_used is not None and result.retrieval_vector_used != expected_vector_used:
+        result.fail(
+            f"expected vector_used {expected_vector_used}, got {result.retrieval_vector_used}",
+            "retrieval_miss",
+        )
+
+    expected_index_status = expected.get("index_status")
+    if expected_index_status and result.retrieval_index_status != expected_index_status:
+        result.fail(
+            f"expected index_status {expected_index_status}, got {result.retrieval_index_status}",
+            "retrieval_miss",
+        )
+
+    _validate_retrieval_subset(
+        result,
+        label="vector retrieval tables",
+        expected=expected.get("required_tables") or [],
+        actual=result.retrieval_tables,
+    )
+    _validate_retrieval_subset(
+        result,
+        label="vector retrieval columns",
+        expected=expected.get("required_columns") or [],
+        actual=result.retrieval_columns,
+    )
+    _validate_retrieval_subset(
+        result,
+        label="vector retrieval metrics",
+        expected=expected.get("required_metrics") or [],
+        actual=result.retrieval_metrics,
+    )
+    _validate_retrieval_subset(
+        result,
+        label="retrieval value hits",
+        expected=expected.get("required_value_hits") or [],
+        actual=result.retrieval_value_hits,
     )
 
 
@@ -474,6 +595,15 @@ def _format_join_path(path: dict[str, Any]) -> str:
     )
 
 
+def _format_value_hit(hit: dict[str, Any]) -> str:
+    table_name = hit.get("table_name")
+    column_name = hit.get("column_name")
+    matched_value = hit.get("matched_value")
+    if table_name and column_name and matched_value:
+        return f"{matched_value} -> {table_name}.{column_name}"
+    return str(matched_value or "")
+
+
 def _print_results(
     results: list[SmokeResult],
     report_path: Path,
@@ -518,6 +648,133 @@ def _write_report(
         _render_report(results, provider_name=provider_name, skipped_case_ids=skipped_case_ids),
         encoding="utf-8",
     )
+
+
+def _write_vector_compare_report(
+    path: Path,
+    *,
+    rule_results: list[SmokeResult],
+    vector_results: list[SmokeResult],
+    provider_name: str,
+    skipped_case_ids: list[str],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _render_vector_compare_report(
+            rule_results=rule_results,
+            vector_results=vector_results,
+            provider_name=provider_name,
+            skipped_case_ids=skipped_case_ids,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _print_vector_compare_results(
+    rule_results: list[SmokeResult],
+    vector_results: list[SmokeResult],
+    report_path: Path,
+) -> None:
+    rule_summary = _summary_metrics(rule_results)
+    vector_summary = _summary_metrics(vector_results)
+    value_stats = _value_recall_stats(vector_results)
+    print(
+        "rule-only: "
+        f"{rule_summary['passed_cases']}/{rule_summary['total_cases']} passed, "
+        f"fallback={rule_summary['fallback_cases']}/{rule_summary['total_cases']}, "
+        f"avg_context={rule_summary['avg_focused_context_chars']} chars"
+    )
+    print(
+        "rule+vector: "
+        f"{vector_summary['passed_cases']}/{vector_summary['total_cases']} passed, "
+        f"fallback={vector_summary['fallback_cases']}/{vector_summary['total_cases']}, "
+        f"avg_context={vector_summary['avg_focused_context_chars']} chars, "
+        f"value_recall={value_stats['hits']}/{value_stats['expected']}"
+    )
+    print(f"index status: {_format_distribution(_index_status_distribution(vector_results))}")
+    print(f"report: {report_path}")
+
+
+def _render_vector_compare_report(
+    *,
+    rule_results: list[SmokeResult],
+    vector_results: list[SmokeResult],
+    provider_name: str,
+    skipped_case_ids: list[str],
+) -> str:
+    rule_summary = _summary_metrics(rule_results)
+    vector_summary = _summary_metrics(vector_results)
+    value_stats = _value_recall_stats(vector_results)
+    lines = [
+        "# Vector Compare Report",
+        "",
+        "## Summary",
+        "",
+        f"- Provider: {provider_name}",
+        f"- Cases: {rule_summary['total_cases']}",
+        f"- Skipped cases: {len(skipped_case_ids)}",
+        f"- Rule-only pass rate: {rule_summary['passed_cases']}/{rule_summary['total_cases']}",
+        f"- Rule+Vector pass rate: {vector_summary['passed_cases']}/{vector_summary['total_cases']}",
+        f"- Rule-only fallback: {rule_summary['fallback_cases']}/{rule_summary['total_cases']}",
+        f"- Rule+Vector fallback: {vector_summary['fallback_cases']}/{vector_summary['total_cases']}",
+        f"- Rule-only avg focused context: {rule_summary['avg_focused_context_chars']} chars",
+        f"- Rule+Vector avg focused context: {vector_summary['avg_focused_context_chars']} chars",
+        f"- Value Recall hit rate: {value_stats['hits']}/{value_stats['expected']} ({_format_percent(_safe_rate(value_stats['hits'], value_stats['expected']))})",
+        f"- Vector used: {sum(1 for result in vector_results if result.retrieval_vector_used)}/{len(vector_results)}",
+        f"- Index status: {_format_distribution(_index_status_distribution(vector_results))}",
+        "",
+        "## Case Comparison",
+        "",
+        "| Case | Rule | Vector | Rule Fallback | Vector Fallback | Vector Status | Value Hits | Rule Chars | Vector Chars | Delta |",
+        "|------|------|--------|---------------|-----------------|---------------|------------|------------|--------------|-------|",
+    ]
+    for rule_result, vector_result in zip(rule_results, vector_results, strict=True):
+        delta = _context_delta(rule_result, vector_result)
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(rule_result.case_id),
+                    "PASS" if rule_result.passed else "FAIL",
+                    "PASS" if vector_result.passed else "FAIL",
+                    str(rule_result.retrieval_fallback_used),
+                    str(vector_result.retrieval_fallback_used),
+                    _md_cell(vector_result.retrieval_index_status or "-"),
+                    _md_cell(", ".join(vector_result.retrieval_value_hits) or "-"),
+                    str(rule_result.focused_context_chars),
+                    str(vector_result.focused_context_chars),
+                    delta,
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(["", "## Vector Failures", ""])
+    failures = [result for result in vector_results if not result.passed]
+    if not failures:
+        lines.append("No vector-mode failures.")
+    else:
+        for result in failures:
+            lines.extend([f"### {result.case_id}", ""])
+            lines.extend(
+                [
+                    f"- Category: {result.error_category or '-'}",
+                    f"- Index status: {result.retrieval_index_status or '-'}",
+                    f"- Stale reason: {result.retrieval_stale_reason or '-'}",
+                    f"- Value hits: {', '.join(result.retrieval_value_hits) or '-'}",
+                ]
+            )
+            for message in result.messages:
+                lines.append(f"- {message}")
+            lines.append("")
+
+    lines.extend(["", "## Skipped Cases", ""])
+    if skipped_case_ids:
+        for case_id in skipped_case_ids:
+            lines.append(f"- {case_id}")
+    else:
+        lines.append("No skipped cases.")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_report(
@@ -695,6 +952,34 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
             [result.elapsed_ms for result in results if result.elapsed_ms is not None]
         ),
     }
+
+
+def _value_recall_stats(results: list[SmokeResult]) -> dict[str, int]:
+    stats = {"hits": 0, "expected": 0}
+    for result in results:
+        for check in result.retrieval_checks:
+            if check.label != "retrieval value hits":
+                continue
+            expected = set(check.expected)
+            actual = set(check.actual)
+            stats["hits"] += len(expected & actual)
+            stats["expected"] += len(expected)
+    return stats
+
+
+def _index_status_distribution(results: list[SmokeResult]) -> dict[str, int]:
+    distribution: dict[str, int] = {}
+    for result in results:
+        status = result.retrieval_index_status or "n/a"
+        distribution[status] = distribution.get(status, 0) + 1
+    return distribution
+
+
+def _context_delta(rule_result: SmokeResult, vector_result: SmokeResult) -> str:
+    if rule_result.focused_context_chars is None or vector_result.focused_context_chars is None:
+        return "-"
+    delta = vector_result.focused_context_chars - rule_result.focused_context_chars
+    return f"{delta:+d}"
 
 
 def _retrieval_stats(results: list[SmokeResult]) -> dict[str, dict[str, int]]:

@@ -555,6 +555,178 @@ cases:
       min_row_count: 1
       chart_type: table
 
+  - id: phase4_value_region
+    type: normal
+    question: 华东地区销售额
+    tags: [phase4, value_recall, region]
+    provider: mock
+    mock_sql: >-
+      SELECT SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_regions r ON o.region_key = r.region_key
+      WHERE r.region_group = '华东'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      vector:
+        vector_used: true
+        index_status: ready
+        required_value_hits:
+          - 华东 -> dim_regions.region_group
+      required_tables: [fact_orders, dim_regions]
+      required_columns:
+        - fact_orders.payment_amount
+        - dim_regions.region_group
+      result_columns: [sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.region_key -> dim_regions.region_key
+
+  - id: phase4_value_channel
+    type: normal
+    question: 天猫渠道的订单数
+    tags: [phase4, value_recall, channel]
+    provider: mock
+    mock_sql: >-
+      SELECT COUNT(DISTINCT o.order_id) AS order_count
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      WHERE c.channel_name = '天猫'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      vector:
+        vector_used: true
+        index_status: ready
+        required_value_hits:
+          - 天猫 -> dim_channels.channel_name
+      required_tables: [fact_orders, dim_channels]
+      required_columns:
+        - fact_orders.order_id
+        - dim_channels.channel_name
+      result_columns: [order_count]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+
+  - id: phase4_value_category
+    type: normal
+    question: 美妆个护品类的销售额
+    tags: [phase4, value_recall, category]
+    provider: mock
+    mock_sql: >-
+      SELECT SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      WHERE p.category = '美妆个护'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      vector:
+        vector_used: true
+        index_status: ready
+        required_value_hits:
+          - 美妆个护 -> dim_products.category
+      required_tables: [fact_order_items, dim_products]
+      required_columns:
+        - fact_order_items.item_amount
+        - dim_products.category
+      result_columns: [sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+
+  - id: phase4_value_multi
+    type: normal
+    question: 华东地区天猫渠道的美妆个护品类销售额
+    tags: [phase4, value_recall, multi_value]
+    provider: mock
+    mock_sql: >-
+      SELECT SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN fact_orders o ON i.order_id = o.order_id
+      JOIN dim_regions r ON o.region_key = r.region_key
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      JOIN dim_products p ON i.product_key = p.product_key
+      WHERE r.region_group = '华东'
+        AND c.channel_name = '天猫'
+        AND p.category = '美妆个护'
+    expected:
+      should_execute: true
+      matched_query_id: null
+      vector:
+        vector_used: true
+        index_status: ready
+        required_value_hits:
+          - 华东 -> dim_regions.region_group
+          - 天猫 -> dim_channels.channel_name
+          - 美妆个护 -> dim_products.category
+      required_tables: [fact_order_items, fact_orders, dim_regions, dim_channels, dim_products]
+      required_columns:
+        - fact_order_items.item_amount
+        - dim_regions.region_group
+        - dim_channels.channel_name
+        - dim_products.category
+      result_columns: [sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.order_id -> fact_orders.order_id
+        - fact_orders.region_key -> dim_regions.region_key
+        - fact_orders.channel_key -> dim_channels.channel_key
+        - fact_order_items.product_key -> dim_products.product_key
+
+  - id: phase4_semantic_alias
+    type: normal
+    question: 营收总额是多少
+    tags: [phase4, semantic_vector, metric]
+    provider: mock
+    mock_sql: >-
+      SELECT SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+    expected:
+      should_execute: true
+      matched_query_id: null
+      vector:
+        vector_used: true
+        index_status: ready
+        required_metrics: [sales_amount]
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [sales_amount]
+      min_row_count: 1
+      chart_type: table
+
+  # Stretch case: do not add expected.vector here. Typo recall depends on the
+  # configured embedding model, so vector-compare should report it but not gate on it.
+  - id: phase4_semantic_typo
+    type: normal
+    question: 按渠到统计销售额
+    tags: [phase4, semantic_vector, typo, stretch]
+    provider: mock
+    mock_sql: >-
+      SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      GROUP BY c.channel_name
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_channels]
+      required_columns:
+        - fact_orders.payment_amount
+        - dim_channels.channel_name
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+
   - id: unsafe_fanout_order_amount_after_item_join
     type: safety
     question: 按类目统计销售额
