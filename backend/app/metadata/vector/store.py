@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
+import re
+import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from backend.app.config import get_settings
@@ -18,6 +18,8 @@ VECTOR_TABLE_NAMES = (
     "value_vectors",
 )
 ALL_TABLE_NAMES = (*VECTOR_TABLE_NAMES, METADATA_TABLE_NAME)
+METADATA_VECTOR_SIZE = 1
+POINT_ID_NAMESPACE = uuid.UUID("8f2954ca-6bf8-4e55-84ee-fd3ab8f7975f")
 
 
 @dataclass(frozen=True)
@@ -32,16 +34,6 @@ class VectorRow:
     @property
     def row_id(self) -> str:
         return f"{self.asset_type}:{self.asset_id}"
-
-    def to_record(self) -> dict[str, Any]:
-        return {
-            "id": self.row_id,
-            "asset_type": self.asset_type,
-            "asset_id": self.asset_id,
-            "text": self.text,
-            "metadata_json": json.dumps(self.metadata, ensure_ascii=False, sort_keys=True),
-            "vector": self.vector,
-        }
 
 
 @dataclass(frozen=True)
@@ -62,16 +54,6 @@ class VectorIndexMetadata:
     asset_counts: dict[str, int] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
-    def to_record(self) -> dict[str, Any]:
-        return {
-            "id": "current",
-            "schema_version": self.schema_version,
-            "embedding_model": self.embedding_model,
-            "embedding_dimension": self.embedding_dimension,
-            "built_at": self.built_at,
-            "asset_counts_json": json.dumps(self.asset_counts, ensure_ascii=False, sort_keys=True),
-        }
-
 
 @dataclass(frozen=True)
 class VectorIndexStatus:
@@ -83,47 +65,69 @@ class VectorIndexStatus:
     stale_reason: str | None = None
 
 
-class LanceVectorStore:
-    def __init__(self, db_path: Path | str | None = None, db=None) -> None:
+class QdrantVectorStore:
+    def __init__(
+        self,
+        *,
+        url: str | None = None,
+        api_key: str | None = None,
+        collection_prefix: str | None = None,
+        client=None,
+    ) -> None:
         settings = get_settings()
-        self.db_path = Path(db_path) if db_path is not None else settings.resolved_vector_db_path()
-        self._db = db
+        self.url = url or settings.qdrant_url
+        self.api_key = api_key if api_key is not None else settings.qdrant_api_key
+        self.collection_prefix = (
+            collection_prefix if collection_prefix is not None else settings.qdrant_collection_prefix
+        )
+        self._client = client
 
     def ensure_tables(self, embedding_dimension: int) -> None:
-        existing_tables = set(self._database().table_names())
-        vector_schema = _vector_schema(embedding_dimension)
+        existing_collections = self._collection_names()
         for table_name in VECTOR_TABLE_NAMES:
-            if table_name not in existing_tables:
-                self._database().create_table(table_name, schema=vector_schema, exist_ok=True)
-        if METADATA_TABLE_NAME not in existing_tables:
-            self._database().create_table(METADATA_TABLE_NAME, schema=_metadata_schema(), exist_ok=True)
+            collection_name = self._collection_name(table_name)
+            if collection_name not in existing_collections:
+                self._client_instance().create_collection(
+                    collection_name=collection_name,
+                    vectors_config=_vector_config(embedding_dimension),
+                )
+        metadata_collection = self._collection_name(METADATA_TABLE_NAME)
+        if metadata_collection not in existing_collections:
+            self._client_instance().create_collection(
+                collection_name=metadata_collection,
+                vectors_config=_vector_config(METADATA_VECTOR_SIZE),
+            )
 
     def upsert_rows(self, rows: list[VectorRow]) -> None:
         rows_by_table: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             _validate_table_name(row.table_name)
-            rows_by_table.setdefault(row.table_name, []).append(row.to_record())
+            rows_by_table.setdefault(row.table_name, []).append(_point_from_row(row))
 
-        for table_name, records in rows_by_table.items():
-            table = self._database().open_table(table_name)
-            data = _records_to_arrow_table(records)
-            (
-                table.merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute(data)
+        for table_name, points in rows_by_table.items():
+            self._client_instance().upsert(
+                collection_name=self._collection_name(table_name),
+                points=points,
+                wait=True,
             )
 
     def clear_vector_tables(self) -> None:
         for table_name in VECTOR_TABLE_NAMES:
-            self._database().open_table(table_name).delete("id IS NOT NULL")
+            self._client_instance().delete(
+                collection_name=self._collection_name(table_name),
+                points_selector={"filter": {}},
+                wait=True,
+            )
 
     def delete_by_ids(self, table_name: str, row_ids: list[str]) -> None:
         _validate_table_name(table_name)
         if not row_ids:
             return
-        id_list = ", ".join(_sql_string_literal(row_id) for row_id in row_ids)
-        self._database().open_table(table_name).delete(f"id IN ({id_list})")
+        self._client_instance().delete(
+            collection_name=self._collection_name(table_name),
+            points_selector={"points": [_point_id_for_row(row_id) for row_id in row_ids]},
+            wait=True,
+        )
 
     def search(
         self,
@@ -131,43 +135,57 @@ class LanceVectorStore:
         vector: list[float],
         *,
         limit: int = 10,
-        where: str | None = None,
+        where: str | dict[str, Any] | None = None,
     ) -> list[VectorSearchHit]:
         _validate_table_name(table_name)
-        query = self._database().open_table(table_name).search(vector)
-        if where:
-            query = query.where(where)
-        records = query.limit(limit).to_list()
-        return [_hit_from_record(record) for record in records]
+        points = self._search_points(
+            collection_name=self._collection_name(table_name),
+            vector=vector,
+            limit=limit,
+            query_filter=_payload_filter(where),
+        )
+        return [_hit_from_point(point) for point in points]
 
     def list_values(self, *, limit: int = 10_000) -> list[VectorSearchHit]:
-        records = self._database().open_table("value_vectors").search().limit(limit).to_list()
-        return [_hit_from_record(record) for record in records]
+        points, _ = self._client_instance().scroll(
+            collection_name=self._collection_name("value_vectors"),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [_hit_from_point(point) for point in points]
 
     def write_metadata(self, metadata: VectorIndexMetadata) -> None:
-        table = self._database().open_table(METADATA_TABLE_NAME)
-        data = _records_to_arrow_table([metadata.to_record()])
-        (
-            table.merge_insert("id")
-            .when_matched_update_all()
-            .when_not_matched_insert_all()
-            .execute(data)
+        self._client_instance().upsert(
+            collection_name=self._collection_name(METADATA_TABLE_NAME),
+            points=[
+                {
+                    "id": _point_id_for_row("metadata:current"),
+                    "vector": [0.0],
+                    "payload": {
+                        "schema_version": metadata.schema_version,
+                        "embedding_model": metadata.embedding_model,
+                        "embedding_dimension": metadata.embedding_dimension,
+                        "built_at": metadata.built_at,
+                        "asset_counts": metadata.asset_counts,
+                    },
+                }
+            ],
+            wait=True,
         )
 
     def read_metadata(self) -> VectorIndexMetadata | None:
-        if METADATA_TABLE_NAME not in set(self._database().table_names()):
+        if self._collection_name(METADATA_TABLE_NAME) not in self._collection_names():
             return None
-        records = (
-            self._database()
-            .open_table(METADATA_TABLE_NAME)
-            .search()
-            .where("id = 'current'")
-            .limit(1)
-            .to_list()
+        points = self._client_instance().retrieve(
+            collection_name=self._collection_name(METADATA_TABLE_NAME),
+            ids=[_point_id_for_row("metadata:current")],
+            with_payload=True,
+            with_vectors=False,
         )
-        if not records:
+        if not points:
             return None
-        return _metadata_from_record(records[0])
+        return _metadata_from_payload(_payload_from_point(points[0]))
 
     def status(
         self,
@@ -175,12 +193,16 @@ class LanceVectorStore:
         expected_model: str | None = None,
         expected_dimension: int | None = None,
     ) -> VectorIndexStatus:
-        existing_tables = set(self._database().table_names())
-        missing_tables = [table_name for table_name in ALL_TABLE_NAMES if table_name not in existing_tables]
+        existing_collections = self._collection_names()
+        missing_tables = [
+            table_name
+            for table_name in ALL_TABLE_NAMES
+            if self._collection_name(table_name) not in existing_collections
+        ]
         if missing_tables:
             return VectorIndexStatus(
                 status="missing",
-                stale_reason=f"Missing LanceDB tables: {', '.join(missing_tables)}",
+                stale_reason=f"Missing Qdrant collections: {', '.join(missing_tables)}",
             )
 
         metadata = self.read_metadata()
@@ -202,15 +224,52 @@ class LanceVectorStore:
             return _stale(status, "Embedding dimension mismatch.")
         return status
 
-    def _database(self):
-        if self._db is None:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._db = _load_lancedb().connect(str(self.db_path))
-        return self._db
+    def _search_points(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        limit: int,
+        query_filter: dict[str, Any] | None,
+    ):
+        client = self._client_instance()
+        if hasattr(client, "search"):
+            return client.search(
+                collection_name=collection_name,
+                query_vector=vector,
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True,
+            )
+        result = client.query_points(
+            collection_name=collection_name,
+            query=vector,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+        return getattr(result, "points", result)
+
+    def _collection_names(self) -> set[str]:
+        collections = self._client_instance().get_collections().collections
+        return {_collection_name_from_response(collection) for collection in collections}
+
+    def _collection_name(self, table_name: str) -> str:
+        if not self.collection_prefix:
+            return table_name
+        return f"{self.collection_prefix}_{table_name}"
+
+    def _client_instance(self):
+        if self._client is None:
+            kwargs = {"url": self.url}
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            self._client = _load_qdrant_client().QdrantClient(**kwargs)
+        return self._client
 
 
-def get_vector_store() -> LanceVectorStore:
-    return LanceVectorStore()
+def get_vector_store() -> QdrantVectorStore:
+    return QdrantVectorStore()
 
 
 def _stale(status: VectorIndexStatus, reason: str) -> VectorIndexStatus:
@@ -224,71 +283,86 @@ def _stale(status: VectorIndexStatus, reason: str) -> VectorIndexStatus:
     )
 
 
-def _hit_from_record(record: dict[str, Any]) -> VectorSearchHit:
-    distance = float(record.get("_distance", 0.0))
+def _point_from_row(row: VectorRow) -> dict[str, Any]:
+    return {
+        "id": _point_id_for_row(row.row_id),
+        "vector": row.vector,
+        "payload": {
+            "row_id": row.row_id,
+            "asset_type": row.asset_type,
+            "asset_id": row.asset_id,
+            "text": row.text,
+            "metadata": row.metadata,
+        },
+    }
+
+
+def _hit_from_point(point) -> VectorSearchHit:
+    payload = _payload_from_point(point)
+    score = _score_from_point(point)
     return VectorSearchHit(
-        asset_type=str(record["asset_type"]),
-        asset_id=str(record["asset_id"]),
-        text=str(record.get("text") or ""),
-        distance=distance,
-        score=1.0 / (1.0 + max(distance, 0.0)),
-        metadata=_parse_json_object(record.get("metadata_json")),
+        asset_type=str(payload["asset_type"]),
+        asset_id=str(payload["asset_id"]),
+        text=str(payload.get("text") or ""),
+        distance=round(max(0.0, 1.0 - score), 12),
+        score=score,
+        metadata=_dict_or_empty(payload.get("metadata")),
     )
 
 
-def _metadata_from_record(record: dict[str, Any]) -> VectorIndexMetadata:
+def _metadata_from_payload(payload: dict[str, Any]) -> VectorIndexMetadata:
     return VectorIndexMetadata(
-        schema_version=int(record["schema_version"]),
-        embedding_model=str(record["embedding_model"]),
-        embedding_dimension=int(record["embedding_dimension"]),
-        built_at=str(record["built_at"]),
+        schema_version=int(payload["schema_version"]),
+        embedding_model=str(payload["embedding_model"]),
+        embedding_dimension=int(payload["embedding_dimension"]),
+        built_at=str(payload["built_at"]),
         asset_counts={
             str(key): int(value)
-            for key, value in _parse_json_object(record.get("asset_counts_json")).items()
+            for key, value in _dict_or_empty(payload.get("asset_counts")).items()
         },
     )
 
 
-def _parse_json_object(value: Any) -> dict[str, Any]:
-    if not value:
-        return {}
-    parsed = json.loads(str(value))
-    if not isinstance(parsed, dict):
-        return {}
-    return parsed
+def _payload_from_point(point) -> dict[str, Any]:
+    if isinstance(point, dict):
+        return _dict_or_empty(point.get("payload"))
+    return _dict_or_empty(getattr(point, "payload", None))
 
 
-def _records_to_arrow_table(records: list[dict[str, Any]]):
-    pyarrow = _load_pyarrow()
-    return pyarrow.Table.from_pylist(records)
+def _score_from_point(point) -> float:
+    if isinstance(point, dict):
+        return float(point.get("score") or 0.0)
+    return float(getattr(point, "score", 0.0) or 0.0)
 
 
-def _vector_schema(embedding_dimension: int):
-    pyarrow = _load_pyarrow()
-    return pyarrow.schema(
-        [
-            pyarrow.field("id", pyarrow.string()),
-            pyarrow.field("asset_type", pyarrow.string()),
-            pyarrow.field("asset_id", pyarrow.string()),
-            pyarrow.field("text", pyarrow.string()),
-            pyarrow.field("metadata_json", pyarrow.string()),
-            pyarrow.field("vector", pyarrow.list_(pyarrow.float32(), embedding_dimension)),
-        ]
-    )
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
-def _metadata_schema():
-    pyarrow = _load_pyarrow()
-    return pyarrow.schema(
-        [
-            pyarrow.field("id", pyarrow.string()),
-            pyarrow.field("schema_version", pyarrow.int32()),
-            pyarrow.field("embedding_model", pyarrow.string()),
-            pyarrow.field("embedding_dimension", pyarrow.int32()),
-            pyarrow.field("built_at", pyarrow.string()),
-            pyarrow.field("asset_counts_json", pyarrow.string()),
-        ]
-    )
+def _point_id_for_row(row_id: str) -> str:
+    return str(uuid.uuid5(POINT_ID_NAMESPACE, row_id))
+
+
+def _vector_config(embedding_dimension: int) -> dict[str, Any]:
+    return {"size": embedding_dimension, "distance": "Cosine"}
+
+
+def _payload_filter(where: str | dict[str, Any] | None) -> dict[str, Any] | None:
+    if where is None:
+        return None
+    if isinstance(where, dict):
+        return where
+    match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*'((?:[^']|'')*)'\s*", where)
+    if match is None:
+        raise ValueError(f"Unsupported Qdrant filter expression: {where}")
+    field, value = match.groups()
+    return {"must": [{"key": field, "match": {"value": value.replace("''", "'")}}]}
+
+
+def _collection_name_from_response(collection) -> str:
+    if isinstance(collection, dict):
+        return str(collection["name"])
+    return str(collection.name)
 
 
 def _validate_table_name(table_name: str) -> None:
@@ -296,21 +370,9 @@ def _validate_table_name(table_name: str) -> None:
         raise ValueError(f"Unknown vector table: {table_name}")
 
 
-def _sql_string_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _load_lancedb():
+def _load_qdrant_client():
     try:
-        import lancedb
+        import qdrant_client
     except ImportError as exc:
-        raise RuntimeError("lancedb is required for vector storage.") from exc
-    return lancedb
-
-
-def _load_pyarrow():
-    try:
-        import pyarrow
-    except ImportError as exc:
-        raise RuntimeError("pyarrow is required for LanceDB vector storage.") from exc
-    return pyarrow
+        raise RuntimeError("qdrant-client is required for vector storage.") from exc
+    return qdrant_client

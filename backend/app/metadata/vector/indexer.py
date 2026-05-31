@@ -22,7 +22,7 @@ from backend.app.metadata.models import (
 )
 from backend.app.metadata.vector.embedding import embed_texts, get_embedding_dimension
 from backend.app.metadata.vector.store import (
-    LanceVectorStore,
+    QdrantVectorStore,
     VectorIndexMetadata,
     VectorRow,
     get_vector_store,
@@ -51,7 +51,7 @@ class VectorAsset:
 
 def rebuild_vector_index(
     *,
-    vector_store: LanceVectorStore | None = None,
+    vector_store: QdrantVectorStore | None = None,
     batch_size: int = DEFAULT_EMBED_BATCH_SIZE,
 ) -> VectorIndexBuildResult:
     settings = get_settings()

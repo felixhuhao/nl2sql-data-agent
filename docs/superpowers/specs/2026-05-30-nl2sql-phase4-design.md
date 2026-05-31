@@ -11,19 +11,21 @@
 
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
-| 向量数据库 | LanceDB (本地嵌入, 无服务端) | 零运维: 纯 Python 库, 数据存本地文件, 不需要 Docker; 支持过滤搜索; 与项目轻量架构一致 |
+| 向量数据库 | Qdrant (server 模式) | 更接近最终部署形态; 本地和服务器都走同一套 client/server 路径; 支持 payload filter、collection 管理和后续扩展 |
 | Embedding 模型 | 必须显式配置 EMBEDDING_MODEL; 本地开发建议 D:/Models/BAAI/bge-m3; Docker 建议 /models/BAAI/bge-m3 | 不做隐式 fallback, 避免生产环境用错模型或触发意外下载 |
-| Embedding 维度 | 从模型实际输出推断并写入配置/索引元数据 | bge-m3 通常 1024 维; LanceDB schema 不能硬编码 |
+| Embedding 维度 | 从模型实际输出推断并写入配置/索引元数据 | bge-m3 通常 1024 维; Qdrant collection vector size 不能硬编码 |
 | 混合打分策略 | 加权融合: rule*0.6 + vec*0.3 + priority*0.1 | ROADMAP 要求不完全依赖向量; 规则得分已证明有效; 权重可配置 |
 | Value Recall | 精确/归一化值匹配优先, 向量值召回补充 | "华东"、"天猫" 这类短值用规则更稳; 向量用于模糊值、别称和错字 |
 | 回退策略 | 混合召回无命中仍走现有 fallback | 保持 Phase 2/3 安全网 |
 | 索引管理 | CLI/Admin 手动重建优先; Admin CRUD 后增量更新; 不阻塞后端启动 | 避免首次模型下载、加载和全量 embedding 拖慢 dev server 或测试 |
 
-### 1.1 为什么不选 Qdrant / Chroma
+### 1.1 为什么改用 Qdrant
 
-- Qdrant: 需要 Docker 或 Cloud; 增加环境复杂度; 过度工程化
+- Qdrant: 本地和服务器都使用同一套服务形态, 避免后续从 embedded store 迁移到 server store
+- Qdrant: collection、payload filter、点更新、删除、索引状态都更产品化, 适合后续 Admin UI 和部署运维
 - Chroma: API 不稳定, 破坏性变更频繁; 文档质量一般
-- LanceDB: 纯库 (pip install); 数据存本地 .lance 目录; PyArrow 底层; 与 DuckDB + SQLite 轻量架构一致
+- LanceDB: 嵌入式开发体验轻, 但最终服务器部署仍要考虑持久化目录和迁移路径; 现在切到 Qdrant 成本最低
+- 约束: 不实现本地 fallback。`vector_enabled=True` 时必须能连接 Qdrant, 否则向量索引/召回明确降级或报错。
 
 ### 1.2 Embedding 模型说明
 
@@ -61,7 +63,7 @@
 新建:
 - backend/app/metadata/vector/__init__.py
 - backend/app/metadata/vector/embedding.py -- 模型加载, 维度推断, embed(text)
-- backend/app/metadata/vector/store.py -- LanceDB 连接, schema, upsert, search
+- backend/app/metadata/vector/store.py -- Qdrant client, collection, upsert, search
 - backend/app/metadata/vector/indexer.py -- 从 SQLite 构建向量索引
 - backend/app/metadata/vector/searcher.py -- 向量搜索接口
 - backend/app/metadata/hybrid.py -- 混合融合算法
@@ -75,15 +77,15 @@
 
 ### 2.3 向量索引 Schema
 
-五个 LanceDB table。所有 table 的 vector 维度使用 `embedding_dimension`, 不硬编码:
+五个 Qdrant collection。所有 collection 的 vector size 使用 `embedding_dimension`, 不硬编码:
 
-- table_vectors: id=table_name, text=名称+描述+域, vector=embedding_dimension
-- column_vectors: id=table.column, text=名称+描述+别名+sample_values, vector=embedding_dimension
-- metric_vectors: id=name, text=名称+标签+描述+表达式, vector=embedding_dimension
-- verified_query_vectors: id=query_id, text=问题+标签, vector=embedding_dimension
-- value_vectors: id=table.column:value, text=单个 sample_value, vector=embedding_dimension
+- table_vectors: id=stable uuid(row_id), payload 包含 row_id、asset_id、text、metadata
+- column_vectors: id=stable uuid(row_id), payload 包含 table.column、别名、sample_values
+- metric_vectors: id=stable uuid(row_id), payload 包含 metric name、label、expression
+- verified_query_vectors: id=stable uuid(row_id), payload 包含 query_id、question、sql、tags
+- value_vectors: id=stable uuid(row_id), payload 包含 table、column、value
 
-索引目录需要保存 metadata:
+metadata 单独存入 `_index_metadata` collection:
 
 - embedding_model
 - embedding_dimension
@@ -187,7 +189,7 @@ business_priority:
 - backend/app/metadata/vector/embedding.py
 
 修改文件:
-- backend/app/config.py -- 新增 vector_db_path, embedding_model, embedding_dimension, vector_enabled, vector_similarity_threshold, value_vector_similarity_threshold
+- backend/app/config.py -- 新增 qdrant_url, qdrant_api_key, qdrant_collection_prefix, embedding_model, embedding_dimension, vector_enabled, vector_similarity_threshold, value_vector_similarity_threshold
 - backend/pyproject.toml -- 新增 sentence-transformers
 
 实现要点:
@@ -207,30 +209,30 @@ business_priority:
 
 ---
 
-### I4.2 LanceDB 存储层
+### I4.2 Qdrant 存储层
 
-目标: 建立可复用的本地向量 store, 支持动态维度。
+目标: 建立可复用的 Qdrant 向量 store, 支持动态维度。
 
 新建文件:
 - backend/app/metadata/vector/store.py
 
 修改文件:
-- backend/pyproject.toml -- 新增 lancedb>=0.16.0
+- backend/pyproject.toml -- 新增 qdrant-client
 
 实现要点:
 
-- LanceDB table schema 使用 embedding_dimension
+- Qdrant collection vector size 使用 embedding_dimension
 - 保存并读取 index metadata
 - upsert/search/delete_by_ids
 - 模型维度与索引维度不一致时返回 stale
-- 单元测试用 fake DB 覆盖 store wrapper; 真实 LanceDB smoke 在依赖安装后单独跑
+- 单元测试用 fake client 覆盖 store wrapper; 真实 Qdrant smoke 在本地 Docker Qdrant 启动后单独跑
 
 验收:
 
-- 能 create/open 五张向量表
+- 能 create/open 五个向量 collection
 - 能 upsert/search 返回 score 和 asset_id
 - 维度不一致时 status=stale
-- 未安装 lancedb 时不影响 vector_enabled=False 和现有测试
+- 未安装 qdrant-client 时不影响 vector_enabled=False 和现有测试
 
 ---
 
@@ -255,7 +257,7 @@ business_priority:
 
 - mock 单测覆盖五类资产生成、批量 embedding、metadata 写入
 - CLI 能手动触发 rebuild, 不接 app startup
-- 真实 LanceDB + bge-m3 smoke 在依赖安装后执行
+- 真实 Qdrant + bge-m3 smoke 在 Qdrant 启动后执行
 - 缺模型或模型路径错误时失败可诊断, 不污染旧索引
 
 ---
@@ -460,7 +462,7 @@ python scripts/run_smoke_eval.py --vector-compare --report-path evals/reports/ph
 4. 语义召回: 同义词问题向量模式命中率高于纯规则
 5. 前端展示: 召回来源可解释, Value Recall 有标识
 6. 对比报告: 能量化有向量 vs 无向量的差异
-7. 零运维: 不需要额外启动数据库或向量服务; Docker 部署只需挂载模型目录和索引目录
+7. 部署一致: 本地和服务器都使用 Qdrant 服务; Docker 部署挂载模型目录并启动 qdrant service
 8. 不阻塞启动: 后端启动不自动下载模型或全量建索引
 
 ---
@@ -471,7 +473,7 @@ python scripts/run_smoke_eval.py --vector-compare --report-path evals/reports/ph
 2. 用户反馈学习 -- 不从查询历史调整权重
 3. 多语言支持 -- 只优化中文
 4. 向量维度调优 -- 不做 fine-tuning
-5. ANN 参数调优 -- 用 LanceDB 默认参数
+5. ANN 参数调优 -- 用 Qdrant 默认参数
 6. 增量监听 -- 不做 SQLite WAL 监听
 7. Elasticsearch -- ROADMAP 排除
 8. 查询历史向量化 -- 不用历史查询做召回
@@ -486,7 +488,7 @@ python scripts/run_smoke_eval.py --vector-compare --report-path evals/reports/ph
 | 风险 | 缓解 |
 |------|------|
 | Embedding 模型路径错误 | vector_enabled=True 时显式报错; Docker 用 volume 挂载 /models/BAAI/bge-m3; vector_enabled=False 绕过 |
-| LanceDB Windows 兼容 | I4.2 单独验证; 如有问题再降级 NumPy+FAISS 或 SQLite vec |
+| Qdrant 服务不可用 | vector_enabled=True 时 status=error; 检索链路降级 rule-only; rebuild CLI 直接失败并显示连接错误 |
 | 向量搜索增加延迟 | 约100-500ms, 占 DeepSeek 5s 调用的不到2%; 可通过 vector_enabled 关闭 |
 | 混合权重不合理 | 权重可配置; 默认 rule=0.6 确保不比纯规则差; eval 对比验证 |
 | sample_values 覆盖不足 | Admin UI 可补充; rebuild 后生效 |
@@ -498,7 +500,7 @@ python scripts/run_smoke_eval.py --vector-compare --report-path evals/reports/ph
 ## 8. 实现顺序与时间估计
 
 I4.1 Embedding 配置与 wrapper              0.5 天
-I4.2 LanceDB 存储层                       0.5-1 天
+I4.2 Qdrant 存储层                        0.5-1 天
 I4.3 索引构建器 + CLI                     1 天
 I4.4 向量搜索器 + Hybrid Merge            1-1.5 天
 I4.5 Value Recall                         1 天
@@ -523,7 +525,7 @@ I4.8 Admin 索引管理 + CRUD 一致性 + README 1 天
 以下文件是实现 Phase 4 最关键的 5 个文件:
 
 - backend/app/metadata/retrieval.py -- 现有规则检索, 需要接入 use_vector 和 hybrid_merge
-- backend/app/metadata/vector/store.py (新建) -- LanceDB 存储层, 所有向量操作的基础
+- backend/app/metadata/vector/store.py (新建) -- Qdrant 存储层, 所有向量操作的基础
 - backend/app/metadata/vector/indexer.py (新建) -- 索引生命周期, 控制是否能稳定上线
 - backend/app/metadata/hybrid.py (新建) -- 混合融合算法, 向量与规则的核心集成点
 - scripts/run_smoke_eval.py -- eval runner, 需要扩展对比模式和 Value Recall 验证
