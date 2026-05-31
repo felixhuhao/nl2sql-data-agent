@@ -203,6 +203,106 @@ def test_iter_chat_events_returns_error_event_for_guard_rejection():
     assert executed == []
 
 
+def test_iter_chat_events_repairs_guard_rejection_and_returns_repair_step():
+    class RepairProvider:
+        name = "repair-provider"
+
+        def generate_sql(self, request):
+            if request.repair is None:
+                return SQLGenerationResult(sql="SELECT product_id FROM fact_orders", provider=self.name)
+            return SQLGenerationResult(sql="SELECT payment_amount FROM fact_orders", provider=self.name)
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        return QueryResult(
+            columns=["payment_amount"],
+            rows=[[100]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单金额",
+            provider=RepairProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    assert [event["data"].get("step") for event in events[:-1]] == [
+        "intent_guard",
+        "build_context",
+        "generate_sql",
+        "sql_guard",
+        "repair_sql",
+        "sql_guard",
+        "execute",
+        "summarize",
+        "recommend_chart",
+    ]
+    repair_step = next(event for event in events if event["data"].get("step") == "repair_sql")
+    assert repair_step["data"]["attempt"] == 1
+    assert repair_step["data"]["original_sql"] == "SELECT product_id FROM fact_orders"
+    assert repair_step["data"]["repaired_sql"] == "SELECT payment_amount FROM fact_orders"
+    assert repair_step["data"]["error_stage"] == "sql_guard"
+    assert repair_step["data"]["error_kind"] == "scope_guard"
+    assert events[-1]["data"]["repair_history"][0]["succeeded"] is True
+    assert events[-1]["data"]["repair_history"][0]["final_stage"] == "execute"
+
+
+def test_iter_chat_events_repairs_execution_failure_and_returns_repair_step():
+    class CatalogException(Exception):
+        pass
+
+    class RepairProvider:
+        name = "repair-provider"
+
+        def generate_sql(self, request):
+            if request.repair is None:
+                return SQLGenerationResult(sql="SELECT payment_amount FROM fact_orders", provider=self.name)
+            return SQLGenerationResult(sql="SELECT order_id FROM fact_orders", provider=self.name)
+
+    calls = []
+
+    def fake_executor(guard_result: GuardResult) -> QueryResult:
+        calls.append(guard_result.normalized_sql)
+        if len(calls) == 1:
+            raise CatalogException("Catalog Error: Column does not exist")
+        return QueryResult(
+            columns=["order_id"],
+            rows=[["O1"]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单",
+            provider=RepairProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    assert [event["data"].get("step") for event in events[:-1]] == [
+        "intent_guard",
+        "build_context",
+        "generate_sql",
+        "sql_guard",
+        "repair_sql",
+        "sql_guard",
+        "execute",
+        "summarize",
+        "recommend_chart",
+    ]
+    repair_step = next(event for event in events if event["data"].get("step") == "repair_sql")
+    assert repair_step["data"]["error_stage"] == "execute"
+    assert repair_step["data"]["error_kind"] == "CatalogException"
+    assert events[-1]["data"]["result"]["columns"] == ["order_id"]
+    assert events[-1]["data"]["repair_history"][0]["succeeded"] is True
+    assert events[-1]["data"]["repair_history"][0]["final_stage"] == "execute"
+
+
 def test_iter_chat_events_returns_failure_event_for_sql_generation_timeout():
     class TimeoutProvider:
         name = "timeout"

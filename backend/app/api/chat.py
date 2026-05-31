@@ -10,13 +10,12 @@ from pydantic import BaseModel
 
 from backend.app.agent.nodes import (
     build_context_node,
-    execute_node,
     generate_sql_node,
     intent_guard_node,
     retrieve_context_node,
-    sql_guard_node,
     summarize_node,
 )
+from backend.app.agent.repair import RepairEvent, iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
 from backend.app.core.deepseek_provider import DeepSeekProvider
@@ -72,7 +71,8 @@ def iter_chat_events(
         build_context_node(state, schema_context_builder=schema_context_builder)
         yield _sse_event("step", {"step": "build_context", "status": "completed"})
 
-        generate_sql_node(state, provider=provider or get_default_llm_provider())
+        active_provider = provider or get_default_llm_provider()
+        generate_sql_node(state, provider=active_provider)
         yield _sse_event(
             "step",
             {
@@ -84,37 +84,16 @@ def iter_chat_events(
             },
         )
 
-        sql_guard_node(state, scope_builder=scope_builder)
-        yield _sse_event(
-            "step",
-            {
-                "step": "sql_guard",
-                "status": "completed",
-                "guard_result": _model_dump(state.guard_result),
-            },
-        )
-        if state.stopped_at is not None:
-            yield _sse_event(
-                "error",
-                {
-                    "step": state.stopped_at,
-                    "reason": state.error,
-                    "error_kind": "blocked",
-                    "explainability": state.explainability,
-                },
-            )
-            return
-
-        execute_node(state, executor=executor)
-        yield _sse_event(
-            "step",
-            {
-                "step": "execute",
-                "status": "completed",
-                "columns": state.query_result.columns if state.query_result else [],
-                "row_count": state.query_result.row_count if state.query_result else 0,
-            },
-        )
+        for repair_event in iter_sql_repair_events(
+            state,
+            provider=active_provider,
+            scope_builder=scope_builder,
+            executor=executor,
+        ):
+            if repair_event.step == "error":
+                yield _sse_event("error", _repair_error_payload(repair_event))
+                return
+            yield _sse_event("step", _repair_step_payload(repair_event))
 
         summarize_node(state)
         yield _sse_event(
@@ -146,6 +125,7 @@ def iter_chat_events(
                 "summary": state.summary,
                 "chart_recommendation": chart_recommendation.model_dump(),
                 "explainability": state.explainability,
+                "repair_history": state.repair_history,
             },
         )
     except httpx.ReadTimeout:
@@ -209,4 +189,45 @@ def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
         "stale_reason": retrieval_meta.get("stale_reason"),
         "value_hits": retrieval_meta.get("value_hits", []),
         "retrieval_sources": retrieval_meta.get("sources", {}),
+    }
+
+
+def _repair_step_payload(event: RepairEvent) -> dict:
+    if event.step == "sql_guard":
+        return {
+            "step": "sql_guard",
+            "status": "completed",
+            "guard_result": _model_dump(event.state.guard_result),
+        }
+    if event.step == "execute":
+        return {
+            "step": "execute",
+            "status": "completed",
+            "columns": event.state.query_result.columns if event.state.query_result else [],
+            "row_count": event.state.query_result.row_count if event.state.query_result else 0,
+        }
+    if event.step == "repair_sql":
+        latest_repair = event.state.repair_history[-1] if event.state.repair_history else {}
+        return {
+            "step": "repair_sql",
+            "status": "completed",
+            "attempt": event.attempt,
+            "original_sql": latest_repair.get("original_sql"),
+            "repaired_sql": latest_repair.get("repaired_sql"),
+            "error_stage": latest_repair.get("error_stage"),
+            "error_kind": latest_repair.get("error_kind"),
+            "error_reason": latest_repair.get("error_reason"),
+            "repair_history": event.state.repair_history,
+        }
+    raise ValueError(f"Unsupported repair event step: {event.step}")
+
+
+def _repair_error_payload(event: RepairEvent) -> dict:
+    return {
+        "step": event.error_stage or event.state.stopped_at or event.step,
+        "reason": event.error_reason or event.state.error or str(event.error or ""),
+        "error_kind": "blocked" if event.error_stage == "sql_guard" else "failure",
+        "guard_stage": event.error_kind if event.error_stage == "sql_guard" else None,
+        "explainability": event.state.explainability,
+        "repair_history": event.state.repair_history,
     }
