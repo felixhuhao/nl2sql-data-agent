@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from dataclasses import dataclass
+
+from backend.app.agent.nodes import ScopeBuilder, SQLExecutor, execute_node, repair_sql_node, sql_guard_node
 from backend.app.agent.state import AgentState
+from backend.app.core.llm_provider import LLMProvider, SQLRepairContext
 from backend.app.sql_guard.models import GuardResult
 
 
+MAX_REPAIRS = 2
 REPAIRABLE_GUARD_STAGES = frozenset(
     {
         "scope_guard",
@@ -33,6 +39,17 @@ _REPAIRABLE_EXECUTION_ERROR_TOKENS = (
 )
 
 
+@dataclass(frozen=True)
+class RepairEvent:
+    step: str
+    state: AgentState
+    attempt: int | None = None
+    error: Exception | None = None
+    error_stage: str | None = None
+    error_kind: str | None = None
+    error_reason: str | None = None
+
+
 def is_guard_repairable(guard_result: GuardResult | None) -> bool:
     return bool(guard_result and guard_result.stage in REPAIRABLE_GUARD_STAGES)
 
@@ -52,3 +69,111 @@ def reset_failure_state(state: AgentState) -> None:
     state.summary = None
     state.explainability = None
     state.execution_error = None
+
+
+def iter_sql_repair_events(
+    state: AgentState,
+    *,
+    provider: LLMProvider,
+    scope_builder: ScopeBuilder,
+    executor: SQLExecutor,
+    max_repairs: int = MAX_REPAIRS,
+) -> Iterator[RepairEvent]:
+    repair_count = 0
+
+    while True:
+        reset_failure_state(state)
+        sql_guard_node(state, scope_builder=scope_builder)
+        yield RepairEvent(step="sql_guard", state=state)
+
+        if state.guard_result is None:
+            raise ValueError("guard_result is required after SQL Guard.")
+
+        if not state.guard_result.allowed:
+            if not is_guard_repairable(state.guard_result) or repair_count >= max_repairs:
+                _mark_latest_repair(state, succeeded=False, final_stage=state.guard_result.stage)
+                yield _error_event_from_guard(state)
+                return
+            _mark_latest_repair(state, succeeded=False, final_stage=state.guard_result.stage)
+            repair_count += 1
+            repair_context = _repair_context_from_guard(state, attempt=repair_count)
+            repair_sql_node(state, provider=provider, repair_context=repair_context)
+            yield RepairEvent(step="repair_sql", state=state, attempt=repair_count)
+            continue
+
+        try:
+            execute_node(state, executor=executor)
+        except Exception as exc:
+            state.execution_error = str(exc)
+            if not is_execution_repairable(exc) or repair_count >= max_repairs:
+                _mark_latest_repair(state, succeeded=False, final_stage="execute")
+                yield RepairEvent(
+                    step="error",
+                    state=state,
+                    error=exc,
+                    error_stage="execute",
+                    error_kind=type(exc).__name__,
+                    error_reason=str(exc),
+                )
+                return
+            _mark_latest_repair(state, succeeded=False, final_stage="execute")
+            repair_count += 1
+            repair_context = _repair_context_from_execution(state, exc, attempt=repair_count)
+            repair_sql_node(state, provider=provider, repair_context=repair_context)
+            yield RepairEvent(step="repair_sql", state=state, attempt=repair_count)
+            continue
+
+        _mark_latest_repair(state, succeeded=True, final_stage="execute")
+        yield RepairEvent(step="execute", state=state)
+        return
+
+
+def _repair_context_from_guard(state: AgentState, attempt: int) -> SQLRepairContext:
+    if state.sql is None:
+        raise ValueError("sql is required for SQL repair.")
+    if state.guard_result is None:
+        raise ValueError("guard_result is required for SQL repair.")
+    return SQLRepairContext(
+        attempt=attempt,
+        original_sql=state.sql,
+        error_stage="sql_guard",
+        error_kind=state.guard_result.stage,
+        error_reason=state.guard_result.reason,
+        normalized_sql=state.guard_result.normalized_sql,
+    )
+
+
+def _repair_context_from_execution(
+    state: AgentState,
+    error: Exception,
+    attempt: int,
+) -> SQLRepairContext:
+    if state.sql is None:
+        raise ValueError("sql is required for SQL repair.")
+    normalized_sql = state.guard_result.normalized_sql if state.guard_result else None
+    return SQLRepairContext(
+        attempt=attempt,
+        original_sql=state.sql,
+        error_stage="execute",
+        error_kind=type(error).__name__,
+        error_reason=str(error),
+        normalized_sql=normalized_sql,
+    )
+
+
+def _error_event_from_guard(state: AgentState) -> RepairEvent:
+    guard_result = state.guard_result
+    return RepairEvent(
+        step="error",
+        state=state,
+        error_stage="sql_guard",
+        error_kind=guard_result.stage if guard_result else None,
+        error_reason=guard_result.reason if guard_result else None,
+    )
+
+
+def _mark_latest_repair(state: AgentState, *, succeeded: bool, final_stage: str) -> None:
+    if not state.repair_history:
+        return
+    state.repair_history[-1]["succeeded"] = succeeded
+    state.repair_history[-1]["final_stage"] = final_stage

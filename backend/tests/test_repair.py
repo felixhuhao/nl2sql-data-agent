@@ -1,11 +1,14 @@
 from backend.app.agent.repair import (
+    iter_sql_repair_events,
     is_execution_repairable,
     is_guard_repairable,
     reset_failure_state,
 )
 from backend.app.agent.state import AgentState
+from backend.app.core.llm_provider import SQLGenerationRequest, SQLGenerationResult
 from backend.app.execution.runner import QueryResult
 from backend.app.sql_guard.models import GuardResult
+from backend.app.sql_guard.scope import GuardScope
 
 
 def test_is_guard_repairable_accepts_repairable_stages():
@@ -63,3 +66,168 @@ def test_reset_failure_state_clears_transient_failure_fields():
     assert state.summary is None
     assert state.explainability is None
     assert state.execution_error is None
+
+
+def test_iter_sql_repair_events_repairs_guard_failure_and_backfills_history():
+    state = AgentState(
+        question="查询订单金额",
+        schema_context="# Schema Context",
+        sql="SELECT product_id FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(["SELECT payment_amount FROM fact_orders"])
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=lambda guard_result: QueryResult(
+                columns=["payment_amount"],
+                rows=[[100]],
+                row_count=1,
+            ),
+        )
+    )
+
+    assert [event.step for event in events] == ["sql_guard", "repair_sql", "sql_guard", "execute"]
+    assert state.error is None
+    assert state.stopped_at is None
+    assert state.query_result is not None
+    assert state.query_result.row_count == 1
+    assert provider.repair_requests[0].repair is not None
+    assert provider.repair_requests[0].repair.error_stage == "sql_guard"
+    assert provider.repair_requests[0].repair.error_kind == "scope_guard"
+    assert state.repair_history == [
+        {
+            "attempt": 1,
+            "original_sql": "SELECT product_id FROM fact_orders",
+            "repaired_sql": "SELECT payment_amount FROM fact_orders",
+            "error_stage": "sql_guard",
+            "error_kind": "scope_guard",
+            "error_reason": "Column product_id is not allowed.",
+            "normalized_sql": None,
+            "succeeded": True,
+            "final_stage": "execute",
+        }
+    ]
+
+
+def test_iter_sql_repair_events_repairs_execution_failure_and_backfills_history():
+    class CatalogException(Exception):
+        pass
+
+    state = AgentState(
+        question="查询订单金额",
+        schema_context="# Schema Context",
+        sql="SELECT payment_amount FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(["SELECT order_id FROM fact_orders"])
+    calls = []
+
+    def executor(guard_result: GuardResult) -> QueryResult:
+        calls.append(guard_result.normalized_sql)
+        if len(calls) == 1:
+            raise CatalogException("Catalog Error: Column does not exist")
+        return QueryResult(columns=["order_id"], rows=[["O1"]], row_count=1)
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=executor,
+        )
+    )
+
+    assert [event.step for event in events] == ["sql_guard", "repair_sql", "sql_guard", "execute"]
+    assert len(calls) == 2
+    assert state.execution_error is None
+    assert provider.repair_requests[0].repair is not None
+    assert provider.repair_requests[0].repair.error_stage == "execute"
+    assert provider.repair_requests[0].repair.error_kind == "CatalogException"
+    assert state.repair_history[0]["succeeded"] is True
+    assert state.repair_history[0]["final_stage"] == "execute"
+
+
+def test_iter_sql_repair_events_does_not_repair_operation_guard():
+    state = AgentState(
+        question="查询订单",
+        schema_context="# Schema Context",
+        sql="DELETE FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(["SELECT order_id FROM fact_orders"])
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=lambda guard_result: QueryResult(columns=[], rows=[], row_count=0),
+        )
+    )
+
+    assert [event.step for event in events] == ["sql_guard", "error"]
+    assert events[-1].error_stage == "sql_guard"
+    assert events[-1].error_kind == "operation_guard"
+    assert state.repair_history == []
+    assert provider.repair_requests == []
+
+
+def test_iter_sql_repair_events_stops_after_max_repair_attempts():
+    state = AgentState(
+        question="查询订单",
+        schema_context="# Schema Context",
+        sql="SELECT bad_column FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(
+        [
+            "SELECT still_bad FROM fact_orders",
+            "SELECT also_bad FROM fact_orders",
+        ]
+    )
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=lambda guard_result: QueryResult(columns=[], rows=[], row_count=0),
+        )
+    )
+
+    assert [event.step for event in events] == [
+        "sql_guard",
+        "repair_sql",
+        "sql_guard",
+        "repair_sql",
+        "sql_guard",
+        "error",
+    ]
+    assert len(state.repair_history) == 2
+    assert state.repair_history[0]["succeeded"] is False
+    assert state.repair_history[0]["final_stage"] == "scope_guard"
+    assert state.repair_history[1]["succeeded"] is False
+    assert state.repair_history[1]["final_stage"] == "scope_guard"
+
+
+class _ScriptedRepairProvider:
+    name = "scripted"
+
+    def __init__(self, repair_sqls: list[str]) -> None:
+        self._repair_sqls = list(repair_sqls)
+        self.repair_requests: list[SQLGenerationRequest] = []
+
+    def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+        self.repair_requests.append(request)
+        if not self._repair_sqls:
+            raise AssertionError("No scripted repair SQL left.")
+        return SQLGenerationResult(sql=self._repair_sqls.pop(0), provider=self.name)
+
+
+def _scope() -> GuardScope:
+    return GuardScope(
+        allowed_tables=frozenset({"fact_orders"}),
+        table_columns={
+            "fact_orders": frozenset({"order_id", "payment_amount"}),
+        },
+    )
