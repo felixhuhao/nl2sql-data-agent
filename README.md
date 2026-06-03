@@ -66,6 +66,23 @@ dim_date
 
 ## 快速启动
 
+WSL/Ubuntu 建议把 Python 虚拟环境放在 Linux 文件系统里，不要放在 `/mnt/c` 或 `/mnt/d`：
+
+```bash
+python3 -m venv ~/.venvs/nl2sql-pro
+source ~/.venvs/nl2sql-pro/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e "backend[test]"
+```
+
+如果仓库位于 `/mnt/c` 或 `/mnt/d`，npm、pytest、DuckDB/SQLite I/O 会明显变慢；长期开发建议把仓库克隆或同步到 WSL 的 ext4 目录，例如 `~/src/nl2sql_pro`。
+也可以先把本地数据文件放到 WSL ext4，在 `backend/.env` 中配置：
+
+```env
+DUCKDB_PATH=/home/hao/.local/share/nl2sql_pro/ecommerce.duckdb
+SQLITE_PATH=/home/hao/.local/share/nl2sql_pro/metadata.sqlite
+```
+
 生成本地 DuckDB 数据并同步元数据：
 
 ```bash
@@ -97,10 +114,17 @@ http://127.0.0.1:5174/
 
 Phase 4 使用 Qdrant 作为向量数据库，embedding 模型必须显式配置，不做隐式 fallback。
 
+向量能力依赖较重，按需安装：
+
+```bash
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e "backend[vector]"
+```
+
 本地开发需要先启动 Qdrant，例如：
 
 ```bash
-docker run -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
+docker run -d --name nl2sql-qdrant -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
 ```
 
 后端 `.env` 示例：
@@ -109,7 +133,7 @@ docker run -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
 VECTOR_ENABLED=true
 QDRANT_URL=http://localhost:6333
 QDRANT_COLLECTION_PREFIX=nl2sql
-EMBEDDING_MODEL=D:/Models/BAAI/bge-m3
+EMBEDDING_MODEL=/mnt/d/Models/BAAI/bge-m3
 ```
 
 重建索引：

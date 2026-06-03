@@ -30,6 +30,9 @@ from backend.app.metadata.vector.store import (
 
 
 DEFAULT_EMBED_BATCH_SIZE = 64
+METRIC_VECTOR_ALIASES = {
+    "sales_amount": ["营收总额", "营收", "营业额", "收入"],
+}
 
 
 @dataclass(frozen=True)
@@ -190,30 +193,43 @@ def _metric_assets(session: Session) -> list[VectorAsset]:
         .where(MetaMetric.enabled.is_(True))
         .order_by(MetaMetric.name)
     ).all()
-    return [
-        VectorAsset(
-            table_name="metric_vectors",
-            asset_type="metric",
-            asset_id=metric.name,
-            text=_join_text(
-                metric.name,
-                metric.label,
-                metric.description,
-                metric.expression,
-                metric.default_time_column,
-                *_parse_json_list(metric.allowed_dimensions),
-            ),
-            metadata={
-                "name": metric.name,
-                "label": metric.label,
-                "expression": metric.expression,
-                "description": metric.description,
-                "default_time_column": metric.default_time_column,
-                "allowed_dimensions": _parse_json_list(metric.allowed_dimensions),
-            },
+    assets = []
+    for metric in metrics:
+        metadata = {
+            "name": metric.name,
+            "label": metric.label,
+            "expression": metric.expression,
+            "description": metric.description,
+            "default_time_column": metric.default_time_column,
+            "allowed_dimensions": _parse_json_list(metric.allowed_dimensions),
+        }
+        assets.append(
+            VectorAsset(
+                table_name="metric_vectors",
+                asset_type="metric",
+                asset_id=metric.name,
+                text=_join_text(
+                    metric.name,
+                    metric.label,
+                    metric.description,
+                    metric.expression,
+                    metric.default_time_column,
+                    *metadata["allowed_dimensions"],
+                ),
+                metadata=metadata,
+            )
         )
-        for metric in metrics
-    ]
+        for alias in METRIC_VECTOR_ALIASES.get(metric.name, []):
+            assets.append(
+                VectorAsset(
+                    table_name="metric_vectors",
+                    asset_type="metric",
+                    asset_id=f"{metric.name}:alias:{alias}",
+                    text=alias,
+                    metadata={**metadata, "alias": alias},
+                )
+            )
+    return assets
 
 
 def _verified_query_assets(session: Session) -> list[VectorAsset]:

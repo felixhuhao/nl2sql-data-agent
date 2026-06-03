@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import csv
 import random
+import sys
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DUCKDB_PATH = PROJECT_ROOT / "data" / "ecommerce.duckdb"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.app.config import get_settings
+
 RANDOM_SEED = 20260529
 
 
 def main() -> None:
     random.seed(RANDOM_SEED)
-    DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with duckdb.connect(str(DUCKDB_PATH)) as conn:
+    duckdb_path = get_settings().resolved_duckdb_path()
+    duckdb_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(duckdb_path)) as conn:
         _drop_tables(conn)
         _create_tables(conn)
         conn.execute("BEGIN TRANSACTION")
@@ -25,7 +32,7 @@ def main() -> None:
         channels = _insert_channels(conn)
         _insert_orders_and_items(conn, dates, users, products, regions, channels)
         conn.execute("COMMIT")
-    print(f"Generated DuckDB dataset: {DUCKDB_PATH}")
+    print(f"Generated DuckDB dataset: {duckdb_path}")
 
 
 def _drop_tables(conn: duckdb.DuckDBPyConnection) -> None:
@@ -147,7 +154,7 @@ def _insert_dates(conn: duckdb.DuckDBPyConnection) -> list[int]:
             )
         )
         current += timedelta(days=1)
-    conn.executemany("INSERT INTO dim_date VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    _copy_rows(conn, "dim_date", rows)
     return [row[0] for row in rows]
 
 
@@ -166,7 +173,7 @@ def _insert_users(conn: duckdb.DuckDBPyConnection) -> list[int]:
                 random.choice(cities),
             )
         )
-    conn.executemany("INSERT INTO dim_users VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    _copy_rows(conn, "dim_users", rows)
     return [row[0] for row in rows]
 
 
@@ -197,7 +204,7 @@ def _insert_products(conn: duckdb.DuckDBPyConnection) -> list[tuple[int, float]]
                 )
             )
             product_key += 1
-    conn.executemany("INSERT INTO dim_products VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    _copy_rows(conn, "dim_products", rows)
     return [(row[0], float(row[6])) for row in rows]
 
 
@@ -235,7 +242,7 @@ def _insert_regions(conn: duckdb.DuckDBPyConnection) -> list[int]:
         ("辽宁", "沈阳", "东北"),
     ]
     rows = [(index + 1, province, city, group) for index, (province, city, group) in enumerate(regions)]
-    conn.executemany("INSERT INTO dim_regions VALUES (?, ?, ?, ?)", rows)
+    _copy_rows(conn, "dim_regions", rows)
     return [row[0] for row in rows]
 
 
@@ -247,7 +254,7 @@ def _insert_channels(conn: duckdb.DuckDBPyConnection) -> list[int]:
         (4, "抖音", "内容电商"),
         (5, "小程序", "自营"),
     ]
-    conn.executemany("INSERT INTO dim_channels VALUES (?, ?, ?)", rows)
+    _copy_rows(conn, "dim_channels", rows)
     return [row[0] for row in rows]
 
 
@@ -301,8 +308,24 @@ def _insert_orders_and_items(
                 random.choices(["paid", "completed", "refunded"], weights=[55, 40, 5], k=1)[0],
             )
         )
-    conn.executemany("INSERT INTO fact_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", order_rows)
-    conn.executemany("INSERT INTO fact_order_items VALUES (?, ?, ?, ?, ?, ?, ?)", item_rows)
+    _copy_rows(conn, "fact_orders", order_rows)
+    _copy_rows(conn, "fact_order_items", item_rows)
+
+
+def _copy_rows(conn: duckdb.DuckDBPyConnection, table_name: str, rows: list[tuple]) -> None:
+    if not rows:
+        return
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", newline="", encoding="utf-8", suffix=".csv", delete=False) as file:
+            temp_path = Path(file.name)
+            csv.writer(file).writerows(rows)
+        escaped_path = temp_path.as_posix().replace("'", "''")
+        conn.execute(f"COPY \"{table_name}\" FROM '{escaped_path}' (DELIMITER ',', HEADER false)")
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

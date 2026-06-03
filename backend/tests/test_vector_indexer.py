@@ -35,6 +35,9 @@ def test_build_vector_assets_creates_all_asset_types():
     assert "100" in column_asset.text
     assert column_asset.metadata["aliases"] == ["销售额"]
     assert _asset(assets, "metric", "sales_amount").text.startswith("sales_amount 销售额")
+    metric_alias_asset = _asset(assets, "metric", "sales_amount:alias:营收总额")
+    assert metric_alias_asset.text == "营收总额"
+    assert metric_alias_asset.metadata["name"] == "sales_amount"
     verified_query_asset = _asset(assets, "verified_query", "recent_sales")
     assert verified_query_asset.text == "recent_sales 最近销售额 销售额"
     assert verified_query_asset.metadata["sql"] == "SELECT SUM(payment_amount) FROM fact_orders"
@@ -54,13 +57,13 @@ def test_rebuild_vector_index_writes_rows_and_metadata(monkeypatch):
 
     assert vector_store.ensured_dimensions == [3]
     assert vector_store.clear_called is True
-    assert len(vector_store.rows) == 8
+    assert len(vector_store.rows) == 12
     assert result.embedding_model == "D:/Models/BAAI/bge-m3"
     assert result.embedding_dimension == 3
     assert result.asset_counts == {
         "table": 1,
         "column": 2,
-        "metric": 1,
+        "metric": 5,
         "verified_query": 1,
         "value": 3,
     }

@@ -114,9 +114,10 @@ class QdrantVectorStore:
 
     def clear_vector_tables(self) -> None:
         for table_name in VECTOR_TABLE_NAMES:
-            self._client_instance().delete(
+            client = self._client_instance()
+            client.delete(
                 collection_name=self._collection_name(table_name),
-                points_selector={"filter": {}},
+                points_selector=_points_selector_for_client({"filter": {}}, client),
                 wait=True,
             )
 
@@ -124,9 +125,13 @@ class QdrantVectorStore:
         _validate_table_name(table_name)
         if not row_ids:
             return
-        self._client_instance().delete(
+        client = self._client_instance()
+        client.delete(
             collection_name=self._collection_name(table_name),
-            points_selector={"points": [_point_id_for_row(row_id) for row_id in row_ids]},
+            points_selector=_points_selector_for_client(
+                {"points": [_point_id_for_row(row_id) for row_id in row_ids]},
+                client,
+            ),
             wait=True,
         )
 
@@ -139,11 +144,12 @@ class QdrantVectorStore:
         where: str | dict[str, Any] | None = None,
     ) -> list[VectorSearchHit]:
         _validate_table_name(table_name)
+        client = self._client_instance()
         points = self._search_points(
             collection_name=self._collection_name(table_name),
             vector=vector,
             limit=limit,
-            query_filter=_payload_filter(where),
+            query_filter=_query_filter_for_client(where, client),
         )
         return [_hit_from_point(point) for point in points]
 
@@ -367,6 +373,45 @@ def _point_id_for_row(row_id: str) -> str:
 
 def _vector_config(embedding_dimension: int) -> dict[str, Any]:
     return {"size": embedding_dimension, "distance": "Cosine"}
+
+
+def _query_filter_for_client(where: str | dict[str, Any] | None, client) -> Any:
+    payload = _payload_filter(where)
+    if payload is None or not _is_real_qdrant_client(client):
+        return payload
+    return _qdrant_filter_model(payload)
+
+
+def _points_selector_for_client(selector: dict[str, Any], client) -> Any:
+    if not _is_real_qdrant_client(client):
+        return selector
+
+    models = _load_qdrant_client().models
+    if "points" in selector:
+        return models.PointIdsList(points=selector["points"])
+    if "filter" in selector:
+        return models.FilterSelector(filter=_qdrant_filter_model(selector["filter"]))
+    raise ValueError(f"Unsupported Qdrant points selector: {selector}")
+
+
+def _qdrant_filter_model(payload: dict[str, Any]):
+    models = _load_qdrant_client().models
+    must = []
+    for condition in payload.get("must", []):
+        match = condition.get("match") or {}
+        if "value" not in match:
+            raise ValueError(f"Unsupported Qdrant filter condition: {condition}")
+        must.append(
+            models.FieldCondition(
+                key=str(condition["key"]),
+                match=models.MatchValue(value=match["value"]),
+            )
+        )
+    return models.Filter(must=must or None)
+
+
+def _is_real_qdrant_client(client) -> bool:
+    return client.__class__.__module__.startswith("qdrant_client.")
 
 
 def _payload_filter(where: str | dict[str, Any] | None) -> dict[str, Any] | None:
