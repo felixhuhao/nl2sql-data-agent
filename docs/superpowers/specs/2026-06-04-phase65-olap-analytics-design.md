@@ -70,19 +70,19 @@ receive_question
 ```python
 OLAPIntentType = Literal["yoy_mom", "topn", "moving_avg", "none"]
 
-def detect_olap_intent(question: str, matched_metrics: list) -> OLAPIntentType:
+def detect_olap_intent(question: str, matched_metrics: list) -> list[OLAPIntentType]:
     """
-    规则匹配：
+    规则匹配，返回所有命中的意图列表（可能为空）：
     - 同比/环比/对比去年/比上月 → yoy_mom
     - 排名/最多/最少/前N/TopN → topn
     - 移动平均/滚动平均/7日均值 → moving_avg
-    - 其他 → none
+    - 无命中 → []
     """
 ```
 
-**输出：** `olap_intent: OLAPIntentType` + `olap_hint: str`
+**输出：** `olap_intents: list[OLAPIntentType]` + `olap_hint: str`
 
-**多意图优先级：** 当用户问题同时命中多个 OLAP 意图时（如"Top10 商品销售额同比"），按 topn > yoy_mom > moving_avg 优先级选择。原因是 topn 限定了结果集形态，同环比只是附加计算列。
+**多意图处理：** 返回所有命中的意图列表，不互斥。例如"Top10 商品销售额同比"同时命中 `["topn", "yoy_mom"]`，生成的 hint 合并两者的 SQL 模式指导。首个意图决定图表推荐优先级（topn > yoy_mom > moving_avg）。
 
 #### explain_performance 节点
 
@@ -91,20 +91,25 @@ def detect_olap_intent(question: str, matched_metrics: list) -> OLAPIntentType:
 **位置：** `backend/app/agent/performance.py`
 
 ```python
-async def explain_performance_node(state: AgentState) -> AgentState:
+def explain_performance_node(state: AgentState) -> AgentState:
     # 仅 ClickHouse 数据源触发
     if state.datasource_dialect != "clickhouse":
         return state
 
-    # 对 normalized_sql 执行 EXPLAIN
-    explain_result = await connector.explain(state.normalized_sql)
+    # 对 normalized_sql 执行 EXPLAIN（同步，与现有 Agent 链路一致）
+    connector = get_datasource_manager().get(state.datasource_name)
+    explain_result = connector.explain(state.normalized_sql)
+
+    if explain_result is None:
+        return state
 
     # 解析为可读提示
-    hints = parse_explain_hints(explain_result, state.matched_tables)
+    state.plan_hints = parse_plan_hints(explain_result, state.matched_tables)
 
-    state.performance_hints = hints
     return state
 ```
+
+> **注意：** 与现有 Agent 链路保持同步，不引入 async。Connector.explain() 也是同步方法。
 
 ### 3.3 Agent State 扩展
 
@@ -113,17 +118,23 @@ class AgentState:
     # ... existing fields ...
 
     # Phase 6.5 新增
-    olap_intent: str = "none"          # yoy_mom / topn / moving_avg / none
-    olap_hint: str = ""                # 给 generate_sql 的提示文本
-    performance_hints: list[str] = []  # ClickHouse EXPLAIN 解析结果
+    olap_intents: list[str] = field(default_factory=list)  # 命中的 OLAP 意图列表
+    olap_hint: str = ""                # 给 generate_sql 的合并提示文本
+    plan_hints: list[str] = field(default_factory=list)    # EXPLAIN 计划提示
+    runtime_stats: dict | None = None  # ClickHouse 运行时统计（尽力而为）
 ```
 
 ### 3.4 SSE 新增事件
 
+使用与现有链路一致的 SSE 格式：`step` 事件 + `completed` 状态。
+
 ```text
-step: olap_detected    → { olap_intent: "yoy_mom", description: "检测到同比/环比分析意图" }
-step: explain_plan     → { hints: [...], description: "查询性能分析完成" }
+# 新增 step id（需同步加入前端 workflowSteps 列表）
+step: olap_detected  → { "step": "olap_detected", "status": "completed", "olap_intents": ["yoy_mom"] }
+step: explain_plan   → { "step": "explain_plan", "status": "completed", "plan_hints": [...], "runtime_stats": {...} }
 ```
+
+> **对齐规则：** step id 命名与现有一致（`datasource_selected` / `intent_guard` / `execute` / `summarize` / `recommend_chart` 等），status 统一用 `completed`。链路图中 `execute_sql` 对应实际 step id `execute`，`summarize_result` 对应 `summarize`。
 
 ## 4. OLAP Prompt 增强策略
 
@@ -138,29 +149,52 @@ step: explain_plan     → { hints: [...], description: "查询性能分析完�
 ```text
 ## 同比/环比分析 SQL 指南
 
-当用户询问同比/环比时，请使用窗口函数 LAG() 计算对比值：
+当用户询问同比/环比时，使用子查询 + 窗口函数 LAG() 计算对比值。
+先在子查询中完成聚合，再在外层计算同环比。
 
-### DuckDB 示例
+### DuckDB 示例（子查询模式）
 SELECT
   period,
   current_value,
   LAG(current_value, 12) OVER (ORDER BY period) AS prev_year_value,
-  ROUND((current_value - LAG(current_value, 12) OVER (ORDER BY period))
-    / NULLIF(LAG(current_value, 12) OVER (ORDER BY period), 0) * 100, 2) AS yoy_pct
-FROM (...)
+  ROUND(
+    (current_value - LAG(current_value, 12) OVER (ORDER BY period))
+    / NULLIF(LAG(current_value, 12) OVER (ORDER BY period), 0) * 100, 2
+  ) AS yoy_pct
+FROM (
+  SELECT
+    dd.date_value AS period,
+    SUM(fo.payment_amount) AS current_value
+  FROM fact_orders fo
+  JOIN dim_date dd ON fo.date_key = dd.date_key
+  GROUP BY dd.date_value
+) t
+ORDER BY period
 
-### ClickHouse 示例
+### ClickHouse 示例（子查询模式）
 SELECT
-  toStartOfMonth(order_date) AS month,
-  SUM(payment_amount) AS sales,
-  lagInFrame(sales) OVER (ORDER BY month) AS prev_month,
-  ROUND((sales - prev_month) / NULLIF(prev_month, 0) * 100, 2) AS mom_pct
-FROM ...
+  month,
+  sales,
+  LAG(sales, 12) OVER (ORDER BY month) AS prev_year_sales,
+  ROUND(
+    (sales - LAG(sales, 12) OVER (ORDER BY month))
+    / NULLIF(LAG(sales, 12) OVER (ORDER BY month), 0) * 100, 2
+  ) AS yoy_pct
+FROM (
+  SELECT
+    toStartOfMonth(order_date) AS month,
+    SUM(payment_amount) AS sales
+  FROM fact_orders
+  GROUP BY month
+) t
+ORDER BY month
 
 关键规则：
+- 始终使用子查询模式：先聚合，再窗口计算
 - 环比 = LAG(1)，同比 = LAG(12)（月度）或 LAG(4)（季度）
 - 计算百分比变化时用 NULLIF 做除零保护
 - 保留 2 位小数
+- DuckDB 用 dim_date.date_value 做时间列，ClickHouse 直接用 order_date
 ```
 
 ### 4.3 TopN/分层 SQL 模式指导
@@ -260,29 +294,39 @@ async def explain(self, sql: str) -> dict | None:
     return None
 ```
 
-### 5.3 EXPLAIN 解析规则
+### 5.3 两类性能信息
 
-从 ClickHouse `EXPLAIN PIPELINE TREE` 输出中提取：
+EXPLAIN 和运行时统计来源不同，拆为两类：
+
+**plan_hints — 来自 EXPLAIN PIPELINE TREE（查询计划结构）：**
 
 | 检查项 | 解析方式 | 提示模板 |
 |--------|---------|---------|
 | 分区裁剪 | 检查 PartitionFilter 或 Parts: N/N | ✅ 命中分区键 {key}，扫描 {scanned}/{total} 分区 |
 | 排序键利用 | 检查 Expression 节点是否包含 SortingKey 列 | ✅ 利用了排序键 {key} / ⚠️ 未利用排序键 |
-| 扫描量 | 从 ReadFromMergeTree 节点提取行数 | 📊 扫描 {rows} 行（共 {total} 行，{pct}%） |
 | JOIN 数量 | 统计 Join 节点数 | 🔗 包含 {n} 个 JOIN |
 | 时间过滤缺失 | 检查 WHERE 子句是否含时间列 | 💡 建议添加时间范围过滤 |
+
+**runtime_stats — 来自 ClickHouse 执行结果或 query log：**
+
+| 检查项 | 来源 | 提示模板 |
+|--------|------|---------|
+| 扫描行数 | ClickHouse client summary 或 query_log | 📊 扫描 {rows} 行 |
+| 扫描字节 | 同上 | 📊 读取 {bytes} 数据 |
+| 执行耗时 | execute() 返回的 timing | ⏱️ 耗时 {ms}ms |
+
+> **实现约束：** runtime_stats 依赖 ClickHouse client 返回的统计信息或 system.query_log。如果 ClickHouse connector 的 execute() 没有返回这些信息，runtime_stats 字段为空，不报错。plan_hints 是主要交付物，runtime_stats 是尽力而为的增强。
 
 ### 5.4 性能提示输出格式
 
 ```json
 {
-  "performance_hints": [
+  "plan_hints": [
     "✅ 命中分区键 order_date，扫描 3/24 分区",
-    "📊 扫描 15,230 行（共 1,200,000 行，1.3%）",
-    "⚠️ 未利用排序键，添加 ORDER BY order_date 可提升性能"
+    "⚠️ 未利用排序键，添加 ORDER BY order_date 可提升性能",
+    "🔗 包含 1 个 JOIN"
   ],
-  "explain_raw": "...",
-  "query_stats": {
+  "runtime_stats": {
     "rows_read": 15230,
     "bytes_read": 245760,
     "execution_time_ms": 45
@@ -292,14 +336,16 @@ async def explain(self, sql: str) -> dict | None:
 
 ### 5.5 SSE 事件
 
+使用与现有链路一致的格式（`completed` 状态）：
+
 ```json
 {
   "event": "step",
   "data": {
     "step": "explain_plan",
-    "status": "done",
-    "hints": ["✅ 命中分区键 order_date", "📊 扫描 15,230 行"],
-    "query_stats": { "rows_read": 15230, "execution_time_ms": 45 }
+    "status": "completed",
+    "plan_hints": ["✅ 命中分区键 order_date", "🔗 包含 1 个 JOIN"],
+    "runtime_stats": { "rows_read": 15230, "execution_time_ms": 45 }
   }
 }
 ```
@@ -308,45 +354,47 @@ async def explain(self, sql: str) -> dict | None:
 
 ### 6.1 新增图表类型
 
-| 类型 | 触发条件 | Phase 6.5 场景 |
-|------|---------|---------------|
-| bar | 排名/TopN 维度 + 度量，非时间序列 | "销售额 Top10 商品"、"各渠道销售对比" |
-| dual_axis | 同比/环比：同一维度 + 当前值 + 对比值 | "今年 vs 去年月销售额"、"环比上月增长" |
-| pie | 少量维度（≤8）+ 占比/分布 | "各渠道销售占比"、"地区贡献分布" |
+| 类型 | 触发条件 | Phase 6.5 场景 | 状态 |
+|------|---------|---------------|------|
+| bar | 排名/TopN 维度 + 度量，非时间序列 | "销售额 Top10 商品"、"各渠道销售对比" | ✅ Phase 6 已实现 |
+| dual_axis | 同比/环比：同一维度 + 当前值 + 对比值 | "今年 vs 去年月销售额"、"环比上月增长" | 🆕 Phase 6.5 新增 |
+| pie | 少量维度（≤8）+ 占比/分布 | "各渠道销售占比"、"地区贡献分布" | 🆕 Phase 6.5 新增 |
 
 ### 6.2 图表推荐逻辑变更
 
-在 `visualization/recommender.py` 中扩展推荐规则：
+在 `visualization/recommender.py` 中扩展推荐规则。现有签名 `recommend_chart(result: QueryResult)` 不传 OLAP 意图，需扩展为接受可选参数：
 
 ```python
-def recommend_chart(columns, rows, olap_intent=None):
+def recommend_chart(result: QueryResult, olap_intents: list[str] | None = None) -> ChartRecommendation:
+    primary_intent = olap_intents[0] if olap_intents else None
+
     # Phase 6.5: OLAP 意图影响图表选择
-    if olap_intent == "topn":
+    if primary_intent == "topn":
+        # 复用现有 bar 推荐逻辑，不重复实现
         return ChartRecommendation(
             chart_type="bar",
             x_column=dimension_col,
             y_columns=[metric_col],
-            descending=True
+            reason="TopN analysis detected.",
         )
 
-    if olap_intent == "yoy_mom":
-        if has_comparison_columns(columns):
-            return ChartRecommendation(
-                chart_type="dual_axis",
-                x_column=time_col,
-                y_columns=[current_col, previous_col],
-                annotations=[change_pct_col]
-            )
+    if primary_intent == "yoy_mom" and has_comparison_columns(result.columns):
+        return ChartRecommendation(
+            chart_type="dual_axis",
+            x_column=time_col,
+            y_columns=[current_col, previous_col],
+            reason="Year-over-year or month-over-month comparison detected.",
+        )
 
-    if is_distribution_query(columns, rows):
-        # 维度 ≤ 8 个值，且只有 1 个度量列
+    if is_distribution_query(result):
         return ChartRecommendation(
             chart_type="pie",
-            label_column=dimension_col,
-            value_column=metric_col
+            x_column=dimension_col,
+            y_columns=[metric_col],
+            reason="Distribution query with few categories.",
         )
 
-    # ... existing logic for line / table fallback
+    # ... existing logic for bar / line / table fallback
 ```
 
 ### 6.3 前端 ECharts 配置
@@ -359,20 +407,23 @@ def recommend_chart(columns, rows, olap_intent=None):
 
 ### 6.4 数据结构变更
 
-`ChartRecommendation` 扩展：
+`ChartRecommendation` 是 Pydantic BaseModel，扩展时所有新字段必须有默认值，确保 SSE JSON 兼容性：
 
 ```python
-@dataclass
-class ChartRecommendation:
-    chart_type: str           # line / table / bar / dual_axis / pie
-    x_column: str | None      # bar/line 的 x 轴
-    y_columns: list[str]      # 度量列
-    # Phase 6.5 新增
-    label_column: str | None  # pie 的标签列
-    value_column: str | None  # pie 的值列
-    annotations: list[str]    # 标注列（如变化百分比）
-    descending: bool = False  # bar 排序方向
+from pydantic import BaseModel, Field
+
+class ChartRecommendation(BaseModel):
+    chart_type: str
+    x_column: str | None = None
+    y_columns: list[str] = Field(default_factory=list)
+    reason: str
+    # Phase 6.5 新增，全部有默认值
+    # （不新增 label_column / value_column / annotations / descending）
+    # pie 复用 x_column 作为标签列，y_columns[0] 作为值列
+    # dual_axis 复用 x_column / y_columns，前端根据 chart_type 双轴渲染
 ```
+
+> **设计取舍：** 不新增 `label_column` / `value_column` / `annotations` / `descending` 字段。pie 图复用 `x_column` 作为标签列、`y_columns[0]` 作为值列；dual_axis 复用 `x_column` / `y_columns`，前端根据 `chart_type` 决定渲染方式。避免数据结构膨胀，减少 SSE 兼容性风险。
 
 ## 7. Eval 扩展与验收
 
@@ -421,7 +472,7 @@ Eval 报告新增 Phase 6.5 section，按 DuckDB / ClickHouse 分列展示：
 2. **TopN** — 可以回答"销售额前10的商品"，生成的 SQL 包含 ORDER BY + LIMIT
 3. **意图识别** — Agent 正确识别同比/环比/TopN/移动平均意图，SSE 推送 olap_detected 事件
 4. **图表** — TopN 场景推荐 bar，同比场景推荐 dual_axis，占比场景推荐 pie
-5. **EXPLAIN** — ClickHouse 查询自动生成可读性能提示，SSE 推送 explain_plan 事件
+5. **EXPLAIN** — ClickHouse 查询自动生成 plan_hints（分区/排序键/JOIN），SSE 推送 explain_plan 事件
 6. **Eval** — 新增 ~16 条 OLAP case，按意图类型和图表类型分 section 报告
 7. **回归** — 现有 42 条 DuckDB case + 17 条 ClickHouse case 全部通过
 
@@ -429,30 +480,31 @@ Eval 报告新增 Phase 6.5 section，按 DuckDB / ClickHouse 分列展示：
 
 ```text
 I65.1 OLAP 意图识别
-  → olap_intent.py 规则匹配
-  → Agent State 扩展
+  → olap_intent.py 规则匹配（返回 list[OLAPIntentType]）
+  → Agent State 扩展（olap_intents / olap_hint / plan_hints / runtime_stats）
   → olap_intent_detect 节点接入链路
-  → SSE olap_detected 事件
+  → SSE olap_detected 事件（step id + completed 状态）
   → 意图识别单元测试
 
 I65.2 OLAP Prompt 增强
-  → sql_generation.py 追加 OLAP hint 逻辑
-  → 3 类 OLAP SQL 模式指导文本
+  → sql_generation.py 追加 OLAP hint 逻辑（多意图合并 hint）
+  → 3 类 OLAP SQL 模式指导文本（子查询模板，schema-aligned）
   → 方言感知示例选择
   → Mock provider OLAP case 测试
 
 I65.3 图表扩展
-  → recommender.py 新增 bar / dual_axis / pie 推荐规则
-  → ChartRecommendation 数据结构扩展
-  → 前端 ECharts 3 种新图表配置
+  → recommender.py 扩展 bar 推荐（olap_intents 参数）+ 新增 dual_axis / pie 推荐规则
+  → ChartRecommendation 不新增字段（复用 x_column / y_columns）
+  → 前端 ECharts 新增 PieChart import + dual_axis 配置（bar 已有）
+  → canRenderChart 支持 dual_axis / pie
   → 图表推荐单元测试
 
 I65.4 ClickHouse EXPLAIN
-  → Connector 协议新增 explain 方法
+  → Connector 协议新增同步 explain() 方法
   → ClickHouse connector 实现 EXPLAIN PIPELINE TREE
-  → EXPLAIN 解析规则（分区/排序键/扫描量）
-  → performance.py 节点接入链路
-  → SSE explain_plan 事件
+  → plan_hints 解析（分区/排序键/JOIN 数）+ runtime_stats 尽力而为
+  → performance.py 节点接入链路（同步）
+  → SSE explain_plan 事件（step id + completed 状态）
 
 I65.5 Eval 扩展与回归
   → 新增 ~16 条 OLAP eval case
@@ -466,17 +518,17 @@ I65.5 Eval 扩展与回归
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `backend/app/agent/olap_intent.py` | 新增 | OLAP 意图识别 |
-| `backend/app/agent/performance.py` | 新增 | EXPLAIN 解析与性能提示 |
-| `backend/app/agent/state.py` | 修改 | 新增 olap_intent / olap_hint / performance_hints 字段 |
-| `backend/app/agent/nodes.py` | 修改 | 接入 olap_intent_detect 和 explain_performance 节点 |
-| `backend/app/agent/prompts/sql_generation.py` | 修改 | 追加 OLAP SQL 模式指导 |
-| `backend/app/visualization/recommender.py` | 修改 | 新增 bar / dual_axis / pie 推荐规则 |
-| `backend/app/connectors/base.py` | 修改 | 新增 explain 协议方法 |
+| `backend/app/agent/olap_intent.py` | 新增 | OLAP 意图识别（返回 list） |
+| `backend/app/agent/performance.py` | 新增 | EXPLAIN 解析（plan_hints + runtime_stats） |
+| `backend/app/agent/state.py` | 修改 | 新增 olap_intents / olap_hint / plan_hints / runtime_stats 字段 |
+| `backend/app/agent/nodes.py` | 修改 | 接入 olap_intent_detect 和 explain_performance 节点（同步） |
+| `backend/app/agent/prompts/sql_generation.py` | 修改 | 追加 OLAP SQL 模式指导（子查询模板） |
+| `backend/app/visualization/recommender.py` | 修改 | 扩展 bar + 新增 dual_axis / pie 推荐规则 |
+| `backend/app/connectors/base.py` | 修改 | 新增同步 explain 协议方法 |
 | `backend/app/connectors/clickhouse.py` | 修改 | 实现 EXPLAIN PIPELINE TREE |
 | `backend/app/connectors/duckdb.py` | 修改 | explain 返回 None |
-| `backend/app/api/chat.py` | 修改 | SSE 新增 olap_detected / explain_plan 事件 |
-| `frontend/src/components/` | 修改 | ECharts 新增 bar / dual_axis / pie 配置 |
+| `backend/app/api/chat.py` | 修改 | SSE 新增 olap_detected / explain_plan 事件（completed 状态） |
+| `frontend/src/App.vue` | 修改 | workflowSteps 新增步骤 + ECharts 新增 PieChart + dual_axis 配置 |
 | `evals/smoke_cases.yaml` | 修改 | 新增 ~16 条 OLAP case |
 | `scripts/run_smoke_eval.py` | 修改 | 新增 OLAP 校验维度 |
 
