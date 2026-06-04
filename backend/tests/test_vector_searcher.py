@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector import searcher
 from backend.app.metadata.vector.store import VectorIndexStatus, VectorSearchHit
 
@@ -62,6 +63,7 @@ def test_retrieve_vector_assets_searches_ready_index_and_filters_threshold(monke
         "metric_vectors",
         "verified_query_vectors",
     }
+    assert all(call[3] == _datasource_filter() for call in fake_store.search_calls)
 
 
 def test_search_values_prefers_exact_and_deduplicates(monkeypatch):
@@ -110,6 +112,8 @@ def test_search_values_prefers_exact_and_deduplicates(monkeypatch):
         ("dim_regions", "region_group", "华东", "exact", 1.0),
         ("dim_channels", "channel_name", "天猫", "exact", 1.0),
     }
+    assert fake_store.list_value_calls == [_datasource_filter()]
+    assert fake_store.search_calls == [("value_vectors", [0.1, 0.2, 0.3], 20, _datasource_filter())]
 
 
 def test_search_values_ignores_numeric_exact_matches(monkeypatch):
@@ -158,6 +162,7 @@ def test_search_values_ignores_numeric_exact_matches(monkeypatch):
     assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source) for hit in hits] == [
         ("dim_regions", "region_group", "华东", "exact")
     ]
+    assert fake_store.list_value_calls == [_datasource_filter()]
 
 
 def test_search_values_ignores_numeric_vector_matches(monkeypatch):
@@ -219,7 +224,7 @@ def test_search_values_embeds_question_for_vector_value_search(monkeypatch):
     assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source, hit.score) for hit in hits] == [
         ("dim_products", "category", "美妆个护", "vector", 0.9)
     ]
-    assert fake_store.search_calls == [("value_vectors", [0.1, 0.2, 0.3], 20)]
+    assert fake_store.search_calls == [("value_vectors", [0.1, 0.2, 0.3], 20, _datasource_filter())]
 
 
 def _settings(vector_enabled=True, embedding_model="D:/Models/BAAI/bge-m3", threshold=0.7):
@@ -237,15 +242,21 @@ class FakeVectorStore:
         self._hits = hits or {}
         self._value_hits = value_hits or []
         self.search_calls = []
+        self.list_value_calls = []
 
     def status(self, expected_model=None, expected_dimension=None):
         self.expected_model = expected_model
         self.expected_dimension = expected_dimension
         return self._status
 
-    def search(self, table_name, vector, limit=10):
-        self.search_calls.append((table_name, vector, limit))
+    def search(self, table_name, vector, limit=10, where=None):
+        self.search_calls.append((table_name, vector, limit, where))
         return self._hits.get(table_name, [])
 
-    def list_values(self):
+    def list_values(self, where=None):
+        self.list_value_calls.append(where)
         return self._value_hits
+
+
+def _datasource_filter(datasource_name: str = DEFAULT_DATASOURCE) -> dict:
+    return {"must": [{"key": "metadata.datasource", "match": {"value": datasource_name}}]}

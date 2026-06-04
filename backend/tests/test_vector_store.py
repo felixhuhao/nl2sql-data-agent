@@ -55,10 +55,13 @@ def test_upsert_search_list_values_and_delete():
         "must": [{"key": "asset_type", "match": {"value": "metric"}}]
     }
 
-    values = vector_store.list_values(limit=5)
+    values = vector_store.list_values(limit=5, where="asset_type = 'value'")
     assert values == []
     assert client.scroll_calls[0]["collection_name"] == "test_value_vectors"
     assert client.scroll_calls[0]["limit"] == 5
+    assert client.scroll_calls[0]["scroll_filter"] == {
+        "must": [{"key": "asset_type", "match": {"value": "value"}}]
+    }
 
     vector_store.delete_by_ids("metric_vectors", ["metric:sales_amount", "metric:aov's"])
     assert client.collections["test_metric_vectors"].deleted_selectors == [
@@ -211,9 +214,13 @@ class FakeQdrantClient:
         ][:limit]
         return [FakePoint(record["payload"], score=0.8) for record in records]
 
-    def scroll(self, collection_name, limit=10, with_payload=True, with_vectors=False):
-        self.scroll_calls.append({"collection_name": collection_name, "limit": limit})
-        records = list(self.collections[collection_name].points.values())[:limit]
+    def scroll(self, collection_name, limit=10, scroll_filter=None, with_payload=True, with_vectors=False):
+        self.scroll_calls.append({"collection_name": collection_name, "limit": limit, "scroll_filter": scroll_filter})
+        records = [
+            point
+            for point in self.collections[collection_name].points.values()
+            if _matches_filter(point, scroll_filter)
+        ][:limit]
         return [FakePoint(record["payload"]) for record in records], None
 
     def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):

@@ -4,19 +4,19 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 from backend.app.core.db import get_duckdb_connection, get_sqlite_engine, sqlite_session
-from backend.app.metadata.models import MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
+from backend.app.metadata.models import DEFAULT_DATASOURCE, MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
 from backend.app.metadata.seed import seed_semantics
 
 
-def sync_metadata() -> dict[str, int]:
+def sync_metadata(datasource_name: str = DEFAULT_DATASOURCE) -> dict[str, int]:
     engine = get_sqlite_engine()
     create_metadata_schema(engine)
     _ensure_relationship_columns(engine)
     with sqlite_session() as session:
         duckdb_tables = _read_duckdb_columns()
-        table_count = _sync_tables_and_columns(session, duckdb_tables)
-        seed_semantics(session)
-        relationship_count = _sync_relationships(session, duckdb_tables)
+        table_count = _sync_tables_and_columns(session, duckdb_tables, datasource_name=datasource_name)
+        seed_semantics(session, datasource_name=datasource_name)
+        relationship_count = _sync_relationships(session, duckdb_tables, datasource_name=datasource_name)
         column_count = sum(len(columns) for columns in duckdb_tables.values())
     return {
         "tables": table_count,
@@ -43,11 +43,17 @@ def _read_duckdb_columns() -> dict[str, list[dict[str, str]]]:
     return tables
 
 
-def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dict[str, str]]]) -> int:
+def _sync_tables_and_columns(
+    session: Session,
+    duckdb_tables: dict[str, list[dict[str, str]]],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> int:
     for table_name, columns in duckdb_tables.items():
-        table = session.scalar(select(MetaTable).where(MetaTable.table_name == table_name))
+        table = session.scalar(
+            select(MetaTable).where(MetaTable.datasource == datasource_name, MetaTable.table_name == table_name)
+        )
         if table is None:
-            table = MetaTable(table_name=table_name)
+            table = MetaTable(datasource=datasource_name, table_name=table_name)
             session.add(table)
         table.row_count = _count_rows(table_name)
         table.enabled = True
@@ -66,17 +72,27 @@ def _sync_tables_and_columns(session: Session, duckdb_tables: dict[str, list[dic
                 )
             )
             if meta_column is None:
-                meta_column = MetaColumn(table_id=table.id, column_name=column["column_name"])
+                meta_column = MetaColumn(
+                    datasource=datasource_name,
+                    table_id=table.id,
+                    column_name=column["column_name"],
+                )
                 session.add(meta_column)
+            # Keep the denormalized datasource aligned with the owning table for fast scoped queries.
+            meta_column.datasource = datasource_name
             column_name = column["column_name"]
             meta_column.data_type = column["data_type"]
             meta_column.sample_values = _profile_sample_values_json(table_name, column_name)
     return len(duckdb_tables)
 
 
-def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str, str]]]) -> int:
+def _sync_relationships(
+    session: Session,
+    duckdb_tables: dict[str, list[dict[str, str]]],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> int:
     relationships = _infer_relationships(duckdb_tables)
-    for relationship in _overlay_relationships_from_db(session, duckdb_tables).values():
+    for relationship in _overlay_relationships_from_db(session, duckdb_tables, datasource_name=datasource_name).values():
         relationships[
             (
                 relationship["source_table"],
@@ -93,10 +109,12 @@ def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str
                 MetaRelationship.source_column == relationship["source_column"],
                 MetaRelationship.target_table == relationship["target_table"],
                 MetaRelationship.target_column == relationship["target_column"],
+                MetaRelationship.datasource == datasource_name,
             )
         )
         if existing is None:
             existing = MetaRelationship(
+                datasource=datasource_name,
                 source_table=relationship["source_table"],
                 source_column=relationship["source_column"],
                 target_table=relationship["target_table"],
@@ -110,7 +128,9 @@ def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str
         existing.description = relationship["description"]
 
     current_keys = set(relationships)
-    all_relationships = session.scalars(select(MetaRelationship)).all()
+    all_relationships = session.scalars(
+        select(MetaRelationship).where(MetaRelationship.datasource == datasource_name)
+    ).all()
     for rel in all_relationships:
         if (rel.source_table, rel.source_column, rel.target_table, rel.target_column) not in current_keys:
             session.delete(rel)
@@ -120,10 +140,14 @@ def _sync_relationships(session: Session, duckdb_tables: dict[str, list[dict[str
 def _overlay_relationships_from_db(
     session: Session,
     duckdb_tables: dict[str, list[dict[str, str]]],
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> dict[tuple[str, str, str, str], dict]:
     relationships = {}
     overlay_relationships = session.scalars(
-        select(MetaRelationship).where(MetaRelationship.source == "overlay")
+        select(MetaRelationship).where(
+            MetaRelationship.datasource == datasource_name,
+            MetaRelationship.source == "overlay",
+        )
     ).all()
     for relationship in overlay_relationships:
         if not _relationship_exists_in_schema(

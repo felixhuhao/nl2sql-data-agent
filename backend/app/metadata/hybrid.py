@@ -8,6 +8,7 @@ from backend.app.metadata.vector.searcher import (
     retrieve_vector_assets,
     search_values,
 )
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector.store import VectorSearchHit
 
 
@@ -25,8 +26,9 @@ def hybrid_merge(
     column_limit: int,
     metric_limit: int,
     verified_query_limit: int,
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> dict:
-    vector_result = retrieve_vector_assets(question)
+    vector_result = retrieve_vector_assets(question, datasource_name=datasource_name)
     merged = {
         **rule_result,
         "retrieval_meta": _base_retrieval_meta(rule_result, vector_result),
@@ -51,7 +53,11 @@ def hybrid_merge(
         _merge_value_hits(
             table_matches,
             column_matches,
-            _safe_search_values(question, query_vector=vector_result.query_vector),
+            _safe_search_values(
+                question,
+                query_vector=vector_result.query_vector,
+                datasource_name=datasource_name,
+            ),
             merged,
         )
 
@@ -159,11 +165,16 @@ def _merge_value_hits(
         _add_sources(result["retrieval_meta"]["sources"], f"column:{hit.column_asset_id}", [reason])
 
 
-def _safe_search_values(question: str, *, query_vector: list[float] | None = None) -> list[ValueHit]:
+def _safe_search_values(
+    question: str,
+    *,
+    query_vector: list[float] | None = None,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[ValueHit]:
     try:
         if query_vector is None:
-            return search_values(question)
-        return search_values(question, query_vector=query_vector)
+            return search_values(question, datasource_name=datasource_name)
+        return search_values(question, query_vector=query_vector, datasource_name=datasource_name)
     except Exception:
         return []
 

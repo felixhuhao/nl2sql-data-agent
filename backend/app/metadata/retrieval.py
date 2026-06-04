@@ -13,6 +13,7 @@ from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.hybrid import hybrid_merge
 from backend.app.metadata.models import (
+    DEFAULT_DATASOURCE,
     MetaAnalysisSpace,
     MetaColumn,
     MetaColumnAlias,
@@ -78,11 +79,12 @@ def retrieve_metadata_assets(
     metric_limit: int = DEFAULT_METRIC_LIMIT,
     verified_query_limit: int = DEFAULT_VERIFIED_QUERY_LIMIT,
     use_vector: bool | None = None,
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> dict:
     _ensure_schema()
     normalized_question = _normalize_text(question)
     with sqlite_session() as session:
-        analysis_space = _active_analysis_space(session)
+        analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         allowed_tables = _parse_json_set(analysis_space.tables if analysis_space else None)
         enabled_metrics = _parse_json_set(analysis_space.enabled_metrics if analysis_space else None)
 
@@ -91,11 +93,11 @@ def retrieve_metadata_assets(
         metric_matches: dict[str, dict] = {}
         verified_query_matches: dict[str, dict] = {}
 
-        tables = _tables(session, allowed_tables)
-        columns = _columns(session, allowed_tables)
-        aliases_by_column = _aliases_by_column(session, allowed_tables)
-        metrics = _metrics(session, enabled_metrics)
-        verified_queries = _verified_queries(session)
+        tables = _tables(session, allowed_tables, datasource_name=datasource_name)
+        columns = _columns(session, allowed_tables, datasource_name=datasource_name)
+        aliases_by_column = _aliases_by_column(session, allowed_tables, datasource_name=datasource_name)
+        metrics = _metrics(session, enabled_metrics, datasource_name=datasource_name)
+        verified_queries = _verified_queries(session, datasource_name=datasource_name)
 
         for table in tables:
             _match_table(normalized_question, table, table_matches)
@@ -124,6 +126,7 @@ def retrieve_metadata_assets(
 
         result = {
             "question": question,
+            "datasource": datasource_name,
             "normalized_question": normalized_question,
             "fallback_used": False,
             "tables": _rank(table_matches.values(), table_limit),
@@ -139,6 +142,7 @@ def retrieve_metadata_assets(
                 column_limit=column_limit,
                 metric_limit=metric_limit,
                 verified_query_limit=verified_query_limit,
+                datasource_name=datasource_name,
             )
 
         fallback_used = not any(
@@ -317,6 +321,7 @@ def _add_table_match(
         table.table_name,
         {
             "table_name": table.table_name,
+            "datasource": table.datasource,
             "display_name": table.display_name,
             "description": table.description,
             "domain": table.domain,
@@ -348,6 +353,7 @@ def _add_column_match(
 ) -> None:
     payload = {
         "table_name": column.table.table_name,
+        "datasource": column.datasource,
         "column_name": column.column_name,
         "data_type": column.data_type,
         "description": column.description,
@@ -383,6 +389,7 @@ def _add_metric_match(matches: dict[str, dict], metric: MetaMetric, score: int, 
         metric.name,
         {
             "name": metric.name,
+            "datasource": metric.datasource,
             "label": metric.label,
             "expression": metric.expression,
             "description": metric.description,
@@ -405,6 +412,7 @@ def _add_verified_query_match(
         query.query_id,
         {
             "id": query.query_id,
+            "datasource": query.datasource,
             "question": query.question,
             "sql": query.sql,
             "tags": _parse_json_list(query.tags),
@@ -434,34 +442,57 @@ def _add_match(
         matches[key]["source"] = source
 
 
-def _tables(session: Session, allowed_tables: set[str]) -> list[MetaTable]:
+def _tables(
+    session: Session,
+    allowed_tables: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaTable]:
     if not allowed_tables:
         return []
     return session.scalars(
         select(MetaTable)
-        .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+        .where(
+            MetaTable.enabled.is_(True),
+            MetaTable.datasource == datasource_name,
+            MetaTable.table_name.in_(allowed_tables),
+        )
         .order_by(MetaTable.table_name)
     ).all()
 
 
-def _columns(session: Session, allowed_tables: set[str]) -> list[MetaColumn]:
+def _columns(
+    session: Session,
+    allowed_tables: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaColumn]:
     if not allowed_tables:
         return []
     return session.scalars(
         select(MetaColumn)
         .join(MetaTable)
-        .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+        .where(
+            MetaTable.enabled.is_(True),
+            MetaTable.datasource == datasource_name,
+            MetaTable.table_name.in_(allowed_tables),
+        )
         .order_by(MetaTable.table_name, MetaColumn.id)
     ).all()
 
 
-def _aliases_by_column(session: Session, allowed_tables: set[str]) -> dict[tuple[str, str], list[str]]:
+def _aliases_by_column(
+    session: Session,
+    allowed_tables: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> dict[tuple[str, str], list[str]]:
     aliases: dict[tuple[str, str], list[str]] = {}
     if not allowed_tables:
         return aliases
     rows = session.scalars(
         select(MetaColumnAlias)
-        .where(MetaColumnAlias.table_name.in_(allowed_tables))
+        .where(
+            MetaColumnAlias.datasource == datasource_name,
+            MetaColumnAlias.table_name.in_(allowed_tables),
+        )
         .order_by(MetaColumnAlias.table_name, MetaColumnAlias.column_name, MetaColumnAlias.alias)
     ).all()
     for row in rows:
@@ -469,30 +500,57 @@ def _aliases_by_column(session: Session, allowed_tables: set[str]) -> dict[tuple
     return aliases
 
 
-def _metrics(session: Session, enabled_metrics: set[str]) -> list[MetaMetric]:
+def _metrics(
+    session: Session,
+    enabled_metrics: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaMetric]:
     if not enabled_metrics:
         return []
     return session.scalars(
         select(MetaMetric)
-        .where(MetaMetric.enabled.is_(True), MetaMetric.name.in_(enabled_metrics))
+        .where(
+            MetaMetric.enabled.is_(True),
+            MetaMetric.datasource == datasource_name,
+            MetaMetric.name.in_(enabled_metrics),
+        )
         .order_by(MetaMetric.id)
     ).all()
 
 
-def _verified_queries(session: Session) -> list[MetaVerifiedQuery]:
+def _verified_queries(
+    session: Session,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaVerifiedQuery]:
     return session.scalars(
         select(MetaVerifiedQuery)
-        .where(MetaVerifiedQuery.enabled.is_(True))
+        .where(
+            MetaVerifiedQuery.enabled.is_(True),
+            MetaVerifiedQuery.datasource == datasource_name,
+        )
         .order_by(MetaVerifiedQuery.id)
     ).all()
 
 
-def _active_analysis_space(session: Session) -> MetaAnalysisSpace | None:
-    return session.scalar(
+def _active_analysis_space(
+    session: Session,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> MetaAnalysisSpace | None:
+    analysis_space = session.scalar(
         select(MetaAnalysisSpace)
-        .where(MetaAnalysisSpace.enabled.is_(True))
+        .where(
+            MetaAnalysisSpace.enabled.is_(True),
+            MetaAnalysisSpace.datasource == datasource_name,
+        )
         .order_by(MetaAnalysisSpace.id)
     )
+    if analysis_space is None and datasource_name == DEFAULT_DATASOURCE:
+        return session.scalar(
+            select(MetaAnalysisSpace)
+            .where(MetaAnalysisSpace.enabled.is_(True))
+            .order_by(MetaAnalysisSpace.id)
+        )
+    return analysis_space
 
 
 def _tables_from_sql(sql: str) -> set[str]:

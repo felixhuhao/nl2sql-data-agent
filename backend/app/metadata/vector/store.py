@@ -153,10 +153,12 @@ class QdrantVectorStore:
         )
         return [_hit_from_point(point) for point in points]
 
-    def list_values(self, *, limit: int = 10_000) -> list[VectorSearchHit]:
-        points, _ = self._client_instance().scroll(
+    def list_values(self, *, limit: int = 10_000, where: str | dict[str, Any] | None = None) -> list[VectorSearchHit]:
+        client = self._client_instance()
+        points, _ = client.scroll(
             collection_name=self._collection_name("value_vectors"),
             limit=limit,
+            scroll_filter=_query_filter_for_client(where, client),
             with_payload=True,
             with_vectors=False,
         )

@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.app.metadata.models import (
+    DEFAULT_DATASOURCE,
     MetaAnalysisSpace,
     MetaColumn,
     MetaColumnAlias,
@@ -13,6 +14,9 @@ from backend.app.metadata.models import (
     create_metadata_schema,
 )
 from backend.app.metadata.seed import seed_semantics
+
+
+CLICKHOUSE_DATASOURCE = "clickhouse_ecommerce"
 
 
 def test_seed_semantics_writes_phase2_assets():
@@ -39,6 +43,28 @@ def test_seed_semantics_writes_phase2_assets():
         assert payment_amount.is_metric is True
         assert date_value.is_dimension is True
         assert json.loads(region_group.sample_values) == ["华东", "华北", "华南", "西南", "华中"]
+
+
+def test_seed_semantics_writes_independent_datasource_assets():
+    engine = create_engine("sqlite:///:memory:")
+    create_metadata_schema(engine)
+    with Session(engine) as session:
+        _insert_physical_metadata(session, datasource_name=DEFAULT_DATASOURCE)
+        _insert_physical_metadata(session, datasource_name=CLICKHOUSE_DATASOURCE)
+
+        seed_semantics(session, datasource_name=DEFAULT_DATASOURCE)
+        seed_semantics(session, datasource_name=CLICKHOUSE_DATASOURCE)
+        session.commit()
+
+        metrics = session.scalars(select(MetaMetric).where(MetaMetric.name == "sales_amount")).all()
+        spaces = session.scalars(select(MetaAnalysisSpace).order_by(MetaAnalysisSpace.datasource)).all()
+
+        assert {metric.datasource for metric in metrics} == {DEFAULT_DATASOURCE, CLICKHOUSE_DATASOURCE}
+        assert {space.datasource for space in spaces} == {DEFAULT_DATASOURCE, CLICKHOUSE_DATASOURCE}
+        assert {space.name for space in spaces} == {
+            "ecommerce_demo",
+            "ecommerce_demo_clickhouse_ecommerce",
+        }
 
 
 def test_seed_semantics_does_not_override_existing_values_by_default():
@@ -82,18 +108,28 @@ def test_seed_semantics_reset_overrides_seeded_values():
         assert metric.expression == "SUM(fact_orders.payment_amount)"
 
 
-def _insert_physical_metadata(session: Session) -> None:
-    fact_orders = MetaTable(table_name="fact_orders")
-    dim_date = MetaTable(table_name="dim_date")
-    dim_regions = MetaTable(table_name="dim_regions")
+def _insert_physical_metadata(session: Session, datasource_name: str = DEFAULT_DATASOURCE) -> None:
+    fact_orders = MetaTable(datasource=datasource_name, table_name="fact_orders")
+    dim_date = MetaTable(datasource=datasource_name, table_name="dim_date")
+    dim_regions = MetaTable(datasource=datasource_name, table_name="dim_regions")
     session.add_all([fact_orders, dim_date, dim_regions])
     session.flush()
     session.add_all(
         [
-            MetaColumn(table_id=fact_orders.id, column_name="payment_amount", data_type="DECIMAL"),
-            MetaColumn(table_id=fact_orders.id, column_name="order_id", data_type="VARCHAR"),
-            MetaColumn(table_id=dim_date.id, column_name="date_value", data_type="DATE"),
-            MetaColumn(table_id=dim_regions.id, column_name="region_group", data_type="VARCHAR"),
+            MetaColumn(
+                datasource=datasource_name,
+                table_id=fact_orders.id,
+                column_name="payment_amount",
+                data_type="DECIMAL",
+            ),
+            MetaColumn(datasource=datasource_name, table_id=fact_orders.id, column_name="order_id", data_type="VARCHAR"),
+            MetaColumn(datasource=datasource_name, table_id=dim_date.id, column_name="date_value", data_type="DATE"),
+            MetaColumn(
+                datasource=datasource_name,
+                table_id=dim_regions.id,
+                column_name="region_group",
+                data_type="VARCHAR",
+            ),
         ]
     )
 

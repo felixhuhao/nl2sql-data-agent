@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from backend.app.api import metadata as metadata_api
 from backend.app.metadata import service
 from backend.app.metadata.models import (
+    DEFAULT_DATASOURCE,
     MetaAnalysisSpace,
     MetaColumn,
     MetaMetric,
@@ -15,6 +16,9 @@ from backend.app.metadata.models import (
     create_metadata_schema,
 )
 from backend.app.metadata.seed import seed_semantics
+
+
+CLICKHOUSE_DATASOURCE = "clickhouse_ecommerce"
 
 
 def test_build_schema_context_reads_runtime_assets_from_db(monkeypatch):
@@ -176,12 +180,72 @@ def test_build_focused_context_retrieves_question(monkeypatch):
         "metrics": [{"name": "aov"}],
         "verified_queries": [],
     }
-    monkeypatch.setattr(service, "retrieve_metadata_assets", lambda question: retrieval_result)
+    captured = {}
+
+    def fake_retrieve(question, **kwargs):
+        captured["question"] = question
+        captured["datasource_name"] = kwargs.get("datasource_name")
+        return retrieval_result
+
+    monkeypatch.setattr(service, "retrieve_metadata_assets", fake_retrieve)
 
     focused_context = service.build_focused_context("客单价")
 
+    assert captured == {"question": "客单价", "datasource_name": DEFAULT_DATASOURCE}
     assert "客单价 (aov)" in focused_context
     assert "- fact_orders:" in focused_context
+
+
+def test_build_focused_context_filters_columns_by_datasource(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    with Session(engine) as session:
+        duckdb_table = MetaTable(datasource=DEFAULT_DATASOURCE, table_name="fact_orders", enabled=True)
+        clickhouse_table = MetaTable(datasource=CLICKHOUSE_DATASOURCE, table_name="fact_orders", enabled=True)
+        session.add_all([duckdb_table, clickhouse_table])
+        session.flush()
+        session.add_all(
+            [
+                MetaColumn(
+                    datasource=DEFAULT_DATASOURCE,
+                    table_id=duckdb_table.id,
+                    column_name="payment_amount",
+                    data_type="DECIMAL",
+                    description="duckdb amount",
+                ),
+                MetaColumn(
+                    datasource=CLICKHOUSE_DATASOURCE,
+                    table_id=clickhouse_table.id,
+                    column_name="payment_amount",
+                    data_type="Decimal(12,2)",
+                    description="clickhouse amount",
+                ),
+                MetaAnalysisSpace(
+                    name="clickhouse_space",
+                    datasource=CLICKHOUSE_DATASOURCE,
+                    tables=json.dumps(["fact_orders"], ensure_ascii=False),
+                    enabled_metrics=json.dumps([], ensure_ascii=False),
+                    allowed_operations=json.dumps(["select"], ensure_ascii=False),
+                    enabled=True,
+                ),
+            ]
+        )
+        session.commit()
+    retrieval_result = {
+        "question": "销售额",
+        "fallback_used": False,
+        "tables": [{"table_name": "fact_orders", "source": "direct_match"}],
+        "columns": [{"table_name": "fact_orders", "column_name": "payment_amount"}],
+        "metrics": [],
+        "verified_queries": [],
+    }
+
+    focused_context = service.build_focused_context_from_retrieval(
+        retrieval_result,
+        datasource_name=CLICKHOUSE_DATASOURCE,
+    )
+
+    assert "clickhouse amount" in focused_context
+    assert "duckdb amount" not in focused_context
 
 
 def _patch_service_db(monkeypatch):

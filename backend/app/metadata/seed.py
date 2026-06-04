@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.app.dataspace.analysis_space import get_default_analysis_space
 from backend.app.dataspace.verified_queries import list_verified_queries
 from backend.app.metadata.models import (
+    DEFAULT_DATASOURCE,
     MetaAnalysisSpace,
     MetaColumn,
     MetaColumnAlias,
@@ -75,24 +76,30 @@ COLUMN_ALIAS_SEEDS = (
 )
 
 
-def seed_semantics(session: Session, reset: bool = False) -> dict[str, int]:
+def seed_semantics(
+    session: Session,
+    reset: bool = False,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> dict[str, int]:
     counts = {
-        "tables": _seed_table_semantics(session, reset),
-        "columns": _seed_column_semantics(session, reset),
-        "relationships": _seed_relationships(session, reset),
-        "metrics": _seed_metrics(session, reset),
-        "aliases": _seed_aliases(session),
-        "verified_queries": _seed_verified_queries(session, reset),
-        "analysis_spaces": _seed_analysis_spaces(session, reset),
+        "tables": _seed_table_semantics(session, reset, datasource_name),
+        "columns": _seed_column_semantics(session, reset, datasource_name),
+        "relationships": _seed_relationships(session, reset, datasource_name),
+        "metrics": _seed_metrics(session, reset, datasource_name),
+        "aliases": _seed_aliases(session, datasource_name),
+        "verified_queries": _seed_verified_queries(session, reset, datasource_name),
+        "analysis_spaces": _seed_analysis_spaces(session, reset, datasource_name),
     }
     session.flush()
     return counts
 
 
-def _seed_table_semantics(session: Session, reset: bool) -> int:
+def _seed_table_semantics(session: Session, reset: bool, datasource_name: str) -> int:
     count = 0
     for table_name, (display_name, description, domain) in TABLE_SEMANTICS.items():
-        table = session.scalar(select(MetaTable).where(MetaTable.table_name == table_name))
+        table = session.scalar(
+            select(MetaTable).where(MetaTable.datasource == datasource_name, MetaTable.table_name == table_name)
+        )
         if table is None:
             continue
         if reset or table.display_name is None:
@@ -105,8 +112,10 @@ def _seed_table_semantics(session: Session, reset: bool) -> int:
     return count
 
 
-def _seed_column_semantics(session: Session, reset: bool) -> int:
-    columns = session.scalars(select(MetaColumn).join(MetaTable)).all()
+def _seed_column_semantics(session: Session, reset: bool, datasource_name: str) -> int:
+    columns = session.scalars(
+        select(MetaColumn).join(MetaTable).where(MetaTable.datasource == datasource_name)
+    ).all()
     count = 0
     for column in columns:
         table_name = column.table.table_name
@@ -126,7 +135,7 @@ def _seed_column_semantics(session: Session, reset: bool) -> int:
     return count
 
 
-def _seed_relationships(session: Session, reset: bool) -> int:
+def _seed_relationships(session: Session, reset: bool, datasource_name: str) -> int:
     count = 0
     for source_table, source_column, target_table, target_column, relationship_type, description in CONFIRMED_RELATIONSHIPS:
         relationship = session.scalar(
@@ -135,10 +144,12 @@ def _seed_relationships(session: Session, reset: bool) -> int:
                 MetaRelationship.source_column == source_column,
                 MetaRelationship.target_table == target_table,
                 MetaRelationship.target_column == target_column,
+                MetaRelationship.datasource == datasource_name,
             )
         )
         if relationship is None:
             relationship = MetaRelationship(
+                datasource=datasource_name,
                 source_table=source_table,
                 source_column=source_column,
                 target_table=target_table,
@@ -155,12 +166,15 @@ def _seed_relationships(session: Session, reset: bool) -> int:
     return count
 
 
-def _seed_metrics(session: Session, reset: bool) -> int:
+def _seed_metrics(session: Session, reset: bool, datasource_name: str) -> int:
     count = 0
     for seed in METRIC_SEEDS:
-        metric = session.scalar(select(MetaMetric).where(MetaMetric.name == seed["name"]))
+        metric = session.scalar(
+            select(MetaMetric).where(MetaMetric.datasource == datasource_name, MetaMetric.name == seed["name"])
+        )
         if metric is None:
             metric = MetaMetric(
+                datasource=datasource_name,
                 name=seed["name"],
                 label=seed["label"],
                 expression=seed["expression"],
@@ -184,7 +198,7 @@ def _seed_metrics(session: Session, reset: bool) -> int:
     return count
 
 
-def _seed_aliases(session: Session) -> int:
+def _seed_aliases(session: Session, datasource_name: str) -> int:
     count = 0
     for table_name, column_name, aliases in COLUMN_ALIAS_SEEDS:
         for alias in aliases:
@@ -193,20 +207,38 @@ def _seed_aliases(session: Session) -> int:
                     MetaColumnAlias.table_name == table_name,
                     MetaColumnAlias.column_name == column_name,
                     MetaColumnAlias.alias == alias,
+                    MetaColumnAlias.datasource == datasource_name,
                 )
             )
             if existing is None:
-                session.add(MetaColumnAlias(table_name=table_name, column_name=column_name, alias=alias))
+                session.add(
+                    MetaColumnAlias(
+                        datasource=datasource_name,
+                        table_name=table_name,
+                        column_name=column_name,
+                        alias=alias,
+                    )
+                )
             count += 1
     return count
 
 
-def _seed_verified_queries(session: Session, reset: bool) -> int:
+def _seed_verified_queries(session: Session, reset: bool, datasource_name: str) -> int:
     count = 0
     for query in list_verified_queries():
-        verified_query = session.scalar(select(MetaVerifiedQuery).where(MetaVerifiedQuery.query_id == query.id))
+        verified_query = session.scalar(
+            select(MetaVerifiedQuery).where(
+                MetaVerifiedQuery.datasource == datasource_name,
+                MetaVerifiedQuery.query_id == query.id,
+            )
+        )
         if verified_query is None:
-            verified_query = MetaVerifiedQuery(query_id=query.id, question=query.question, sql=query.sql)
+            verified_query = MetaVerifiedQuery(
+                datasource=datasource_name,
+                query_id=query.id,
+                question=query.question,
+                sql=query.sql,
+            )
             session.add(verified_query)
         if reset or not verified_query.question:
             verified_query.question = query.question
@@ -221,20 +253,26 @@ def _seed_verified_queries(session: Session, reset: bool) -> int:
     return count
 
 
-def _seed_analysis_spaces(session: Session, reset: bool) -> int:
+def _seed_analysis_spaces(session: Session, reset: bool, datasource_name: str) -> int:
     space = get_default_analysis_space()
-    meta_space = session.scalar(select(MetaAnalysisSpace).where(MetaAnalysisSpace.name == space.name))
+    space_name = _analysis_space_name(space.name, datasource_name)
+    meta_space = session.scalar(
+        select(MetaAnalysisSpace).where(
+            MetaAnalysisSpace.datasource == datasource_name,
+            MetaAnalysisSpace.name == space_name,
+        )
+    )
     if meta_space is None:
         meta_space = MetaAnalysisSpace(
-            name=space.name,
-            datasource=space.datasource,
+            name=space_name,
+            datasource=datasource_name,
             tables=json.dumps(list(space.tables), ensure_ascii=False),
             enabled_metrics=json.dumps(list(space.enabled_metrics), ensure_ascii=False),
             allowed_operations=json.dumps(list(space.allowed_operations), ensure_ascii=False),
         )
         session.add(meta_space)
     if reset or meta_space.datasource == "":
-        meta_space.datasource = space.datasource
+        meta_space.datasource = datasource_name
     if reset or meta_space.tables == "":
         meta_space.tables = json.dumps(list(space.tables), ensure_ascii=False)
     if reset or meta_space.enabled_metrics == "":
@@ -243,6 +281,12 @@ def _seed_analysis_spaces(session: Session, reset: bool) -> int:
         meta_space.allowed_operations = json.dumps(list(space.allowed_operations), ensure_ascii=False)
     meta_space.enabled = True
     return 1
+
+
+def _analysis_space_name(default_name: str, datasource_name: str) -> str:
+    if datasource_name == DEFAULT_DATASOURCE:
+        return default_name
+    return f"{default_name}_{datasource_name}"
 
 
 def _fanout_risk(source_table: str, target_table: str, relationship_type: str) -> str:

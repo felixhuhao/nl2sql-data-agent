@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 from backend.app.config import get_settings
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector.embedding import embed_text, get_embedding_dimension
 from backend.app.metadata.vector.store import VectorIndexStatus, VectorSearchHit, get_vector_store
 
@@ -38,7 +39,12 @@ class ValueHit:
         return f"{self.table_name}.{self.column_name}"
 
 
-def retrieve_vector_assets(question: str, *, limit: int = DEFAULT_VECTOR_LIMIT) -> VectorRetrievalResult:
+def retrieve_vector_assets(
+    question: str,
+    *,
+    limit: int = DEFAULT_VECTOR_LIMIT,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> VectorRetrievalResult:
     settings = get_settings()
     if not settings.vector_enabled:
         return VectorRetrievalResult(vector_used=False, index_status="disabled")
@@ -71,12 +77,22 @@ def retrieve_vector_assets(question: str, *, limit: int = DEFAULT_VECTOR_LIMIT) 
         return VectorRetrievalResult(vector_used=False, index_status="ready")
 
     threshold = settings.vector_similarity_threshold
+    datasource_filter = _datasource_filter(datasource_name)
     hits = {
-        "tables": _filter_hits(vector_store.search("table_vectors", query_vector, limit=limit), threshold),
-        "columns": _filter_hits(vector_store.search("column_vectors", query_vector, limit=limit), threshold),
-        "metrics": _filter_hits(vector_store.search("metric_vectors", query_vector, limit=limit), threshold),
+        "tables": _filter_hits(
+            vector_store.search("table_vectors", query_vector, limit=limit, where=datasource_filter),
+            threshold,
+        ),
+        "columns": _filter_hits(
+            vector_store.search("column_vectors", query_vector, limit=limit, where=datasource_filter),
+            threshold,
+        ),
+        "metrics": _filter_hits(
+            vector_store.search("metric_vectors", query_vector, limit=limit, where=datasource_filter),
+            threshold,
+        ),
         "verified_queries": _filter_hits(
-            vector_store.search("verified_query_vectors", query_vector, limit=limit),
+            vector_store.search("verified_query_vectors", query_vector, limit=limit, where=datasource_filter),
             threshold,
         ),
     }
@@ -88,16 +104,18 @@ def search_values(
     *,
     query_vector: list[float] | None = None,
     limit: int = DEFAULT_VECTOR_LIMIT * 2,
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> list[ValueHit]:
     settings = get_settings()
     vector_store = get_vector_store()
-    exact_hits = _exact_value_hits(question, vector_store.list_values())
+    datasource_filter = _datasource_filter(datasource_name)
+    exact_hits = _exact_value_hits(question, vector_store.list_values(where=datasource_filter))
     vector_hits: list[ValueHit] = []
     if query_vector is None:
         query_vector = embed_text(question)
     if query_vector is not None:
         vector_hits = _vector_value_hits(
-            vector_store.search("value_vectors", query_vector, limit=limit),
+            vector_store.search("value_vectors", query_vector, limit=limit, where=datasource_filter),
             settings.value_vector_similarity_threshold,
         )
     return _deduplicate_value_hits([*exact_hits, *vector_hits])
@@ -155,9 +173,21 @@ def _deduplicate_value_hits(hits: list[ValueHit]) -> list[ValueHit]:
 
 
 def _split_value_asset_id(asset_id: str) -> tuple[str, str]:
-    qualified_column, _, _ = asset_id.partition(":")
+    stripped_asset_id = _strip_datasource_prefix(asset_id)
+    qualified_column, _, _ = stripped_asset_id.partition(":")
     table_name, _, column_name = qualified_column.partition(".")
     return table_name, column_name
+
+
+def _strip_datasource_prefix(asset_id: str) -> str:
+    first, separator, rest = asset_id.partition(":")
+    if separator and "." not in first:
+        return rest
+    return asset_id
+
+
+def _datasource_filter(datasource_name: str) -> dict:
+    return {"must": [{"key": "metadata.datasource", "match": {"value": datasource_name}}]}
 
 
 def _normalize_value(value: str) -> str:

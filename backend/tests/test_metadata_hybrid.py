@@ -1,14 +1,15 @@
 from backend.app.metadata import hybrid
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector.searcher import VectorRetrievalResult
 from backend.app.metadata.vector.store import VectorSearchHit
 
 
 def test_hybrid_merge_adds_vector_metric_and_sources(monkeypatch):
-    monkeypatch.setattr(hybrid, "search_values", lambda question: [])
+    monkeypatch.setattr(hybrid, "search_values", lambda question, **kwargs: [])
     monkeypatch.setattr(
         hybrid,
         "retrieve_vector_assets",
-        lambda question: VectorRetrievalResult(
+        lambda question, **kwargs: VectorRetrievalResult(
             vector_used=True,
             index_status="ready",
             hits={
@@ -47,11 +48,11 @@ def test_hybrid_merge_adds_vector_metric_and_sources(monkeypatch):
 
 
 def test_hybrid_merge_preserves_rule_hits_and_adds_vector_source(monkeypatch):
-    monkeypatch.setattr(hybrid, "search_values", lambda question: [])
+    monkeypatch.setattr(hybrid, "search_values", lambda question, **kwargs: [])
     monkeypatch.setattr(
         hybrid,
         "retrieve_vector_assets",
-        lambda question: VectorRetrievalResult(
+        lambda question, **kwargs: VectorRetrievalResult(
             vector_used=True,
             index_status="ready",
             hits={
@@ -101,12 +102,12 @@ def test_hybrid_merge_injects_value_hits(monkeypatch):
     monkeypatch.setattr(
         hybrid,
         "retrieve_vector_assets",
-        lambda question: VectorRetrievalResult(vector_used=True, index_status="ready", hits={}),
+        lambda question, **kwargs: VectorRetrievalResult(vector_used=True, index_status="ready", hits={}),
     )
     monkeypatch.setattr(
         hybrid,
         "search_values",
-        lambda question: [
+        lambda question, **kwargs: [
             hybrid.ValueHit(
                 table_name="dim_regions",
                 column_name="region_group",
@@ -146,7 +147,7 @@ def test_hybrid_merge_passes_existing_query_vector_to_value_recall(monkeypatch):
     monkeypatch.setattr(
         hybrid,
         "retrieve_vector_assets",
-        lambda question: VectorRetrievalResult(
+        lambda question, **kwargs: VectorRetrievalResult(
             vector_used=True,
             index_status="ready",
             hits={},
@@ -154,9 +155,10 @@ def test_hybrid_merge_passes_existing_query_vector_to_value_recall(monkeypatch):
         ),
     )
 
-    def fake_search_values(question, *, query_vector=None):
+    def fake_search_values(question, *, query_vector=None, datasource_name=DEFAULT_DATASOURCE):
         captured["question"] = question
         captured["query_vector"] = query_vector
+        captured["datasource_name"] = datasource_name
         return []
 
     monkeypatch.setattr(hybrid, "search_values", fake_search_values)
@@ -173,6 +175,7 @@ def test_hybrid_merge_passes_existing_query_vector_to_value_recall(monkeypatch):
     assert captured == {
         "question": "华东地区销售额",
         "query_vector": [0.1, 0.2, 0.3],
+        "datasource_name": DEFAULT_DATASOURCE,
     }
 
 
@@ -180,12 +183,12 @@ def test_hybrid_merge_skips_value_recall_errors(monkeypatch):
     monkeypatch.setattr(
         hybrid,
         "retrieve_vector_assets",
-        lambda question: VectorRetrievalResult(vector_used=True, index_status="ready", hits={}),
+        lambda question, **kwargs: VectorRetrievalResult(vector_used=True, index_status="ready", hits={}),
     )
     monkeypatch.setattr(
         hybrid,
         "search_values",
-        lambda question: (_ for _ in ()).throw(RuntimeError("value recall failed")),
+        lambda question, **kwargs: (_ for _ in ()).throw(RuntimeError("value recall failed")),
     )
 
     result = hybrid.hybrid_merge(

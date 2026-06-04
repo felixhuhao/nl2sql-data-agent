@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.metadata.models import (
     Base,
+    DEFAULT_DATASOURCE,
     MetaColumn,
     MetaColumnAlias,
     MetaMetric,
@@ -28,20 +29,21 @@ def test_build_vector_assets_creates_all_asset_types():
         "verified_query",
         "value",
     }
-    assert _asset(assets, "table", "fact_orders").text == "fact_orders 订单事实表 订单金额 sales"
-    column_asset = _asset(assets, "column", "fact_orders.payment_amount")
+    assert _asset(assets, "table", _asset_id("fact_orders")).text == "fact_orders 订单事实表 订单金额 sales"
+    column_asset = _asset(assets, "column", _asset_id("fact_orders.payment_amount"))
     assert "支付金额" in column_asset.text
     assert "销售额" in column_asset.text
     assert "100" in column_asset.text
+    assert column_asset.metadata["datasource"] == DEFAULT_DATASOURCE
     assert column_asset.metadata["aliases"] == ["销售额"]
-    assert _asset(assets, "metric", "sales_amount").text.startswith("sales_amount 销售额")
-    metric_alias_asset = _asset(assets, "metric", "sales_amount:alias:营收总额")
+    assert _asset(assets, "metric", _asset_id("sales_amount")).text.startswith("sales_amount 销售额")
+    metric_alias_asset = _asset(assets, "metric", _asset_id("sales_amount:alias:营收总额"))
     assert metric_alias_asset.text == "营收总额"
     assert metric_alias_asset.metadata["name"] == "sales_amount"
-    verified_query_asset = _asset(assets, "verified_query", "recent_sales")
+    verified_query_asset = _asset(assets, "verified_query", _asset_id("recent_sales"))
     assert verified_query_asset.text == "recent_sales 最近销售额 销售额"
     assert verified_query_asset.metadata["sql"] == "SELECT SUM(payment_amount) FROM fact_orders"
-    assert _asset(assets, "value", "fact_orders.payment_amount:100").text == "100"
+    assert _asset(assets, "value", _asset_id("fact_orders.payment_amount:100")).text == "100"
 
 
 def test_rebuild_vector_index_writes_rows_and_metadata(monkeypatch):
@@ -91,6 +93,10 @@ def _asset(assets, asset_type, asset_id):
         if asset.asset_type == asset_type and asset.asset_id == asset_id:
             return asset
     raise AssertionError(f"Asset not found: {asset_type}:{asset_id}")
+
+
+def _asset_id(local_asset_id: str) -> str:
+    return f"{DEFAULT_DATASOURCE}:{local_asset_id}"
 
 
 def _session_with_assets() -> Session:

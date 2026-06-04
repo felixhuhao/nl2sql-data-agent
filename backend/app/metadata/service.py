@@ -9,6 +9,7 @@ from sqlglot.errors import SqlglotError
 from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
+    DEFAULT_DATASOURCE,
     MetaAnalysisSpace,
     MetaColumn,
     MetaColumnAlias,
@@ -41,11 +42,13 @@ class MetadataAdminError(ValueError):
         self.detail = detail
 
 
-def list_tables() -> list[dict]:
+def list_tables(datasource_name: str = DEFAULT_DATASOURCE) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
         tables = session.scalars(
-            select(MetaTable).where(MetaTable.enabled.is_(True)).order_by(MetaTable.table_name)
+            select(MetaTable)
+            .where(MetaTable.enabled.is_(True), MetaTable.datasource == datasource_name)
+            .order_by(MetaTable.table_name)
         ).all()
         return [
             {
@@ -59,10 +62,12 @@ def list_tables() -> list[dict]:
         ]
 
 
-def list_columns(table_name: str) -> list[dict]:
+def list_columns(table_name: str, datasource_name: str = DEFAULT_DATASOURCE) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
-        table = session.scalar(select(MetaTable).where(MetaTable.table_name == table_name))
+        table = session.scalar(
+            select(MetaTable).where(MetaTable.datasource == datasource_name, MetaTable.table_name == table_name)
+        )
         if table is None:
             return []
         columns = session.scalars(
@@ -83,11 +88,11 @@ def list_columns(table_name: str) -> list[dict]:
         ]
 
 
-def list_relationships() -> list[dict]:
+def list_relationships(datasource_name: str = DEFAULT_DATASOURCE) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
         relationships = session.scalars(
-            select(MetaRelationship).order_by(
+            select(MetaRelationship).where(MetaRelationship.datasource == datasource_name).order_by(
                 MetaRelationship.source_table,
                 MetaRelationship.target_table,
             )
@@ -95,43 +100,49 @@ def list_relationships() -> list[dict]:
         return [_relationship_payload(relationship) for relationship in relationships]
 
 
-def get_analysis_space() -> dict:
+def get_analysis_space(datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        analysis_space = _active_analysis_space(session)
+        analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         return _analysis_space_payload(analysis_space) if analysis_space else {}
 
 
-def list_verified_queries(enabled: bool | None = None) -> list[dict]:
+def list_verified_queries(
+    enabled: bool | None = None,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
-        query = select(MetaVerifiedQuery).order_by(MetaVerifiedQuery.id)
+        query = select(MetaVerifiedQuery).where(MetaVerifiedQuery.datasource == datasource_name).order_by(MetaVerifiedQuery.id)
         if enabled is not None:
             query = query.where(MetaVerifiedQuery.enabled.is_(enabled))
         return [_verified_query_payload(row) for row in session.scalars(query).all()]
 
 
-def list_metrics(enabled: bool | None = None) -> list[dict]:
+def list_metrics(enabled: bool | None = None, datasource_name: str = DEFAULT_DATASOURCE) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
-        query = select(MetaMetric).order_by(MetaMetric.name)
+        query = select(MetaMetric).where(MetaMetric.datasource == datasource_name).order_by(MetaMetric.name)
         if enabled is not None:
             query = query.where(MetaMetric.enabled.is_(enabled))
         return [_metric_payload(metric) for metric in session.scalars(query).all()]
 
 
-def create_metric(data: MetricCreate) -> dict:
+def create_metric(data: MetricCreate, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
         name = _required_text(data.name, "name")
-        if session.scalar(select(MetaMetric).where(MetaMetric.name == name)) is not None:
+        if session.scalar(
+            select(MetaMetric).where(MetaMetric.datasource == datasource_name, MetaMetric.name == name)
+        ) is not None:
             raise MetadataAdminError(409, f"Metric already exists: {name}")
 
         expression = _required_text(data.expression, "expression")
         default_time_column = _optional_text(data.default_time_column)
-        _validate_metric_definition(session, expression, default_time_column)
+        _validate_metric_definition(session, expression, default_time_column, datasource_name=datasource_name)
 
         metric = MetaMetric(
+            datasource=datasource_name,
             name=name,
             label=_required_text(data.label, "label"),
             expression=expression,
@@ -145,17 +156,17 @@ def create_metric(data: MetricCreate) -> dict:
         return _metric_payload(metric)
 
 
-def update_metric(name: str, data: MetricUpdate) -> dict:
+def update_metric(name: str, data: MetricUpdate, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        metric = _metric_or_raise(session, name)
+        metric = _metric_or_raise(session, name, datasource_name=datasource_name)
         expression = _required_text(data.expression, "expression") if data.expression is not None else metric.expression
         default_time_column = (
             _optional_text(data.default_time_column)
             if data.default_time_column is not None
             else metric.default_time_column
         )
-        _validate_metric_definition(session, expression, default_time_column)
+        _validate_metric_definition(session, expression, default_time_column, datasource_name=datasource_name)
 
         if data.label is not None:
             metric.label = _required_text(data.label, "label")
@@ -173,46 +184,50 @@ def update_metric(name: str, data: MetricUpdate) -> dict:
         return _metric_payload(metric)
 
 
-def toggle_metric(name: str) -> dict:
+def toggle_metric(name: str, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        metric = _metric_or_raise(session, name)
+        metric = _metric_or_raise(session, name, datasource_name=datasource_name)
         metric.enabled = not metric.enabled
         session.flush()
         return _metric_payload(metric)
 
 
-def list_aliases(table_name: str | None = None) -> list[dict]:
+def list_aliases(
+    table_name: str | None = None,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[dict]:
     _ensure_schema()
     with sqlite_session() as session:
         query = select(MetaColumnAlias).order_by(
             MetaColumnAlias.table_name,
             MetaColumnAlias.column_name,
             MetaColumnAlias.alias,
-        )
+        ).where(MetaColumnAlias.datasource == datasource_name)
         if table_name:
             query = query.where(MetaColumnAlias.table_name == table_name)
         return [_alias_payload(alias) for alias in session.scalars(query).all()]
 
 
-def create_alias(data: AliasCreate) -> dict:
+def create_alias(data: AliasCreate, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
         table_name = _required_text(data.table_name, "table_name")
         column_name = _required_text(data.column_name, "column_name")
         alias = _required_text(data.alias, "alias")
-        _require_column(session, table_name, column_name)
+        _require_column(session, table_name, column_name, datasource_name=datasource_name)
         existing = session.scalar(
             select(MetaColumnAlias).where(
                 MetaColumnAlias.table_name == table_name,
                 MetaColumnAlias.column_name == column_name,
                 MetaColumnAlias.alias == alias,
+                MetaColumnAlias.datasource == datasource_name,
             )
         )
         if existing is not None:
             raise MetadataAdminError(409, f"Alias already exists: {table_name}.{column_name} -> {alias}")
 
-        row = MetaColumnAlias(table_name=table_name, column_name=column_name, alias=alias)
+        row = MetaColumnAlias(datasource=datasource_name, table_name=table_name, column_name=column_name, alias=alias)
         session.add(row)
         session.flush()
         return _alias_payload(row)
@@ -227,16 +242,22 @@ def delete_alias(alias_id: int) -> None:
         session.delete(alias)
 
 
-def create_verified_query(data: VerifiedQueryCreate) -> dict:
+def create_verified_query(data: VerifiedQueryCreate, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
         query_id = _required_text(data.query_id, "query_id")
-        if session.scalar(select(MetaVerifiedQuery).where(MetaVerifiedQuery.query_id == query_id)) is not None:
+        if session.scalar(
+            select(MetaVerifiedQuery).where(
+                MetaVerifiedQuery.datasource == datasource_name,
+                MetaVerifiedQuery.query_id == query_id,
+            )
+        ) is not None:
             raise MetadataAdminError(409, f"Verified query already exists: {query_id}")
 
         sql = _required_text(data.sql, "sql")
-        _validate_verified_query_sql(session, sql)
+        _validate_verified_query_sql(session, sql, datasource_name=datasource_name)
         query = MetaVerifiedQuery(
+            datasource=datasource_name,
             query_id=query_id,
             question=_required_text(data.question, "question"),
             sql=sql,
@@ -249,12 +270,16 @@ def create_verified_query(data: VerifiedQueryCreate) -> dict:
         return _verified_query_payload(query)
 
 
-def update_verified_query(query_id: str, data: VerifiedQueryUpdate) -> dict:
+def update_verified_query(
+    query_id: str,
+    data: VerifiedQueryUpdate,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        query = _verified_query_or_raise(session, query_id)
+        query = _verified_query_or_raise(session, query_id, datasource_name=datasource_name)
         sql = _required_text(data.sql, "sql") if data.sql is not None else query.sql
-        _validate_verified_query_sql(session, sql)
+        _validate_verified_query_sql(session, sql, datasource_name=datasource_name)
 
         if data.question is not None:
             query.question = _required_text(data.question, "question")
@@ -268,29 +293,29 @@ def update_verified_query(query_id: str, data: VerifiedQueryUpdate) -> dict:
         return _verified_query_payload(query)
 
 
-def toggle_verified_query(query_id: str) -> dict:
+def toggle_verified_query(query_id: str, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        query = _verified_query_or_raise(session, query_id)
+        query = _verified_query_or_raise(session, query_id, datasource_name=datasource_name)
         query.enabled = not query.enabled
         session.flush()
         return _verified_query_payload(query)
 
 
-def update_analysis_space(data: AnalysisSpaceUpdate) -> dict:
+def update_analysis_space(data: AnalysisSpaceUpdate, datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        analysis_space = _active_analysis_space(session)
+        analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         if analysis_space is None:
             raise MetadataAdminError(404, "Active analysis space not found.")
 
         if data.tables is not None:
             table_names = _clean_string_list(data.tables)
-            _validate_table_names(session, table_names)
+            _validate_table_names(session, table_names, datasource_name=datasource_name)
             analysis_space.tables = json.dumps(table_names, ensure_ascii=False)
         if data.enabled_metrics is not None:
             metric_names = _clean_string_list(data.enabled_metrics)
-            _validate_metric_names(session, metric_names)
+            _validate_metric_names(session, metric_names, datasource_name=datasource_name)
             analysis_space.enabled_metrics = json.dumps(metric_names, ensure_ascii=False)
         if data.allowed_operations is not None:
             allowed_operations = _clean_string_list(data.allowed_operations)
@@ -326,18 +351,22 @@ def update_relationship(rel_id: int, data: RelationshipUpdate) -> dict:
         return _relationship_payload(relationship)
 
 
-def build_schema_context() -> str:
+def build_schema_context(datasource_name: str = DEFAULT_DATASOURCE) -> str:
     _ensure_schema()
     settings = get_settings()
     with sqlite_session() as session:
-        analysis_space = _active_analysis_space(session)
+        analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
         allowed_tables = set(analysis_space_payload["tables"])
-        metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]))
-        verified_queries = _verified_queries(session)
+        metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]), datasource_name=datasource_name)
+        verified_queries = _verified_queries(session, datasource_name=datasource_name)
         tables = session.scalars(
             select(MetaTable)
-            .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+            .where(
+                MetaTable.enabled.is_(True),
+                MetaTable.datasource == datasource_name,
+                MetaTable.table_name.in_(allowed_tables),
+            )
             .order_by(MetaTable.table_name)
         ).all()
         relationships = session.scalars(
@@ -345,6 +374,7 @@ def build_schema_context() -> str:
             .where(
                 MetaRelationship.source_table.in_(allowed_tables),
                 MetaRelationship.target_table.in_(allowed_tables),
+                MetaRelationship.datasource == datasource_name,
             )
             .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
         ).all()
@@ -360,18 +390,24 @@ def build_schema_context() -> str:
         )
 
 
-def build_focused_context(question: str) -> str:
-    return build_focused_context_from_retrieval(retrieve_metadata_assets(question))
+def build_focused_context(question: str, datasource_name: str = DEFAULT_DATASOURCE) -> str:
+    return build_focused_context_from_retrieval(
+        retrieve_metadata_assets(question, datasource_name=datasource_name),
+        datasource_name=datasource_name,
+    )
 
 
-def build_focused_context_from_retrieval(retrieval_result: dict) -> str:
+def build_focused_context_from_retrieval(
+    retrieval_result: dict,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> str:
     if retrieval_result.get("fallback_used"):
-        return build_schema_context()
+        return build_schema_context(datasource_name=datasource_name)
 
     _ensure_schema()
     settings = get_settings()
     with sqlite_session() as session:
-        analysis_space = _active_analysis_space(session)
+        analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
         allowed_tables = set(analysis_space_payload["tables"])
 
@@ -383,18 +419,18 @@ def build_focused_context_from_retrieval(retrieval_result: dict) -> str:
         metric_names = {metric["name"] for metric in retrieval_result.get("metrics", [])}
         verified_query_ids = {query["id"] for query in retrieval_result.get("verified_queries", [])}
 
-        relationships = _relationships_for_tables(session, allowed_tables)
+        relationships = _relationships_for_tables(session, allowed_tables, datasource_name=datasource_name)
         _expand_join_partners(table_names, column_keys, relationships)
 
-        tables = _tables_by_name(session, table_names, allowed_tables)
-        table_columns = _focused_columns_by_table(session, tables, column_keys)
+        tables = _tables_by_name(session, table_names, allowed_tables, datasource_name=datasource_name)
+        table_columns = _focused_columns_by_table(session, tables, column_keys, datasource_name=datasource_name)
         focused_relationships = [
             relationship
             for relationship in relationships
             if relationship.source_table in table_names and relationship.target_table in table_names
         ]
-        metrics = _metrics_by_name(session, metric_names)
-        verified_queries = _verified_queries_by_id(session, verified_query_ids)
+        metrics = _metrics_by_name(session, metric_names, datasource_name=datasource_name)
+        verified_queries = _verified_queries_by_id(session, verified_query_ids, datasource_name=datasource_name)
 
         return _render_schema_context(
             settings.dataset_current_date,
@@ -407,17 +443,21 @@ def build_focused_context_from_retrieval(retrieval_result: dict) -> str:
         )
 
 
-def build_explainability_context() -> dict:
+def build_explainability_context(datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     settings = get_settings()
     with sqlite_session() as session:
-        analysis_space = _active_analysis_space(session)
+        analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
         allowed_tables = set(analysis_space_payload["tables"])
-        metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]))
+        metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]), datasource_name=datasource_name)
         tables = session.scalars(
             select(MetaTable)
-            .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+            .where(
+                MetaTable.enabled.is_(True),
+                MetaTable.datasource == datasource_name,
+                MetaTable.table_name.in_(allowed_tables),
+            )
             .order_by(MetaTable.table_name)
         ).all()
         relationships = session.scalars(
@@ -425,6 +465,7 @@ def build_explainability_context() -> dict:
             .where(
                 MetaRelationship.source_table.in_(allowed_tables),
                 MetaRelationship.target_table.in_(allowed_tables),
+                MetaRelationship.datasource == datasource_name,
             )
             .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
         ).all()
@@ -442,22 +483,24 @@ def build_explainability_context() -> dict:
             "tables": [_table_explainability(session, table) for table in tables],
             "metrics": [_metric_payload(metric) for metric in metrics],
             "join_paths": [_relationship_explainability(relationship) for relationship in relationships],
-            "verified_queries": [_verified_query_payload(query) for query in _verified_queries(session)],
+            "verified_queries": [
+                _verified_query_payload(query) for query in _verified_queries(session, datasource_name=datasource_name)
+            ],
         }
 
 
-def validate_semantic_assets() -> dict:
+def validate_semantic_assets(datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
         issues: list[dict] = []
-        table_columns, enabled_tables = _reference_index(session)
-        metrics_by_name = _metric_index(session)
+        table_columns, enabled_tables = _reference_index(session, datasource_name=datasource_name)
+        metrics_by_name = _metric_index(session, datasource_name=datasource_name)
 
-        _validate_analysis_space_assets(session, table_columns, enabled_tables, metrics_by_name, issues)
-        _validate_metric_assets(session, table_columns, issues)
-        _validate_alias_assets(session, table_columns, issues)
-        _validate_relationship_assets(session, table_columns, issues)
-        _validate_verified_query_assets(session, issues)
+        _validate_analysis_space_assets(session, table_columns, enabled_tables, metrics_by_name, issues, datasource_name)
+        _validate_metric_assets(session, table_columns, issues, datasource_name)
+        _validate_alias_assets(session, table_columns, issues, datasource_name)
+        _validate_relationship_assets(session, table_columns, issues, datasource_name)
+        _validate_verified_query_assets(session, issues, datasource_name)
 
         return {"ok": not issues, "issues": issues}
 
@@ -543,13 +586,22 @@ def _relationship_context_line(relationship: MetaRelationship) -> str:
     )
 
 
-def _tables_by_name(session: Session, table_names: set[str], allowed_tables: set[str]) -> list[MetaTable]:
+def _tables_by_name(
+    session: Session,
+    table_names: set[str],
+    allowed_tables: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaTable]:
     selected_tables = table_names & allowed_tables
     if not selected_tables:
         return []
     return session.scalars(
         select(MetaTable)
-        .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(selected_tables))
+        .where(
+            MetaTable.enabled.is_(True),
+            MetaTable.datasource == datasource_name,
+            MetaTable.table_name.in_(selected_tables),
+        )
         .order_by(MetaTable.table_name)
     ).all()
 
@@ -558,6 +610,7 @@ def _focused_columns_by_table(
     session: Session,
     tables: list[MetaTable],
     column_keys: set[tuple[str, str]],
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> dict[str, list[MetaColumn]]:
     table_ids = {table.table_name: table.id for table in tables}
     columns_by_table: dict[str, list[MetaColumn]] = {table.table_name: [] for table in tables}
@@ -568,6 +621,7 @@ def _focused_columns_by_table(
         select(MetaColumn)
         .join(MetaTable)
         .where(
+            MetaTable.datasource == datasource_name,
             MetaTable.table_name.in_(set(table_ids)),
             MetaColumn.column_name.in_({column_name for _, column_name in column_keys}),
         )
@@ -580,7 +634,11 @@ def _focused_columns_by_table(
     return columns_by_table
 
 
-def _relationships_for_tables(session: Session, allowed_tables: set[str]) -> list[MetaRelationship]:
+def _relationships_for_tables(
+    session: Session,
+    allowed_tables: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaRelationship]:
     if not allowed_tables:
         return []
     return session.scalars(
@@ -588,6 +646,7 @@ def _relationships_for_tables(session: Session, allowed_tables: set[str]) -> lis
         .where(
             MetaRelationship.source_table.in_(allowed_tables),
             MetaRelationship.target_table.in_(allowed_tables),
+            MetaRelationship.datasource == datasource_name,
         )
         .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
     ).all()
@@ -619,22 +678,38 @@ def _expand_join_partners(
             added_fact_partners += 1
 
 
-def _metrics_by_name(session: Session, metric_names: set[str]) -> list[MetaMetric]:
+def _metrics_by_name(
+    session: Session,
+    metric_names: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaMetric]:
     if not metric_names:
         return []
     return session.scalars(
         select(MetaMetric)
-        .where(MetaMetric.enabled.is_(True), MetaMetric.name.in_(metric_names))
+        .where(
+            MetaMetric.enabled.is_(True),
+            MetaMetric.datasource == datasource_name,
+            MetaMetric.name.in_(metric_names),
+        )
         .order_by(MetaMetric.id)
     ).all()
 
 
-def _verified_queries_by_id(session: Session, query_ids: set[str]) -> list[MetaVerifiedQuery]:
+def _verified_queries_by_id(
+    session: Session,
+    query_ids: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaVerifiedQuery]:
     if not query_ids:
         return []
     return session.scalars(
         select(MetaVerifiedQuery)
-        .where(MetaVerifiedQuery.enabled.is_(True), MetaVerifiedQuery.query_id.in_(query_ids))
+        .where(
+            MetaVerifiedQuery.enabled.is_(True),
+            MetaVerifiedQuery.datasource == datasource_name,
+            MetaVerifiedQuery.query_id.in_(query_ids),
+        )
         .order_by(MetaVerifiedQuery.id)
     ).all()
 
@@ -674,36 +749,62 @@ def _relationship_explainability(relationship: MetaRelationship) -> dict:
     }
 
 
-def _active_analysis_space(session: Session) -> MetaAnalysisSpace | None:
-    return session.scalar(
+def _active_analysis_space(
+    session: Session,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> MetaAnalysisSpace | None:
+    analysis_space = session.scalar(
         select(MetaAnalysisSpace)
-        .where(MetaAnalysisSpace.enabled.is_(True))
+        .where(MetaAnalysisSpace.enabled.is_(True), MetaAnalysisSpace.datasource == datasource_name)
         .order_by(MetaAnalysisSpace.id)
     )
+    if analysis_space is None and datasource_name == DEFAULT_DATASOURCE:
+        return session.scalar(
+            select(MetaAnalysisSpace)
+            .where(MetaAnalysisSpace.enabled.is_(True))
+            .order_by(MetaAnalysisSpace.id)
+        )
+    return analysis_space
 
 
-def _enabled_metrics(session: Session, enabled_metric_names: set[str]) -> list[MetaMetric]:
+def _enabled_metrics(
+    session: Session,
+    enabled_metric_names: set[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaMetric]:
     if not enabled_metric_names:
         return []
     return session.scalars(
         select(MetaMetric)
-        .where(MetaMetric.enabled.is_(True), MetaMetric.name.in_(enabled_metric_names))
+        .where(
+            MetaMetric.enabled.is_(True),
+            MetaMetric.datasource == datasource_name,
+            MetaMetric.name.in_(enabled_metric_names),
+        )
         .order_by(MetaMetric.id)
     ).all()
 
 
-def _verified_queries(session: Session) -> list[MetaVerifiedQuery]:
+def _verified_queries(
+    session: Session,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> list[MetaVerifiedQuery]:
     return session.scalars(
         select(MetaVerifiedQuery)
-        .where(MetaVerifiedQuery.enabled.is_(True))
+        .where(MetaVerifiedQuery.enabled.is_(True), MetaVerifiedQuery.datasource == datasource_name)
         .order_by(MetaVerifiedQuery.id)
     ).all()
 
 
-def _reference_index(session: Session) -> tuple[dict[str, set[str]], set[str]]:
+def _reference_index(
+    session: Session,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> tuple[dict[str, set[str]], set[str]]:
     table_columns: dict[str, set[str]] = {}
     enabled_tables: set[str] = set()
-    tables = session.scalars(select(MetaTable).order_by(MetaTable.table_name)).all()
+    tables = session.scalars(
+        select(MetaTable).where(MetaTable.datasource == datasource_name).order_by(MetaTable.table_name)
+    ).all()
     for table in tables:
         if table.enabled:
             enabled_tables.add(table.table_name)
@@ -716,8 +817,10 @@ def _reference_index(session: Session) -> tuple[dict[str, set[str]], set[str]]:
     return table_columns, enabled_tables
 
 
-def _metric_index(session: Session) -> dict[str, MetaMetric]:
-    metrics = session.scalars(select(MetaMetric).order_by(MetaMetric.name)).all()
+def _metric_index(session: Session, datasource_name: str = DEFAULT_DATASOURCE) -> dict[str, MetaMetric]:
+    metrics = session.scalars(
+        select(MetaMetric).where(MetaMetric.datasource == datasource_name).order_by(MetaMetric.name)
+    ).all()
     return {metric.name: metric for metric in metrics}
 
 
@@ -727,8 +830,15 @@ def _validate_analysis_space_assets(
     enabled_tables: set[str],
     metrics_by_name: dict[str, MetaMetric],
     issues: list[dict],
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> None:
-    spaces = session.scalars(select(MetaAnalysisSpace).order_by(MetaAnalysisSpace.id)).all()
+    spaces = session.scalars(
+        select(MetaAnalysisSpace)
+        .where(MetaAnalysisSpace.datasource == datasource_name)
+        .order_by(MetaAnalysisSpace.id)
+    ).all()
+    if not spaces and datasource_name == DEFAULT_DATASOURCE:
+        spaces = session.scalars(select(MetaAnalysisSpace).order_by(MetaAnalysisSpace.id)).all()
     for space in spaces:
         asset_id = space.name
         for table_name in _parse_json_list(space.tables):
@@ -768,8 +878,11 @@ def _validate_metric_assets(
     session: Session,
     table_columns: dict[str, set[str]],
     issues: list[dict],
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> None:
-    metrics = session.scalars(select(MetaMetric).order_by(MetaMetric.name)).all()
+    metrics = session.scalars(
+        select(MetaMetric).where(MetaMetric.datasource == datasource_name).order_by(MetaMetric.name)
+    ).all()
     for metric in metrics:
         try:
             sqlglot.parse_one(f"SELECT {metric.expression} AS metric_value", read="duckdb")
@@ -828,8 +941,11 @@ def _validate_alias_assets(
     session: Session,
     table_columns: dict[str, set[str]],
     issues: list[dict],
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> None:
-    aliases = session.scalars(select(MetaColumnAlias).order_by(MetaColumnAlias.id)).all()
+    aliases = session.scalars(
+        select(MetaColumnAlias).where(MetaColumnAlias.datasource == datasource_name).order_by(MetaColumnAlias.id)
+    ).all()
     for alias in aliases:
         _check_column_reference(
             issues,
@@ -846,8 +962,11 @@ def _validate_relationship_assets(
     session: Session,
     table_columns: dict[str, set[str]],
     issues: list[dict],
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> None:
-    relationships = session.scalars(select(MetaRelationship).order_by(MetaRelationship.id)).all()
+    relationships = session.scalars(
+        select(MetaRelationship).where(MetaRelationship.datasource == datasource_name).order_by(MetaRelationship.id)
+    ).all()
     for relationship in relationships:
         asset_id = (
             f"{relationship.source_table}.{relationship.source_column}->"
@@ -873,10 +992,16 @@ def _validate_relationship_assets(
         )
 
 
-def _validate_verified_query_assets(session: Session, issues: list[dict]) -> None:
-    queries = session.scalars(select(MetaVerifiedQuery).order_by(MetaVerifiedQuery.id)).all()
+def _validate_verified_query_assets(
+    session: Session,
+    issues: list[dict],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> None:
+    queries = session.scalars(
+        select(MetaVerifiedQuery).where(MetaVerifiedQuery.datasource == datasource_name).order_by(MetaVerifiedQuery.id)
+    ).all()
     for query in queries:
-        result = guard_sql(query.sql, scope=_guard_scope_from_session(session))
+        result = guard_sql(query.sql, scope=_guard_scope_from_session(session, datasource_name=datasource_name))
         if not result.allowed:
             _add_validation_issue(
                 issues,
@@ -959,6 +1084,7 @@ def _empty_analysis_space_payload() -> dict:
 
 def _metric_payload(metric: MetaMetric) -> dict:
     return {
+        "datasource": metric.datasource,
         "name": metric.name,
         "label": metric.label,
         "expression": metric.expression,
@@ -972,6 +1098,7 @@ def _metric_payload(metric: MetaMetric) -> dict:
 def _alias_payload(alias: MetaColumnAlias) -> dict:
     return {
         "id": alias.id,
+        "datasource": alias.datasource,
         "table_name": alias.table_name,
         "column_name": alias.column_name,
         "alias": alias.alias,
@@ -981,6 +1108,7 @@ def _alias_payload(alias: MetaColumnAlias) -> dict:
 def _relationship_payload(relationship: MetaRelationship) -> dict:
     return {
         "id": relationship.id,
+        "datasource": relationship.datasource,
         "source_table": relationship.source_table,
         "source_column": relationship.source_column,
         "target_table": relationship.target_table,
@@ -993,15 +1121,30 @@ def _relationship_payload(relationship: MetaRelationship) -> dict:
     }
 
 
-def _metric_or_raise(session: Session, name: str) -> MetaMetric:
-    metric = session.scalar(select(MetaMetric).where(MetaMetric.name == name))
+def _metric_or_raise(
+    session: Session,
+    name: str,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> MetaMetric:
+    metric = session.scalar(
+        select(MetaMetric).where(MetaMetric.datasource == datasource_name, MetaMetric.name == name)
+    )
     if metric is None:
         raise MetadataAdminError(404, f"Metric not found: {name}")
     return metric
 
 
-def _verified_query_or_raise(session: Session, query_id: str) -> MetaVerifiedQuery:
-    query = session.scalar(select(MetaVerifiedQuery).where(MetaVerifiedQuery.query_id == query_id))
+def _verified_query_or_raise(
+    session: Session,
+    query_id: str,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> MetaVerifiedQuery:
+    query = session.scalar(
+        select(MetaVerifiedQuery).where(
+            MetaVerifiedQuery.datasource == datasource_name,
+            MetaVerifiedQuery.query_id == query_id,
+        )
+    )
     if query is None:
         raise MetadataAdminError(404, f"Verified query not found: {query_id}")
     return query
@@ -1011,6 +1154,7 @@ def _validate_metric_definition(
     session: Session,
     expression: str,
     default_time_column: str | None,
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> None:
     try:
         sqlglot.parse_one(f"SELECT {expression} AS metric_value", read="duckdb")
@@ -1021,17 +1165,21 @@ def _validate_metric_definition(
     if not qualified_columns:
         raise MetadataAdminError(422, "Metric expression must reference at least one qualified column.")
     for table_name, column_name in qualified_columns:
-        _require_column(session, table_name, column_name)
+        _require_column(session, table_name, column_name, datasource_name=datasource_name)
 
     if default_time_column:
         table_name, column_name = _split_qualified_name(default_time_column)
         if table_name is None or column_name is None:
             raise MetadataAdminError(422, "default_time_column must use table.column format.")
-        _require_column(session, table_name, column_name)
+        _require_column(session, table_name, column_name, datasource_name=datasource_name)
 
 
-def _validate_verified_query_sql(session: Session, sql: str) -> None:
-    result = guard_sql(sql, scope=_guard_scope_from_session(session))
+def _validate_verified_query_sql(
+    session: Session,
+    sql: str,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> None:
+    result = guard_sql(sql, scope=_guard_scope_from_session(session, datasource_name=datasource_name))
     if not result.allowed:
         raise MetadataAdminError(
             422,
@@ -1039,12 +1187,19 @@ def _validate_verified_query_sql(session: Session, sql: str) -> None:
         )
 
 
-def _guard_scope_from_session(session: Session) -> GuardScope:
-    analysis_space = _active_analysis_space(session)
+def _guard_scope_from_session(
+    session: Session,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> GuardScope:
+    analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
     allowed_tables = frozenset(_parse_json_list(analysis_space.tables if analysis_space else None))
     table_rows = session.scalars(
         select(MetaTable)
-        .where(MetaTable.enabled.is_(True), MetaTable.table_name.in_(allowed_tables))
+        .where(
+            MetaTable.enabled.is_(True),
+            MetaTable.datasource == datasource_name,
+            MetaTable.table_name.in_(allowed_tables),
+        )
         .order_by(MetaTable.table_name)
     ).all()
     table_columns = {}
@@ -1058,33 +1213,60 @@ def _guard_scope_from_session(session: Session) -> GuardScope:
     return GuardScope(allowed_tables=allowed_tables, table_columns=table_columns)
 
 
-def _validate_table_names(session: Session, table_names: list[str]) -> None:
+def _validate_table_names(
+    session: Session,
+    table_names: list[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> None:
     if not table_names:
         return
     existing = set(
-        session.scalars(select(MetaTable.table_name).where(MetaTable.table_name.in_(table_names))).all()
+        session.scalars(
+            select(MetaTable.table_name).where(
+                MetaTable.datasource == datasource_name,
+                MetaTable.table_name.in_(table_names),
+            )
+        ).all()
     )
     missing = sorted(set(table_names) - existing)
     if missing:
         raise MetadataAdminError(422, f"Tables not found: {missing}")
 
 
-def _validate_metric_names(session: Session, metric_names: list[str]) -> None:
+def _validate_metric_names(
+    session: Session,
+    metric_names: list[str],
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> None:
     if not metric_names:
         return
     existing = set(
-        session.scalars(select(MetaMetric.name).where(MetaMetric.name.in_(metric_names))).all()
+        session.scalars(
+            select(MetaMetric.name).where(
+                MetaMetric.datasource == datasource_name,
+                MetaMetric.name.in_(metric_names),
+            )
+        ).all()
     )
     missing = sorted(set(metric_names) - existing)
     if missing:
         raise MetadataAdminError(422, f"Metrics not found: {missing}")
 
 
-def _require_column(session: Session, table_name: str, column_name: str) -> None:
+def _require_column(
+    session: Session,
+    table_name: str,
+    column_name: str,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> None:
     exists = session.scalar(
         select(MetaColumn)
         .join(MetaTable)
-        .where(MetaTable.table_name == table_name, MetaColumn.column_name == column_name)
+        .where(
+            MetaTable.datasource == datasource_name,
+            MetaTable.table_name == table_name,
+            MetaColumn.column_name == column_name,
+        )
     )
     if exists is None:
         raise MetadataAdminError(422, f"Column not found: {table_name}.{column_name}")

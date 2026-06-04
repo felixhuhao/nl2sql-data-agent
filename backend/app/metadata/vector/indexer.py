@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
+    DEFAULT_DATASOURCE,
     MetaColumn,
     MetaColumnAlias,
     MetaMetric,
@@ -70,7 +71,7 @@ def rebuild_vector_index(
     vector_store.clear_vector_tables()
 
     with sqlite_session() as session:
-        assets = build_vector_assets(session)
+        assets = build_vector_assets(session, datasource_name=getattr(settings, "default_datasource", DEFAULT_DATASOURCE))
 
     rows: list[VectorRow] = []
     for batch in _batched(assets, batch_size):
@@ -109,31 +110,32 @@ def rebuild_vector_index(
     )
 
 
-def build_vector_assets(session: Session) -> list[VectorAsset]:
-    aliases = _aliases_by_column(session)
+def build_vector_assets(session: Session, datasource_name: str = DEFAULT_DATASOURCE) -> list[VectorAsset]:
+    aliases = _aliases_by_column(session, datasource_name=datasource_name)
     assets: list[VectorAsset] = []
-    assets.extend(_table_assets(session))
-    assets.extend(_column_assets(session, aliases))
-    assets.extend(_metric_assets(session))
-    assets.extend(_verified_query_assets(session))
-    assets.extend(_value_assets(session))
+    assets.extend(_table_assets(session, datasource_name=datasource_name))
+    assets.extend(_column_assets(session, aliases, datasource_name=datasource_name))
+    assets.extend(_metric_assets(session, datasource_name=datasource_name))
+    assets.extend(_verified_query_assets(session, datasource_name=datasource_name))
+    assets.extend(_value_assets(session, datasource_name=datasource_name))
     return [asset for asset in assets if asset.text.strip()]
 
 
-def _table_assets(session: Session) -> list[VectorAsset]:
+def _table_assets(session: Session, datasource_name: str) -> list[VectorAsset]:
     tables = session.scalars(
         select(MetaTable)
-        .where(MetaTable.enabled.is_(True))
+        .where(MetaTable.enabled.is_(True), MetaTable.datasource == datasource_name)
         .order_by(MetaTable.table_name)
     ).all()
     return [
         VectorAsset(
             table_name="table_vectors",
             asset_type="table",
-            asset_id=table.table_name,
+            asset_id=_asset_id(datasource_name, table.table_name),
             text=_join_text(table.table_name, table.display_name, table.description, table.domain),
             metadata={
                 "table_name": table.table_name,
+                "datasource": table.datasource,
                 "display_name": table.display_name,
                 "description": table.description,
                 "domain": table.domain,
@@ -147,11 +149,12 @@ def _table_assets(session: Session) -> list[VectorAsset]:
 def _column_assets(
     session: Session,
     aliases: dict[tuple[str, str], list[str]],
+    datasource_name: str,
 ) -> list[VectorAsset]:
     columns = session.scalars(
         select(MetaColumn)
         .join(MetaTable)
-        .where(MetaTable.enabled.is_(True))
+        .where(MetaTable.enabled.is_(True), MetaTable.datasource == datasource_name)
         .order_by(MetaTable.table_name, MetaColumn.id)
     ).all()
     assets: list[VectorAsset] = []
@@ -163,7 +166,7 @@ def _column_assets(
             VectorAsset(
                 table_name="column_vectors",
                 asset_type="column",
-                asset_id=f"{table_name}.{column.column_name}",
+                asset_id=_asset_id(datasource_name, f"{table_name}.{column.column_name}"),
                 text=_join_text(
                     table_name,
                     column.column_name,
@@ -174,6 +177,7 @@ def _column_assets(
                 ),
                 metadata={
                     "table_name": table_name,
+                    "datasource": column.datasource,
                     "column_name": column.column_name,
                     "data_type": column.data_type,
                     "description": column.description,
@@ -187,16 +191,17 @@ def _column_assets(
     return assets
 
 
-def _metric_assets(session: Session) -> list[VectorAsset]:
+def _metric_assets(session: Session, datasource_name: str) -> list[VectorAsset]:
     metrics = session.scalars(
         select(MetaMetric)
-        .where(MetaMetric.enabled.is_(True))
+        .where(MetaMetric.enabled.is_(True), MetaMetric.datasource == datasource_name)
         .order_by(MetaMetric.name)
     ).all()
     assets = []
     for metric in metrics:
         metadata = {
             "name": metric.name,
+            "datasource": metric.datasource,
             "label": metric.label,
             "expression": metric.expression,
             "description": metric.description,
@@ -207,7 +212,7 @@ def _metric_assets(session: Session) -> list[VectorAsset]:
             VectorAsset(
                 table_name="metric_vectors",
                 asset_type="metric",
-                asset_id=metric.name,
+                asset_id=_asset_id(datasource_name, metric.name),
                 text=_join_text(
                     metric.name,
                     metric.label,
@@ -224,7 +229,7 @@ def _metric_assets(session: Session) -> list[VectorAsset]:
                 VectorAsset(
                     table_name="metric_vectors",
                     asset_type="metric",
-                    asset_id=f"{metric.name}:alias:{alias}",
+                    asset_id=_asset_id(datasource_name, f"{metric.name}:alias:{alias}"),
                     text=alias,
                     metadata={**metadata, "alias": alias},
                 )
@@ -232,20 +237,21 @@ def _metric_assets(session: Session) -> list[VectorAsset]:
     return assets
 
 
-def _verified_query_assets(session: Session) -> list[VectorAsset]:
+def _verified_query_assets(session: Session, datasource_name: str) -> list[VectorAsset]:
     queries = session.scalars(
         select(MetaVerifiedQuery)
-        .where(MetaVerifiedQuery.enabled.is_(True))
+        .where(MetaVerifiedQuery.enabled.is_(True), MetaVerifiedQuery.datasource == datasource_name)
         .order_by(MetaVerifiedQuery.query_id)
     ).all()
     return [
         VectorAsset(
             table_name="verified_query_vectors",
             asset_type="verified_query",
-            asset_id=query.query_id,
+            asset_id=_asset_id(datasource_name, query.query_id),
             text=_join_text(query.query_id, query.question, *_parse_json_list(query.tags)),
             metadata={
                 "query_id": query.query_id,
+                "datasource": query.datasource,
                 "question": query.question,
                 "sql": query.sql,
                 "tags": _parse_json_list(query.tags),
@@ -256,11 +262,15 @@ def _verified_query_assets(session: Session) -> list[VectorAsset]:
     ]
 
 
-def _value_assets(session: Session) -> list[VectorAsset]:
+def _value_assets(session: Session, datasource_name: str) -> list[VectorAsset]:
     columns = session.scalars(
         select(MetaColumn)
         .join(MetaTable)
-        .where(MetaTable.enabled.is_(True), MetaColumn.sample_values.is_not(None))
+        .where(
+            MetaTable.enabled.is_(True),
+            MetaTable.datasource == datasource_name,
+            MetaColumn.sample_values.is_not(None),
+        )
         .order_by(MetaTable.table_name, MetaColumn.id)
     ).all()
     assets: list[VectorAsset] = []
@@ -274,10 +284,11 @@ def _value_assets(session: Session) -> list[VectorAsset]:
                 VectorAsset(
                     table_name="value_vectors",
                     asset_type="value",
-                    asset_id=f"{table_name}.{column.column_name}:{text}",
+                    asset_id=_asset_id(datasource_name, f"{table_name}.{column.column_name}:{text}"),
                     text=text,
                     metadata={
                         "table_name": table_name,
+                        "datasource": column.datasource,
                         "column_name": column.column_name,
                         "value": text,
                     },
@@ -286,9 +297,9 @@ def _value_assets(session: Session) -> list[VectorAsset]:
     return assets
 
 
-def _aliases_by_column(session: Session) -> dict[tuple[str, str], list[str]]:
+def _aliases_by_column(session: Session, datasource_name: str) -> dict[tuple[str, str], list[str]]:
     aliases = session.scalars(
-        select(MetaColumnAlias).order_by(
+        select(MetaColumnAlias).where(MetaColumnAlias.datasource == datasource_name).order_by(
             MetaColumnAlias.table_name,
             MetaColumnAlias.column_name,
             MetaColumnAlias.alias,
@@ -298,6 +309,10 @@ def _aliases_by_column(session: Session) -> dict[tuple[str, str], list[str]]:
     for alias in aliases:
         result.setdefault((alias.table_name, alias.column_name), []).append(alias.alias)
     return result
+
+
+def _asset_id(datasource_name: str, local_asset_id: str) -> str:
+    return f"{datasource_name}:{local_asset_id}"
 
 
 def _batched(items: list[VectorAsset], batch_size: int) -> Iterable[list[VectorAsset]]:
