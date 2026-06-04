@@ -24,6 +24,24 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Do not aggregate fact_orders.payment_amount after joining fact_order_items" in system_prompt
 
 
+def test_sql_generation_prompt_uses_clickhouse_dialect_instructions():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="按月统计销售额",
+            schema_context="# Schema Context",
+            datasource_name="clickhouse_ecommerce",
+            datasource_dialect="clickhouse",
+        )
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "ClickHouse SQL dialect" in system_prompt
+    assert "toStartOfMonth()" in system_prompt
+    assert "countIf()" in system_prompt
+    assert "s3, url, hdfs, remote, or remoteSecure" in system_prompt
+    assert "Do not add time filters unless the user asks" in system_prompt
+
+
 def test_sql_generation_prompt_includes_schema_context_and_question():
     messages = build_sql_generation_messages(
         SQLGenerationRequest(
@@ -61,6 +79,8 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
     assert "Error stage: sql_guard" in repair_message
     assert "Error kind: fanout_guard" in repair_message
     assert "Joining fact_order_items can inflate sales amount." in repair_message
+    assert "Datasource dialect: duckdb" in repair_message
+    assert "Generate SQL valid for the datasource dialect above." in repair_message
     assert "Normalized SQL:" in repair_message
     assert "fact_order_items.item_amount" in repair_message
     assert "Return corrected SQL only." in repair_message

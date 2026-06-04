@@ -137,7 +137,8 @@ def _provider() -> MockLLMProvider:
     return MockLLMProvider(verified_queries_provider=_verified_query_payloads)
 
 
-def _verified_query_payloads() -> list[dict]:
+def _verified_query_payloads(datasource_name: str = "duckdb_ecommerce") -> list[dict]:
+    del datasource_name
     return [
         {
             "id": query.id,

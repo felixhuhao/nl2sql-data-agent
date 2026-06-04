@@ -6,11 +6,13 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
+from backend.app.connectors.registry import get_datasource_manager
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.sql_guard.models import GuardResult
 from backend.app.sql_guard.scope import GuardScope
 
 
-DIALECT = "duckdb"
+DEFAULT_DIALECT = "duckdb"
 MAX_RESULT_ROWS = 500
 BLOCKED_COMMANDS = {
     "ALTER",
@@ -24,16 +26,32 @@ BLOCKED_COMMANDS = {
     "TRUNCATE",
     "UPDATE",
 }
-BLOCKED_FUNCTIONS = {"read_csv", "read_json", "read_parquet"}
+CLICKHOUSE_BLOCKED_COMMANDS = {"SYSTEM", "KILL", "RENAME", "EXCHANGE"}
+DUCKDB_BLOCKED_FUNCTIONS = {"read_csv", "read_json", "read_parquet"}
+CLICKHOUSE_BLOCKED_FUNCTIONS = {"s3", "url", "hdfs", "remote", "remotesecure"}
 COMMAND_RE = re.compile(r"^\s*([a-zA-Z_]+)\b")
-BLOCKED_FUNCTION_RE = re.compile(
-    r"\b(read_csv|read_json|read_parquet)\s*\(",
+INSERT_INTO_FUNCTION_RE = re.compile(
+    r"\binsert\s+into\s+function\s+([a-zA-Z_][A-Za-z0-9_]*)\s*\(",
     re.IGNORECASE,
 )
 
 
-def guard_sql(sql: str, scope: GuardScope | None = None) -> GuardResult:
-    statements = _parse_statements(sql)
+def guard_sql(
+    sql: str,
+    scope: GuardScope | None = None,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> GuardResult:
+    dialect = _dialect_for_datasource(datasource_name)
+
+    insert_function_result = _check_insert_into_function(sql, dialect)
+    if insert_function_result is not None:
+        return insert_function_result
+
+    command_result = _check_blocked_command(sql, dialect)
+    if command_result is not None:
+        return command_result
+
+    statements = _parse_statements(sql, dialect)
     if isinstance(statements, GuardResult):
         return statements
 
@@ -41,11 +59,11 @@ def guard_sql(sql: str, scope: GuardScope | None = None) -> GuardResult:
         return _reject("syntax_guard", "Only one SQL statement is allowed.")
 
     expression = statements[0]
-    operation_result = _check_operation(sql, expression)
+    operation_result = _check_operation(expression)
     if operation_result is not None:
         return operation_result
 
-    function_result = _check_functions(sql, expression)
+    function_result = _check_functions(sql, expression, dialect)
     if function_result is not None:
         return function_result
 
@@ -66,16 +84,25 @@ def guard_sql(sql: str, scope: GuardScope | None = None) -> GuardResult:
     return GuardResult(
         allowed=True,
         stage="passed",
-        normalized_sql=expression.sql(dialect=DIALECT),
+        normalized_sql=expression.sql(dialect=dialect),
         warnings=warnings,
     )
 
 
-def _parse_statements(sql: str) -> list[exp.Expression] | GuardResult:
+def _dialect_for_datasource(datasource_name: str) -> str:
+    try:
+        return get_datasource_manager().get(datasource_name).dialect
+    except (KeyError, LookupError):
+        if datasource_name.startswith("clickhouse"):
+            return "clickhouse"
+        return DEFAULT_DIALECT
+
+
+def _parse_statements(sql: str, dialect: str) -> list[exp.Expression] | GuardResult:
     if not sql or not sql.strip():
         return _reject("syntax_guard", "SQL is empty.")
     try:
-        statements = [statement for statement in sqlglot.parse(sql, read=DIALECT) if statement is not None]
+        statements = [statement for statement in sqlglot.parse(sql, read=dialect) if statement is not None]
     except ParseError as exc:
         return _reject("syntax_guard", f"SQL parse failed: {exc}")
     if not statements:
@@ -83,11 +110,14 @@ def _parse_statements(sql: str) -> list[exp.Expression] | GuardResult:
     return statements
 
 
-def _check_operation(sql: str, expression: exp.Expression) -> GuardResult | None:
+def _check_blocked_command(sql: str, dialect: str) -> GuardResult | None:
     command = _leading_command(sql)
-    if command in BLOCKED_COMMANDS:
+    if command in _blocked_commands(dialect):
         return _reject("operation_guard", f"{command} is not allowed.")
+    return None
 
+
+def _check_operation(expression: exp.Expression) -> GuardResult | None:
     if isinstance(expression, exp.Union):
         return _reject("operation_guard", "UNION is not allowed in Phase 1.")
 
@@ -97,21 +127,54 @@ def _check_operation(sql: str, expression: exp.Expression) -> GuardResult | None
     return None
 
 
-def _check_functions(sql: str, expression: exp.Expression) -> GuardResult | None:
-    match = BLOCKED_FUNCTION_RE.search(sql)
+def _check_insert_into_function(sql: str, dialect: str) -> GuardResult | None:
+    if dialect != "clickhouse":
+        return None
+    match = INSERT_INTO_FUNCTION_RE.search(sql)
+    if match is None:
+        return None
+    name = match.group(1).lower()
+    if name in CLICKHOUSE_BLOCKED_FUNCTIONS:
+        return _reject("function_guard", f"INSERT INTO FUNCTION {name} is not allowed.")
+    return _reject("function_guard", "INSERT INTO FUNCTION is not allowed.")
+
+
+def _check_functions(sql: str, expression: exp.Expression, dialect: str) -> GuardResult | None:
+    blocked_functions = _blocked_functions(dialect)
+    function_re = _blocked_function_re(blocked_functions)
+    match = function_re.search(sql) if function_re is not None else None
     if match is not None:
         name = match.group(1).lower()
         return _reject("function_guard", f"{name} is not allowed.")
 
     for function in expression.find_all(exp.Func):
         name = function.sql_name().lower()
-        if name in BLOCKED_FUNCTIONS:
+        if name in blocked_functions:
             return _reject("function_guard", f"{name} is not allowed.")
     for table in expression.find_all(exp.Table):
         name = table.name.lower()
-        if name in BLOCKED_FUNCTIONS:
+        if name in blocked_functions:
             return _reject("function_guard", f"{name} is not allowed.")
     return None
+
+
+def _blocked_commands(dialect: str) -> set[str]:
+    if dialect == "clickhouse":
+        return BLOCKED_COMMANDS | CLICKHOUSE_BLOCKED_COMMANDS
+    return BLOCKED_COMMANDS
+
+
+def _blocked_functions(dialect: str) -> set[str]:
+    if dialect == "clickhouse":
+        return CLICKHOUSE_BLOCKED_FUNCTIONS
+    return DUCKDB_BLOCKED_FUNCTIONS
+
+
+def _blocked_function_re(blocked_functions: set[str]) -> re.Pattern | None:
+    if not blocked_functions:
+        return None
+    pattern = "|".join(sorted(re.escape(name) for name in blocked_functions))
+    return re.compile(rf"\b({pattern})\s*\(", re.IGNORECASE)
 
 
 def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult | None:

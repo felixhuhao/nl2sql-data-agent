@@ -3,6 +3,7 @@ import pytest
 import backend.app.agent.nodes as nodes_module
 from backend.app.agent.nodes import (
     build_context_node,
+    datasource_selected_node,
     execute_node,
     generate_sql_node,
     intent_guard_node,
@@ -26,10 +27,39 @@ from backend.app.sql_guard.scope import GuardScope
 def test_retrieve_context_node_sets_result_and_step():
     state = AgentState(question="test")
 
-    retrieve_context_node(state, retriever=lambda question: {"question": question, "tables": []})
+    retrieve_context_node(
+        state,
+        retriever=lambda question, datasource_name: {
+            "question": question,
+            "datasource": datasource_name,
+            "tables": [],
+        },
+    )
 
-    assert state.retrieval_result == {"question": "test", "tables": []}
+    assert state.retrieval_result == {"question": "test", "datasource": "duckdb_ecommerce", "tables": []}
     assert state.completed_steps == ["retrieve_context"]
+
+
+def test_datasource_selected_node_sets_datasource_metadata(monkeypatch):
+    class FakeConnector:
+        name = "clickhouse_ecommerce"
+        dialect = "clickhouse"
+        display_name = "ClickHouse (OLAP)"
+
+    class FakeManager:
+        def get(self, datasource_name: str):
+            assert datasource_name == "clickhouse_ecommerce"
+            return FakeConnector()
+
+    monkeypatch.setattr(nodes_module, "get_datasource_manager", lambda: FakeManager())
+    state = AgentState(question="test", datasource_name="clickhouse_ecommerce")
+
+    datasource_selected_node(state)
+
+    assert state.datasource_name == "clickhouse_ecommerce"
+    assert state.datasource_dialect == "clickhouse"
+    assert state.datasource_display_name == "ClickHouse (OLAP)"
+    assert state.completed_steps == ["datasource_selected"]
 
 
 @pytest.mark.parametrize(
@@ -63,22 +93,26 @@ def test_build_context_node_uses_retrieval_result(monkeypatch):
     monkeypatch.setattr(
         nodes_module,
         "build_focused_context_from_retrieval",
-        lambda retrieval_result: f"# Focused {retrieval_result['fallback_used']}",
+        lambda retrieval_result, datasource_name: f"# Focused {datasource_name} {retrieval_result['fallback_used']}",
     )
 
     build_context_node(state)
 
-    assert state.schema_context == "# Focused False"
+    assert state.schema_context == "# Focused duckdb_ecommerce False"
     assert state.completed_steps == ["build_context"]
 
 
 def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch):
     state = AgentState(question="test")
-    monkeypatch.setattr(nodes_module, "build_focused_context", lambda question: f"# Focused {question}")
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context",
+        lambda question, datasource_name: f"# Focused {datasource_name} {question}",
+    )
 
     build_context_node(state)
 
-    assert state.schema_context == "# Focused test"
+    assert state.schema_context == "# Focused duckdb_ecommerce test"
     assert state.completed_steps == ["build_context"]
 
 
@@ -193,7 +227,8 @@ def test_execute_node_skips_rejected_guard_result_without_overwriting_error():
 def test_run_query_workflow_executes_demo_question():
     executed_sql = []
 
-    def fake_executor(guard_result: GuardResult) -> QueryResult:
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        assert datasource_name == "duckdb_ecommerce"
         executed_sql.append(guard_result.normalized_sql)
         return QueryResult(
             columns=["date_value", "sales_amount", "order_count"],
@@ -223,6 +258,7 @@ def test_run_query_workflow_executes_demo_question():
     assert state.query_result.row_count == 1
     assert state.summary == "查询返回 1 行，字段：date_value, sales_amount, order_count。"
     assert state.completed_steps == [
+        "datasource_selected",
         "intent_guard",
         "build_context",
         "generate_sql",
@@ -247,26 +283,36 @@ def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypat
                 provider=self.name,
             )
 
-    def fake_executor(guard_result: GuardResult) -> QueryResult:
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        assert datasource_name == "duckdb_ecommerce"
         return QueryResult(columns=["order_id"], rows=[["O1"]], row_count=1)
 
     monkeypatch.setattr(
         nodes_module,
         "build_focused_context_from_retrieval",
-        lambda retrieval_result: "# Focused Context",
+        lambda retrieval_result, datasource_name: f"# Focused Context {datasource_name}",
     )
 
     state = run_query_workflow(
         "查询订单",
         provider=CapturingProvider(),
-        retriever=lambda question: {"question": question, "fallback_used": False},
+        retriever=lambda question, datasource_name: {
+            "question": question,
+            "datasource": datasource_name,
+            "fallback_used": False,
+        },
         scope_builder=_scope,
         executor=fake_executor,
     )
 
-    assert state.retrieval_result == {"question": "查询订单", "fallback_used": False}
-    assert captured_schema_context == ["# Focused Context"]
+    assert state.retrieval_result == {
+        "question": "查询订单",
+        "datasource": "duckdb_ecommerce",
+        "fallback_used": False,
+    }
+    assert captured_schema_context == ["# Focused Context duckdb_ecommerce"]
     assert state.completed_steps == [
+        "datasource_selected",
         "intent_guard",
         "retrieve_context",
         "build_context",
@@ -299,7 +345,7 @@ def test_run_query_workflow_stops_when_intent_guard_rejects_question():
     assert state.sql is None
     assert state.guard_result is None
     assert state.query_result is None
-    assert state.completed_steps == ["intent_guard"]
+    assert state.completed_steps == ["datasource_selected", "intent_guard"]
 
 
 def test_run_query_workflow_stops_when_guard_rejects_sql():
@@ -311,7 +357,7 @@ def test_run_query_workflow_stops_when_guard_rejects_sql():
 
     executed = []
 
-    def fake_executor(guard_result: GuardResult) -> QueryResult:
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
         executed.append(guard_result)
         return QueryResult(columns=[], rows=[], row_count=0)
 
@@ -332,10 +378,69 @@ def test_run_query_workflow_stops_when_guard_rejects_sql():
     assert state.explainability["guard_result"]["stage"] == "operation_guard"
     assert state.query_result is None
     assert executed == []
-    assert state.completed_steps == ["intent_guard", "build_context", "generate_sql", "sql_guard"]
+    assert state.completed_steps == ["datasource_selected", "intent_guard", "build_context", "generate_sql", "sql_guard"]
 
 
-def _scope() -> GuardScope:
+def test_run_query_workflow_passes_clickhouse_datasource_through_chain(monkeypatch):
+    captured = {}
+
+    class FakeConnector:
+        name = "clickhouse_ecommerce"
+        dialect = "clickhouse"
+        display_name = "ClickHouse (OLAP)"
+
+    class FakeManager:
+        def get(self, datasource_name: str):
+            assert datasource_name == "clickhouse_ecommerce"
+            return FakeConnector()
+
+    class CapturingProvider:
+        name = "capturing"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            captured["request_datasource"] = request.datasource_name
+            captured["request_dialect"] = request.datasource_dialect
+            return SQLGenerationResult(
+                sql="SELECT toStartOfMonth(dim_date.date_value) AS month FROM dim_date LIMIT 1",
+                provider=self.name,
+            )
+
+    def retriever(question: str, datasource_name: str) -> dict:
+        captured["retriever_datasource"] = datasource_name
+        return {"question": question, "fallback_used": False}
+
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        captured["executor_datasource"] = datasource_name
+        return QueryResult(columns=["month"], rows=[["2025-12-01"]], row_count=1)
+
+    monkeypatch.setattr(nodes_module, "get_datasource_manager", lambda: FakeManager())
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda retrieval_result, datasource_name: "# ClickHouse Context",
+    )
+
+    state = run_query_workflow(
+        "按月统计",
+        provider=CapturingProvider(),
+        retriever=retriever,
+        scope_builder=_scope,
+        executor=executor,
+        datasource_name="clickhouse_ecommerce",
+    )
+
+    assert state.datasource_dialect == "clickhouse"
+    assert state.datasource_display_name == "ClickHouse (OLAP)"
+    assert captured == {
+        "retriever_datasource": "clickhouse_ecommerce",
+        "request_datasource": "clickhouse_ecommerce",
+        "request_dialect": "clickhouse",
+        "executor_datasource": "clickhouse_ecommerce",
+    }
+
+
+def _scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:
+    del datasource_name
     return GuardScope(
         allowed_tables=frozenset({"fact_orders", "dim_date"}),
         table_columns={

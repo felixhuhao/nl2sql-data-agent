@@ -1,38 +1,39 @@
-from pathlib import Path
-from uuid import uuid4
-
-import duckdb
 import pytest
 
 from backend.app.execution import runner
+from backend.app.connectors.schema import RawResult
 from backend.app.sql_guard.models import GuardResult
 
 
-def test_execute_guarded_sql_uses_readonly_connection(monkeypatch):
-    db_path = _create_test_duckdb()
-    try:
-        read_only_flags = []
+def test_execute_guarded_sql_delegates_to_datasource_connector(monkeypatch):
+    calls = []
 
-        def fake_get_duckdb_connection(read_only=False):
-            read_only_flags.append(read_only)
-            return duckdb.connect(str(db_path), read_only=read_only)
+    class FakeConnector:
+        def execute(self, sql: str):
+            calls.append(sql)
+            return RawResult(columns=["id", "amount"], rows=[[1, 10], [2, 20]], row_count=2)
 
-        monkeypatch.setattr(runner, "get_duckdb_connection", fake_get_duckdb_connection)
+    class FakeManager:
+        def get(self, datasource_name: str):
+            assert datasource_name == "clickhouse_ecommerce"
+            return FakeConnector()
 
-        result = runner.execute_guarded_sql(
-            GuardResult(
-                allowed=True,
-                stage="passed",
-                normalized_sql="SELECT id, amount FROM orders ORDER BY id LIMIT 2",
-            )
-        )
+    monkeypatch.setattr(runner, "get_datasource_manager", lambda: FakeManager())
 
-        assert read_only_flags == [True]
-        assert result.columns == ["id", "amount"]
-        assert result.rows == [[1, 10], [2, 20]]
-        assert result.row_count == 2
-    finally:
-        _delete_test_duckdb(db_path)
+    result = runner.execute_guarded_sql(
+        GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql="SELECT id, amount FROM orders ORDER BY id LIMIT 2",
+        ),
+        datasource_name="clickhouse_ecommerce",
+    )
+
+    assert calls == ["SELECT id, amount FROM orders ORDER BY id LIMIT 2"]
+    assert result.columns == ["id", "amount"]
+    assert result.rows == [[1, 10], [2, 20]]
+    assert result.row_count == 2
+    assert result.elapsed_ms is not None
 
 
 def test_execute_guarded_sql_rejects_failed_guard_result():
@@ -53,40 +54,22 @@ def test_execute_guarded_sql_requires_normalized_sql():
         runner.execute_guarded_sql(guard_result)
 
 
-def test_readonly_connection_rejects_write_sql(monkeypatch):
-    db_path = _create_test_duckdb()
-    try:
-        def fake_get_duckdb_connection(read_only=False):
-            return duckdb.connect(str(db_path), read_only=read_only)
+def test_execute_guarded_sql_propagates_connector_errors(monkeypatch):
+    class FakeConnector:
+        def execute(self, sql: str):
+            raise RuntimeError(f"readonly connector rejected: {sql}")
 
-        monkeypatch.setattr(runner, "get_duckdb_connection", fake_get_duckdb_connection)
+    class FakeManager:
+        def get(self, datasource_name: str):
+            return FakeConnector()
 
-        with pytest.raises(duckdb.Error):
-            runner.execute_guarded_sql(
-                GuardResult(
-                    allowed=True,
-                    stage="passed",
-                    normalized_sql="CREATE TABLE should_fail AS SELECT 1 AS id",
-                )
+    monkeypatch.setattr(runner, "get_datasource_manager", lambda: FakeManager())
+
+    with pytest.raises(RuntimeError, match="readonly connector rejected"):
+        runner.execute_guarded_sql(
+            GuardResult(
+                allowed=True,
+                stage="passed",
+                normalized_sql="CREATE TABLE should_fail AS SELECT 1 AS id",
             )
-    finally:
-        _delete_test_duckdb(db_path)
-
-
-def _create_test_duckdb() -> Path:
-    data_dir = Path("data")
-    data_dir.mkdir(exist_ok=True)
-    db_path = data_dir / f"test_execution_runner_{uuid4().hex}.duckdb"
-    connection = duckdb.connect(str(db_path))
-    try:
-        connection.execute("CREATE TABLE orders (id INTEGER, amount INTEGER)")
-        connection.execute("INSERT INTO orders VALUES (1, 10), (2, 20), (3, 30)")
-    finally:
-        connection.close()
-    return db_path
-
-
-def _delete_test_duckdb(db_path: Path) -> None:
-    for path in [db_path, db_path.with_suffix(".duckdb.wal")]:
-        if path.exists():
-            path.unlink()
+        )

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from backend.app.agent.state import AgentState
 from backend.app.agent.explainability import build_query_explainability
+from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
+from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.llm_provider import (
     LLMProvider,
     MockLLMProvider,
@@ -12,6 +13,7 @@ from backend.app.core.llm_provider import (
     SQLRepairContext,
 )
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context, build_focused_context_from_retrieval
 from backend.app.sql_guard.guard import guard_sql
@@ -19,8 +21,8 @@ from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
 
 
 SchemaContextBuilder = Callable[[], str]
-Retriever = Callable[[str], dict]
-ScopeBuilder = Callable[[], GuardScope]
+Retriever = Callable[..., dict]
+ScopeBuilder = Callable[..., GuardScope]
 SQLExecutor = Callable[..., QueryResult]
 
 
@@ -52,8 +54,12 @@ def run_query_workflow(
     retriever: Retriever = retrieve_metadata_assets,
     scope_builder: ScopeBuilder = build_default_guard_scope,
     executor: SQLExecutor = execute_guarded_sql,
+    datasource_name: str = DEFAULT_DATASOURCE,
 ) -> AgentState:
-    state = AgentState(question=question)
+    state = AgentState(question=question, datasource_name=datasource_name)
+    datasource_selected_node(state)
+    if state.stopped_at is not None:
+        return state
     intent_guard_node(state)
     if state.stopped_at is not None:
         return state
@@ -66,6 +72,20 @@ def run_query_workflow(
         return state
     execute_node(state, executor=executor)
     summarize_node(state)
+    return state
+
+
+def datasource_selected_node(state: AgentState) -> AgentState:
+    try:
+        connector = get_datasource_manager().get(state.datasource_name)
+    except (KeyError, LookupError) as exc:
+        state.error = str(exc)
+        state.stopped_at = "datasource_selected"
+    else:
+        state.datasource_name = connector.name
+        state.datasource_dialect = connector.dialect
+        state.datasource_display_name = connector.display_name
+    state.completed_steps.append("datasource_selected")
     return state
 
 
@@ -82,7 +102,7 @@ def retrieve_context_node(
     state: AgentState,
     retriever: Retriever = retrieve_metadata_assets,
 ) -> AgentState:
-    state.retrieval_result = retriever(state.question)
+    state.retrieval_result = retriever(state.question, datasource_name=state.datasource_name)
     state.completed_steps.append("retrieve_context")
     return state
 
@@ -94,9 +114,12 @@ def build_context_node(
     if schema_context_builder is not None:
         state.schema_context = schema_context_builder()
     elif state.retrieval_result is not None:
-        state.schema_context = build_focused_context_from_retrieval(state.retrieval_result)
+        state.schema_context = build_focused_context_from_retrieval(
+            state.retrieval_result,
+            datasource_name=state.datasource_name,
+        )
     else:
-        state.schema_context = build_focused_context(state.question)
+        state.schema_context = build_focused_context(state.question, datasource_name=state.datasource_name)
     state.completed_steps.append("build_context")
     return state
 
@@ -112,6 +135,8 @@ def generate_sql_node(
         SQLGenerationRequest(
             question=state.question,
             schema_context=state.schema_context,
+            datasource_name=state.datasource_name,
+            datasource_dialect=state.datasource_dialect,
         )
     )
     state.sql = normalize_generated_sql(result.sql)
@@ -134,6 +159,8 @@ def repair_sql_node(
             question=state.question,
             schema_context=state.schema_context,
             repair=repair_context,
+            datasource_name=state.datasource_name,
+            datasource_dialect=state.datasource_dialect,
         )
     )
     state.sql = normalize_generated_sql(result.sql)
@@ -163,11 +190,17 @@ def sql_guard_node(
     if state.sql is None:
         raise ValueError("sql is required before SQL Guard.")
 
-    state.guard_result = guard_sql(state.sql, scope=scope_builder())
+    state.guard_result = guard_sql(
+        state.sql,
+        scope=scope_builder(datasource_name=state.datasource_name),
+        datasource_name=state.datasource_name,
+    )
     state.explainability = build_query_explainability(
         sql=state.guard_result.normalized_sql or state.sql,
         question=state.question,
         guard_result=state.guard_result,
+        datasource_name=state.datasource_name,
+        datasource_dialect=state.datasource_dialect,
     )
     state.completed_steps.append("sql_guard")
     if not state.guard_result.allowed:
@@ -185,7 +218,7 @@ def execute_node(
     if not state.guard_result.allowed:
         return state
 
-    state.query_result = executor(state.guard_result)
+    state.query_result = executor(state.guard_result, datasource_name=state.datasource_name)
     state.completed_steps.append("execute")
     return state
 

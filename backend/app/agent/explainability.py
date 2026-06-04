@@ -7,6 +7,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from backend.app.config import get_settings
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import list_relationships
 from backend.app.sql_guard.models import GuardResult
 
@@ -15,20 +16,26 @@ def build_query_explainability(
     sql: str,
     question: str,
     guard_result: GuardResult,
+    datasource_name: str = DEFAULT_DATASOURCE,
+    datasource_dialect: str = "duckdb",
 ) -> dict:
-    matched_tables, matched_columns = _extract_sql_assets(sql)
+    matched_tables, matched_columns = _extract_sql_assets(sql, dialect=datasource_dialect)
     return {
+        "datasource": {
+            "name": datasource_name,
+            "dialect": datasource_dialect,
+        },
         "matched_tables": matched_tables,
         "matched_columns": matched_columns,
-        "join_paths": _matched_join_paths(matched_tables),
+        "join_paths": _matched_join_paths(matched_tables, datasource_name=datasource_name),
         "date_interpretation": _date_interpretation(question),
         "guard_result": guard_result.model_dump(),
     }
 
 
-def _extract_sql_assets(sql: str) -> tuple[list[str], list[str]]:
+def _extract_sql_assets(sql: str, dialect: str = "duckdb") -> tuple[list[str], list[str]]:
     try:
-        expression = sqlglot.parse_one(sql, read="duckdb")
+        expression = sqlglot.parse_one(sql, read=dialect)
     except ParseError:
         return [], []
 
@@ -55,11 +62,11 @@ def _table_aliases(expression: exp.Expression) -> dict[str, str]:
     return aliases
 
 
-def _matched_join_paths(matched_tables: list[str]) -> list[dict]:
+def _matched_join_paths(matched_tables: list[str], datasource_name: str = DEFAULT_DATASOURCE) -> list[dict]:
     matched_table_set = set(matched_tables)
     return [
         relationship
-        for relationship in list_relationships()
+        for relationship in list_relationships(datasource_name=datasource_name)
         if relationship["source_table"] in matched_table_set
         and relationship["target_table"] in matched_table_set
     ]

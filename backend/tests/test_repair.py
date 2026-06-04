@@ -81,7 +81,7 @@ def test_iter_sql_repair_events_repairs_guard_failure_and_backfills_history():
             state,
             provider=provider,
             scope_builder=_scope,
-            executor=lambda guard_result: QueryResult(
+            executor=lambda guard_result, datasource_name: QueryResult(
                 columns=["payment_amount"],
                 rows=[[100]],
                 row_count=1,
@@ -124,7 +124,7 @@ def test_iter_sql_repair_events_repairs_execution_failure_and_backfills_history(
     provider = _ScriptedRepairProvider(["SELECT order_id FROM fact_orders"])
     calls = []
 
-    def executor(guard_result: GuardResult) -> QueryResult:
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
         calls.append(guard_result.normalized_sql)
         if len(calls) == 1:
             raise CatalogException("Catalog Error: Column does not exist")
@@ -162,7 +162,7 @@ def test_iter_sql_repair_events_does_not_repair_operation_guard():
             state,
             provider=provider,
             scope_builder=_scope,
-            executor=lambda guard_result: QueryResult(columns=[], rows=[], row_count=0),
+            executor=lambda guard_result, datasource_name: QueryResult(columns=[], rows=[], row_count=0),
         )
     )
 
@@ -191,7 +191,7 @@ def test_iter_sql_repair_events_stops_after_max_repair_attempts():
             state,
             provider=provider,
             scope_builder=_scope,
-            executor=lambda guard_result: QueryResult(columns=[], rows=[], row_count=0),
+            executor=lambda guard_result, datasource_name: QueryResult(columns=[], rows=[], row_count=0),
         )
     )
 
@@ -224,7 +224,8 @@ class _ScriptedRepairProvider:
         return SQLGenerationResult(sql=self._repair_sqls.pop(0), provider=self.name)
 
 
-def _scope() -> GuardScope:
+def _scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:
+    del datasource_name
     return GuardScope(
         allowed_tables=frozenset({"fact_orders"}),
         table_columns={

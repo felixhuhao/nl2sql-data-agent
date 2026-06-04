@@ -97,3 +97,56 @@ def test_external_read_functions_are_rejected(sql):
 
     assert result.allowed is False
     assert result.stage == "function_guard"
+
+
+def test_clickhouse_select_uses_clickhouse_dialect():
+    result = guard_sql(
+        "SELECT toStartOfMonth(date_value) AS month FROM dim_date",
+        datasource_name="clickhouse_ecommerce",
+    )
+
+    assert result.allowed is True
+    assert result.stage == "passed"
+    assert result.normalized_sql is not None
+    assert "dateTrunc('MONTH', date_value)" in result.normalized_sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SYSTEM FLUSH LOGS",
+        "KILL QUERY WHERE query_id = 'x'",
+        "RENAME TABLE old_name TO new_name",
+        "EXCHANGE TABLES a AND b",
+    ],
+)
+def test_clickhouse_blocked_operations_are_rejected(sql):
+    result = guard_sql(sql, datasource_name="clickhouse_ecommerce")
+
+    assert result.allowed is False
+    assert result.stage == "operation_guard"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM s3('https://example.com/file.csv')",
+        "SELECT * FROM url('https://example.com/file.csv')",
+        "SELECT * FROM remote('host', db, table)",
+    ],
+)
+def test_clickhouse_external_functions_are_rejected(sql):
+    result = guard_sql(sql, datasource_name="clickhouse_ecommerce")
+
+    assert result.allowed is False
+    assert result.stage == "function_guard"
+
+
+def test_clickhouse_insert_into_function_is_rejected_as_function_guard():
+    result = guard_sql(
+        "INSERT INTO FUNCTION url('https://example.com/out.csv') SELECT * FROM fact_orders",
+        datasource_name="clickhouse_ecommerce",
+    )
+
+    assert result.allowed is False
+    assert result.stage == "function_guard"

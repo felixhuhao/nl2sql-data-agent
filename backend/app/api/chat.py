@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from backend.app.agent.nodes import (
     build_context_node,
+    datasource_selected_node,
     generate_sql_node,
     intent_guard_node,
     retrieve_context_node,
@@ -21,6 +22,7 @@ from backend.app.config import get_settings
 from backend.app.core.deepseek_provider import DeepSeekProvider
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
 from backend.app.visualization.recommender import recommend_chart
@@ -31,26 +33,41 @@ logger = logging.getLogger(__name__)
 
 class ChatQueryRequest(BaseModel):
     question: str
+    datasource: str = DEFAULT_DATASOURCE
 
 
 @router.post("/query")
 def query_endpoint(request: ChatQueryRequest) -> StreamingResponse:
     return StreamingResponse(
-        iter_chat_events(request.question),
+        iter_chat_events(request.question, datasource_name=request.datasource),
         media_type="text/event-stream",
     )
 
 
 def iter_chat_events(
     question: str,
+    datasource_name: str = DEFAULT_DATASOURCE,
     provider: LLMProvider | None = None,
     schema_context_builder=None,
     retriever=retrieve_metadata_assets,
     scope_builder=build_default_guard_scope,
     executor=execute_guarded_sql,
 ) -> Iterator[str]:
-    state = AgentState(question=question)
+    state = AgentState(question=question, datasource_name=datasource_name)
     try:
+        datasource_selected_node(state)
+        if state.stopped_at is not None:
+            yield _sse_event(
+                "error",
+                {
+                    "step": state.stopped_at,
+                    "reason": state.error,
+                    "error_kind": "failure",
+                },
+            )
+            return
+        yield _sse_event("step", _datasource_step_payload(state))
+
         intent_guard_node(state)
         if state.stopped_at is not None:
             yield _sse_event(
@@ -126,6 +143,7 @@ def iter_chat_events(
                 "chart_recommendation": chart_recommendation.model_dump(),
                 "explainability": state.explainability,
                 "repair_history": state.repair_history,
+                "datasource": _datasource_payload(state),
             },
         )
     except httpx.ReadTimeout:
@@ -192,6 +210,24 @@ def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
     }
 
 
+def _datasource_step_payload(state: AgentState) -> dict:
+    return {
+        "step": "datasource_selected",
+        "status": "completed",
+        "name": state.datasource_name,
+        "dialect": state.datasource_dialect,
+        "display_name": state.datasource_display_name,
+    }
+
+
+def _datasource_payload(state: AgentState) -> dict:
+    return {
+        "name": state.datasource_name,
+        "dialect": state.datasource_dialect,
+        "display_name": state.datasource_display_name,
+    }
+
+
 def _repair_step_payload(event: RepairEvent) -> dict:
     if event.step == "sql_guard":
         return {
@@ -205,6 +241,7 @@ def _repair_step_payload(event: RepairEvent) -> dict:
             "status": "completed",
             "columns": event.state.query_result.columns if event.state.query_result else [],
             "row_count": event.state.query_result.row_count if event.state.query_result else 0,
+            "elapsed_ms": event.state.query_result.elapsed_ms if event.state.query_result else None,
         }
     if event.step == "repair_sql":
         latest_repair = event.state.repair_history[-1] if event.state.repair_history else {}

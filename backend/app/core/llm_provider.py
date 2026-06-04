@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import list_verified_queries
 
 
@@ -22,6 +23,8 @@ class SQLGenerationRequest:
     question: str
     schema_context: str
     repair: SQLRepairContext | None = None
+    datasource_name: str = DEFAULT_DATASOURCE
+    datasource_dialect: str = "duckdb"
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ class LLMProvider(Protocol):
 class MockLLMProvider:
     name = "mock"
 
-    def __init__(self, verified_queries_provider: Callable[[], list[dict]] = list_verified_queries):
+    def __init__(self, verified_queries_provider: Callable[..., list[dict]] = list_verified_queries):
         self._verified_queries_provider = verified_queries_provider
 
     def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
@@ -50,7 +53,10 @@ class MockLLMProvider:
         if unsafe_sql is not None:
             return SQLGenerationResult(sql=unsafe_sql, provider=self.name)
 
-        verified_query = _match_verified_query(question, self._verified_queries_provider())
+        verified_query = _match_verified_query(
+            question,
+            self._verified_queries_provider(datasource_name=request.datasource_name),
+        )
         if verified_query is not None:
             return SQLGenerationResult(
                 sql=verified_query["sql"],

@@ -1,12 +1,16 @@
 from dataclasses import dataclass, field
 
 from backend.app.execution.runner import QueryResult
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.sql_guard.models import GuardResult
 
 
 @dataclass
 class AgentState:
     question: str
+    datasource_name: str = DEFAULT_DATASOURCE
+    datasource_dialect: str = "duckdb"
+    datasource_display_name: str = "DuckDB (本地)"
     retrieval_result: dict | None = None
     schema_context: str | None = None
     sql: str | None = None
