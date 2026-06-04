@@ -23,6 +23,7 @@ data/*.duckdb
 data/*.duckdb.wal
 data/*.sqlite
 data/*.sqlite-*
+data/clickhouse_csv/
 
 .DS_Store
 Thumbs.db

@@ -112,7 +112,7 @@ def create_datasource_manager(settings) -> DataSourceManager:
 clickhouse_host: str = "localhost"
 clickhouse_port: int = 8123
 clickhouse_user: str = "default"
-clickhouse_password: str = ""
+clickhouse_password: str = "clickhouse"
 clickhouse_database: str = "ecommerce"
 clickhouse_enabled: bool = False    # 默认关闭，不影响现有行为
 clickhouse_readonly: bool = True    # 连接级只读模式
@@ -391,7 +391,7 @@ services:
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
       CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_PASSWORD: clickhouse
       CLICKHOUSE_DB: ecommerce
     healthcheck:
       test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
@@ -407,35 +407,34 @@ services:
 ```sql
 -- fact_orders: 字段名与 DuckDB 电商数仓完全一致
 CREATE TABLE ecommerce.fact_orders (
-    order_id       UInt64,
-    total_amount   Decimal(12,2),
-    discount_amount Decimal(12,2),
-    payment_amount Decimal(12,2),
-    order_status   LowCardinality(String),
-    user_key       UInt64,
+    order_id       String,
+    user_key       UInt32,
     region_key     UInt32,
     channel_key    UInt32,
     date_key       UInt32,
-    created_at     DateTime
+    total_amount   Decimal(12,2),
+    discount_amount Decimal(12,2),
+    payment_amount Decimal(12,2),
+    order_status   LowCardinality(String)
 )
 ENGINE = MergeTree()
 PARTITION BY intDiv(date_key, 100)         -- date_key 为 YYYYMMDD 整数，按 YYYYMM 分区
-ORDER BY (date_key, region_key, channel_key)
+ORDER BY (date_key, region_key, channel_key, order_id)
 PRIMARY KEY (date_key, region_key, channel_key);
 
 -- fact_order_items
 CREATE TABLE ecommerce.fact_order_items (
-    item_id     UInt64,
-    order_id    UInt64,
+    item_id     String,
+    order_id    String,
     product_key UInt32,
+    date_key    UInt32,
     quantity    UInt32,
     unit_price  Decimal(12,2),
-    item_amount Decimal(12,2),
-    date_key    UInt32
+    item_amount Decimal(12,2)
 )
 ENGINE = MergeTree()
 PARTITION BY intDiv(date_key, 100)
-ORDER BY (date_key, product_key)
+ORDER BY (date_key, product_key, order_id, item_id)
 PRIMARY KEY (date_key, product_key);
 
 -- 维表用简单 MergeTree，按主键排序
@@ -469,19 +468,20 @@ ENGINE = MergeTree()
 ORDER BY channel_key;
 
 CREATE TABLE ecommerce.dim_products (
-    product_key   UInt32,
-    product_id    UInt64,
-    category      LowCardinality(String),
-    sub_category  LowCardinality(String),
-    brand         LowCardinality(String),
-    price         Decimal(12,2)
+    product_key  UInt32,
+    product_id   String,
+    name         String,
+    category     LowCardinality(String),
+    sub_category LowCardinality(String),
+    brand        LowCardinality(String),
+    price        Decimal(12,2)
 )
 ENGINE = MergeTree()
 ORDER BY product_key;
 
 CREATE TABLE ecommerce.dim_users (
-    user_key      UInt64,
-    user_id       UInt64,
+    user_key      UInt32,
+    user_id       String,
     name          String,
     gender        LowCardinality(String),
     age_group     LowCardinality(String),

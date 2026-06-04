@@ -2,6 +2,7 @@ import logging
 from functools import lru_cache
 
 from backend.app.config import Settings, get_settings
+from backend.app.connectors.clickhouse import ClickHouseConnector
 from backend.app.connectors.duckdb import DuckDBConnector
 from backend.app.connectors.manager import DataSourceManager
 
@@ -13,7 +14,12 @@ def create_datasource_manager(settings: Settings) -> DataSourceManager:
     manager.register(DuckDBConnector(settings))
 
     if settings.clickhouse_enabled:
-        logger.warning("ClickHouse datasource is enabled but ClickHouseConnector is not implemented until I6.2.")
+        try:
+            clickhouse_connector = ClickHouseConnector(settings)
+            clickhouse_connector.ping()
+            manager.register(clickhouse_connector)
+        except Exception as exc:
+            logger.warning("ClickHouse connection failed, skipping registration: %s", exc)
 
     return manager
 

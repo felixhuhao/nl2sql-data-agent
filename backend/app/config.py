@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
     clickhouse_user: str = "default"
-    clickhouse_password: str = ""
+    clickhouse_password: str = "clickhouse"
     clickhouse_database: str = "ecommerce"
     clickhouse_readonly: bool = True
     clickhouse_max_execution_time: int = 30
