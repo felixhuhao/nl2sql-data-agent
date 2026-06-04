@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     embedding_dimension: int | None = None
     vector_similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     value_vector_similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    default_datasource: str = "duckdb_ecommerce"
+    clickhouse_enabled: bool = False
+    clickhouse_host: str = "localhost"
+    clickhouse_port: int = 8123
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "ecommerce"
+    clickhouse_readonly: bool = True
+    clickhouse_max_execution_time: int = 30
+    clickhouse_max_result_rows: int = 10000
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / "backend" / ".env",
