@@ -22,6 +22,16 @@ def test_create_metadata_schema_includes_phase2_semantic_tables():
         "meta_verified_queries",
         "meta_analysis_spaces",
     }.issubset(table_names)
+    table_columns = {column["name"] for column in inspect(engine).get_columns("meta_tables")}
+    column_columns = {column["name"] for column in inspect(engine).get_columns("meta_columns")}
+    assert {"engine", "partition_key", "sorting_key"}.issubset(table_columns)
+    assert {
+        "nullable",
+        "is_partition_key",
+        "is_sorting_key",
+        "is_primary_key",
+        "low_cardinality",
+    }.issubset(column_columns)
 
 
 def test_create_metadata_schema_migrates_legacy_datasource_schema_with_indexes():

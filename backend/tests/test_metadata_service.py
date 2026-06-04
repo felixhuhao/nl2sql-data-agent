@@ -248,6 +248,58 @@ def test_build_focused_context_filters_columns_by_datasource(monkeypatch):
     assert "duckdb amount" not in focused_context
 
 
+def test_build_schema_context_includes_clickhouse_dialect_and_olap_metadata(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    with Session(engine) as session:
+        table = MetaTable(
+            datasource=CLICKHOUSE_DATASOURCE,
+            table_name="fact_orders",
+            display_name="订单事实表",
+            description="订单支付金额",
+            row_count=12,
+            enabled=True,
+            engine="MergeTree",
+            partition_key="intDiv(date_key, 100)",
+            sorting_key="date_key, order_id",
+        )
+        session.add(table)
+        session.flush()
+        session.add(
+            MetaColumn(
+                datasource=CLICKHOUSE_DATASOURCE,
+                table_id=table.id,
+                column_name="order_status",
+                data_type="String",
+                description="订单状态",
+                nullable=True,
+                is_partition_key=True,
+                is_sorting_key=True,
+                is_primary_key=True,
+                low_cardinality=True,
+            )
+        )
+        session.add(
+            MetaAnalysisSpace(
+                name="clickhouse_space",
+                datasource=CLICKHOUSE_DATASOURCE,
+                tables=json.dumps(["fact_orders"], ensure_ascii=False),
+                enabled_metrics=json.dumps([], ensure_ascii=False),
+                allowed_operations=json.dumps(["select"], ensure_ascii=False),
+                enabled=True,
+            )
+        )
+        session.commit()
+
+    schema_context = service.build_schema_context(datasource_name=CLICKHOUSE_DATASOURCE)
+
+    assert "- dialect = clickhouse" in schema_context
+    assert "toStartOfMonth()" in schema_context
+    assert "engine=MergeTree" in schema_context
+    assert "partition_key=intDiv(date_key, 100)" in schema_context
+    assert "sorting_key=date_key, order_id" in schema_context
+    assert "order_status (String) [nullable, partition_key, sorting_key, primary_key, low_cardinality]" in schema_context
+
+
 def _patch_service_db(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     create_metadata_schema(engine)

@@ -129,19 +129,30 @@ def _table_assets(session: Session, datasource_name: str) -> list[VectorAsset]:
     ).all()
     return [
         VectorAsset(
-            table_name="table_vectors",
-            asset_type="table",
-            asset_id=_asset_id(datasource_name, table.table_name),
-            text=_join_text(table.table_name, table.display_name, table.description, table.domain),
-            metadata={
-                "table_name": table.table_name,
-                "datasource": table.datasource,
-                "display_name": table.display_name,
-                "description": table.description,
-                "domain": table.domain,
-                "row_count": table.row_count,
-            },
-        )
+                table_name="table_vectors",
+                asset_type="table",
+                asset_id=_asset_id(datasource_name, table.table_name),
+                text=_join_text(
+                    table.table_name,
+                    table.display_name,
+                    table.description,
+                    table.domain,
+                    table.engine,
+                    table.partition_key,
+                    table.sorting_key,
+                ),
+                metadata={
+                    "table_name": table.table_name,
+                    "datasource": table.datasource,
+                    "display_name": table.display_name,
+                    "description": table.description,
+                    "domain": table.domain,
+                    "row_count": table.row_count,
+                    "engine": table.engine,
+                    "partition_key": table.partition_key,
+                    "sorting_key": table.sorting_key,
+                },
+            )
         for table in tables
     ]
 
@@ -172,6 +183,7 @@ def _column_assets(
                     column.column_name,
                     column.description,
                     column.data_type,
+                    *_column_flag_text(column),
                     *alias_values,
                     *[str(value) for value in sample_values],
                 ),
@@ -181,8 +193,13 @@ def _column_assets(
                     "column_name": column.column_name,
                     "data_type": column.data_type,
                     "description": column.description,
+                    "nullable": column.nullable,
                     "is_dimension": column.is_dimension,
                     "is_metric": column.is_metric,
+                    "is_partition_key": column.is_partition_key,
+                    "is_sorting_key": column.is_sorting_key,
+                    "is_primary_key": column.is_primary_key,
+                    "low_cardinality": column.low_cardinality,
                     "aliases": alias_values,
                     "sample_values": sample_values,
                 },
@@ -313,6 +330,21 @@ def _aliases_by_column(session: Session, datasource_name: str) -> dict[tuple[str
 
 def _asset_id(datasource_name: str, local_asset_id: str) -> str:
     return f"{datasource_name}:{local_asset_id}"
+
+
+def _column_flag_text(column: MetaColumn) -> list[str]:
+    flags = []
+    if column.nullable:
+        flags.append("nullable")
+    if column.is_partition_key:
+        flags.append("partition_key")
+    if column.is_sorting_key:
+        flags.append("sorting_key")
+    if column.is_primary_key:
+        flags.append("primary_key")
+    if column.low_cardinality:
+        flags.append("low_cardinality")
+    return flags
 
 
 def _batched(items: list[VectorAsset], batch_size: int) -> Iterable[list[VectorAsset]]:

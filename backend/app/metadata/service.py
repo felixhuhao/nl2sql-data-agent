@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlglot.errors import SqlglotError
 
 from backend.app.config import get_settings
+from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
     DEFAULT_DATASOURCE,
@@ -33,6 +34,20 @@ from backend.app.sql_guard import GuardScope, guard_sql
 
 
 QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
+DIALECT_CONTEXT_HINTS = {
+    "clickhouse": [
+        "- dialect = clickhouse",
+        "- Use ClickHouse SQL functions such as toStartOfDay(), toStartOfMonth(), toYYYYMM(), dateDiff().",
+        "- Use ClickHouse casts such as toFloat64(), toString(), toInt32().",
+        "- countIf() and sumIf() are available for conditional aggregations.",
+        "- Do not add time filters unless the user asks for a time range.",
+    ],
+    "duckdb": [
+        "- dialect = duckdb",
+        "- Use DuckDB SQL syntax and date functions such as DATE_TRUNC().",
+        "- Do not add time filters unless the user asks for a time range.",
+    ],
+}
 
 
 class MetadataAdminError(ValueError):
@@ -57,6 +72,9 @@ def list_tables(datasource_name: str = DEFAULT_DATASOURCE) -> list[dict]:
                 "description": table.description,
                 "domain": table.domain,
                 "row_count": table.row_count,
+                "engine": table.engine,
+                "partition_key": table.partition_key,
+                "sorting_key": table.sorting_key,
             }
             for table in tables
         ]
@@ -80,9 +98,14 @@ def list_columns(table_name: str, datasource_name: str = DEFAULT_DATASOURCE) -> 
                 "column_name": column.column_name,
                 "data_type": column.data_type,
                 "description": column.description,
+                "nullable": column.nullable,
                 "is_dimension": column.is_dimension,
                 "is_metric": column.is_metric,
                 "sample_values": column.sample_values,
+                "is_partition_key": column.is_partition_key,
+                "is_sorting_key": column.is_sorting_key,
+                "is_primary_key": column.is_primary_key,
+                "low_cardinality": column.low_cardinality,
             }
             for column in columns
         ]
@@ -354,6 +377,7 @@ def update_relationship(rel_id: int, data: RelationshipUpdate) -> dict:
 def build_schema_context(datasource_name: str = DEFAULT_DATASOURCE) -> str:
     _ensure_schema()
     settings = get_settings()
+    datasource_dialect = _datasource_dialect(datasource_name)
     with sqlite_session() as session:
         analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
@@ -387,6 +411,7 @@ def build_schema_context(datasource_name: str = DEFAULT_DATASOURCE) -> str:
             relationships,
             metrics,
             verified_queries,
+            datasource_dialect,
         )
 
 
@@ -406,6 +431,7 @@ def build_focused_context_from_retrieval(
 
     _ensure_schema()
     settings = get_settings()
+    datasource_dialect = _datasource_dialect(datasource_name)
     with sqlite_session() as session:
         analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
@@ -440,12 +466,14 @@ def build_focused_context_from_retrieval(
             focused_relationships,
             metrics,
             verified_queries,
+            datasource_dialect,
         )
 
 
 def build_explainability_context(datasource_name: str = DEFAULT_DATASOURCE) -> dict:
     _ensure_schema()
     settings = get_settings()
+    datasource_dialect = _datasource_dialect(datasource_name)
     with sqlite_session() as session:
         analysis_space = _active_analysis_space(session, datasource_name=datasource_name)
         analysis_space_payload = _analysis_space_payload(analysis_space) if analysis_space else _empty_analysis_space_payload()
@@ -471,6 +499,7 @@ def build_explainability_context(datasource_name: str = DEFAULT_DATASOURCE) -> d
         ).all()
         return {
             "analysis_space": analysis_space_payload,
+            "datasource_dialect": datasource_dialect,
             "date_rule": {
                 "dataset_current_date": settings.dataset_current_date,
                 "relative_rules": {
@@ -521,6 +550,7 @@ def _render_schema_context(
     relationships: list[MetaRelationship],
     metrics: list[MetaMetric],
     verified_queries: list[MetaVerifiedQuery],
+    datasource_dialect: str,
 ) -> str:
     lines = [
         "# Schema Context",
@@ -532,15 +562,17 @@ def _render_schema_context(
         f"enabled_metrics = {', '.join(analysis_space_payload['enabled_metrics'])}",
         f"allowed_tables = {', '.join(analysis_space_payload['tables'])}",
         "",
+        "## Datasource",
+        f"- name = {analysis_space_payload['datasource']}",
+        *DIALECT_CONTEXT_HINTS.get(datasource_dialect, DIALECT_CONTEXT_HINTS["duckdb"]),
+        "",
         f"dataset_current_date = {dataset_current_date}",
         "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31",
         "",
         "## Tables",
     ]
     for table in tables:
-        lines.append(
-            f"- {table.table_name}: {table.display_name or ''}; {table.description or ''}; rows={table.row_count}"
-        )
+        lines.append(_table_context_line(table))
         for column in table_columns.get(table.table_name, []):
             lines.append(_column_context_line(column))
     lines.extend(["", "## Join Relationships"])
@@ -564,12 +596,34 @@ def _render_schema_context(
     return "\n".join(lines)
 
 
+def _table_context_line(table: MetaTable) -> str:
+    olap_parts = []
+    if table.engine:
+        olap_parts.append(f"engine={table.engine}")
+    if table.partition_key:
+        olap_parts.append(f"partition_key={table.partition_key}")
+    if table.sorting_key:
+        olap_parts.append(f"sorting_key={table.sorting_key}")
+    olap_text = f"; {'; '.join(olap_parts)}" if olap_parts else ""
+    return f"- {table.table_name}: {table.display_name or ''}; {table.description or ''}; rows={table.row_count}{olap_text}"
+
+
 def _column_context_line(column: MetaColumn) -> str:
     flags = []
+    if column.nullable:
+        flags.append("nullable")
     if column.is_dimension:
         flags.append("dimension")
     if column.is_metric:
         flags.append("metric")
+    if column.is_partition_key:
+        flags.append("partition_key")
+    if column.is_sorting_key:
+        flags.append("sorting_key")
+    if column.is_primary_key:
+        flags.append("primary_key")
+    if column.low_cardinality:
+        flags.append("low_cardinality")
     flag_text = f" [{', '.join(flags)}]" if flags else ""
     description = f" - {column.description}" if column.description else ""
     sample_values = f" samples={column.sample_values}" if column.sample_values else ""
@@ -721,14 +775,22 @@ def _table_explainability(session: Session, table: MetaTable) -> dict:
         "description": table.description,
         "domain": table.domain,
         "row_count": table.row_count,
+        "engine": table.engine,
+        "partition_key": table.partition_key,
+        "sorting_key": table.sorting_key,
         "columns": [
             {
                 "column_name": column.column_name,
                 "data_type": column.data_type,
                 "description": column.description,
+                "nullable": column.nullable,
                 "is_dimension": column.is_dimension,
                 "is_metric": column.is_metric,
                 "sample_values": _parse_sample_values(column.sample_values),
+                "is_partition_key": column.is_partition_key,
+                "is_sorting_key": column.is_sorting_key,
+                "is_primary_key": column.is_primary_key,
+                "low_cardinality": column.low_cardinality,
             }
             for column in _columns_for_table(session, table.id)
         ],
@@ -747,6 +809,15 @@ def _relationship_explainability(relationship: MetaRelationship) -> dict:
         "fanout_risk": relationship.fanout_risk,
         "description": relationship.description,
     }
+
+
+def _datasource_dialect(datasource_name: str) -> str:
+    try:
+        return get_datasource_manager().get(datasource_name).dialect
+    except (KeyError, LookupError):
+        if datasource_name.startswith("clickhouse"):
+            return "clickhouse"
+        return "duckdb"
 
 
 def _active_analysis_space(

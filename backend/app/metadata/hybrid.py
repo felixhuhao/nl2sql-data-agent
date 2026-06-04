@@ -204,6 +204,9 @@ def _table_payload(hit: VectorSearchHit) -> dict:
         "description": metadata.get("description"),
         "domain": metadata.get("domain"),
         "row_count": metadata.get("row_count", 0),
+        "engine": metadata.get("engine"),
+        "partition_key": metadata.get("partition_key"),
+        "sorting_key": metadata.get("sorting_key"),
         "source": "vector",
     }
 
@@ -216,9 +219,14 @@ def _column_payload(hit: VectorSearchHit) -> dict:
         "column_name": str(metadata.get("column_name") or column_name),
         "data_type": metadata.get("data_type"),
         "description": metadata.get("description"),
+        "nullable": bool(metadata.get("nullable", False)),
         "is_dimension": bool(metadata.get("is_dimension", False)),
         "is_metric": bool(metadata.get("is_metric", False)),
         "sample_values": metadata.get("sample_values", []),
+        "is_partition_key": bool(metadata.get("is_partition_key", False)),
+        "is_sorting_key": bool(metadata.get("is_sorting_key", False)),
+        "is_primary_key": bool(metadata.get("is_primary_key", False)),
+        "low_cardinality": bool(metadata.get("low_cardinality", False)),
         "matched_aliases": [],
     }
 

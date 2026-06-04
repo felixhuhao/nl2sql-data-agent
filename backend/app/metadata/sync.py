@@ -4,6 +4,8 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 from backend.app.core.db import get_duckdb_connection, get_sqlite_engine, sqlite_session
+from backend.app.connectors.registry import get_datasource_manager
+from backend.app.connectors.schema import SchemaSnapshot
 from backend.app.metadata.models import DEFAULT_DATASOURCE, MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
 from backend.app.metadata.seed import seed_semantics
 
@@ -12,12 +14,15 @@ def sync_metadata(datasource_name: str = DEFAULT_DATASOURCE) -> dict[str, int]:
     engine = get_sqlite_engine()
     create_metadata_schema(engine)
     _ensure_relationship_columns(engine)
+    connector = get_datasource_manager().get(datasource_name)
+    snapshot = connector.sync_schema()
+    synced_datasource = snapshot.datasource_name
+    schema_tables = _relationship_input_from_snapshot(snapshot)
     with sqlite_session() as session:
-        duckdb_tables = _read_duckdb_columns()
-        table_count = _sync_tables_and_columns(session, duckdb_tables, datasource_name=datasource_name)
-        seed_semantics(session, datasource_name=datasource_name)
-        relationship_count = _sync_relationships(session, duckdb_tables, datasource_name=datasource_name)
-        column_count = sum(len(columns) for columns in duckdb_tables.values())
+        table_count = _sync_tables_and_columns(session, snapshot, datasource_name=synced_datasource)
+        seed_semantics(session, datasource_name=synced_datasource)
+        relationship_count = _sync_relationships(session, schema_tables, datasource_name=synced_datasource)
+        column_count = sum(len(table.columns) for table in snapshot.tables)
     return {
         "tables": table_count,
         "columns": column_count,
@@ -25,6 +30,7 @@ def sync_metadata(datasource_name: str = DEFAULT_DATASOURCE) -> dict[str, int]:
     }
 
 
+# Legacy DuckDB helpers are kept for older direct callers. Main sync flow should use connector.sync_schema().
 def _read_duckdb_columns() -> dict[str, list[dict[str, str]]]:
     with get_duckdb_connection(read_only=True) as conn:
         rows = conn.execute(
@@ -45,45 +51,66 @@ def _read_duckdb_columns() -> dict[str, list[dict[str, str]]]:
 
 def _sync_tables_and_columns(
     session: Session,
-    duckdb_tables: dict[str, list[dict[str, str]]],
+    snapshot: SchemaSnapshot,
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> int:
-    for table_name, columns in duckdb_tables.items():
+    for table_snapshot in snapshot.tables:
+        table_name = table_snapshot.name
         table = session.scalar(
             select(MetaTable).where(MetaTable.datasource == datasource_name, MetaTable.table_name == table_name)
         )
         if table is None:
             table = MetaTable(datasource=datasource_name, table_name=table_name)
             session.add(table)
-        table.row_count = _count_rows(table_name)
+        table.row_count = table_snapshot.row_count
         table.enabled = True
+        table.engine = table_snapshot.engine
+        table.partition_key = table_snapshot.partition_key
+        table.sorting_key = table_snapshot.sorting_key
         session.flush()
 
-        actual_column_names = {column["column_name"] for column in columns}
+        actual_column_names = {column.name for column in table_snapshot.columns}
         for stale_column in list(table.columns):
             if stale_column.column_name not in actual_column_names:
                 session.delete(stale_column)
 
-        for column in columns:
+        for column in table_snapshot.columns:
             meta_column = session.scalar(
                 select(MetaColumn).where(
                     MetaColumn.table_id == table.id,
-                    MetaColumn.column_name == column["column_name"],
+                    MetaColumn.column_name == column.name,
                 )
             )
             if meta_column is None:
                 meta_column = MetaColumn(
                     datasource=datasource_name,
                     table_id=table.id,
-                    column_name=column["column_name"],
+                    column_name=column.name,
                 )
                 session.add(meta_column)
             # Keep the denormalized datasource aligned with the owning table for fast scoped queries.
             meta_column.datasource = datasource_name
-            column_name = column["column_name"]
-            meta_column.data_type = column["data_type"]
-            meta_column.sample_values = _profile_sample_values_json(table_name, column_name)
-    return len(duckdb_tables)
+            meta_column.data_type = column.data_type
+            meta_column.nullable = column.nullable
+            meta_column.sample_values = _sample_values_json(column.sample_values)
+            meta_column.is_partition_key = column.is_partition_key
+            meta_column.is_sorting_key = column.is_sorting_key
+            meta_column.is_primary_key = column.is_primary_key
+            meta_column.low_cardinality = column.low_cardinality
+    return len(snapshot.tables)
+
+
+def _relationship_input_from_snapshot(snapshot: SchemaSnapshot) -> dict[str, list[dict[str, str]]]:
+    return {
+        table.name: [
+            {
+                "column_name": column.name,
+                "data_type": column.data_type,
+            }
+            for column in table.columns
+        ]
+        for table in snapshot.tables
+    }
 
 
 def _sync_relationships(
@@ -281,6 +308,10 @@ def _profile_sample_values_json(table_name: str, column_name: str, limit: int = 
             """
         ).fetchall()
     values = [row[0] for row in rows]
+    return json.dumps(values, ensure_ascii=False, default=str) if values else None
+
+
+def _sample_values_json(values: list[str]) -> str | None:
     return json.dumps(values, ensure_ascii=False, default=str) if values else None
 
 

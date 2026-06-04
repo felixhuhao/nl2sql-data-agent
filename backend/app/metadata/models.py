@@ -46,6 +46,9 @@ class MetaTable(Base):
     domain: Mapped[str | None] = mapped_column(String)
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    engine: Mapped[str] = mapped_column(String, default="", server_default="")
+    partition_key: Mapped[str] = mapped_column(Text, default="", server_default="")
+    sorting_key: Mapped[str] = mapped_column(Text, default="", server_default="")
 
     columns: Mapped[list["MetaColumn"]] = relationship(
         back_populates="table",
@@ -72,9 +75,14 @@ class MetaColumn(Base):
     column_name: Mapped[str] = mapped_column(String, nullable=False)
     data_type: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    nullable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     is_dimension: Mapped[bool] = mapped_column(Boolean, default=False)
     is_metric: Mapped[bool] = mapped_column(Boolean, default=False)
     sample_values: Mapped[str | None] = mapped_column(Text)
+    is_partition_key: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    is_sorting_key: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    is_primary_key: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    low_cardinality: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     table: Mapped[MetaTable] = relationship(back_populates="columns")
 
@@ -186,6 +194,36 @@ class MetaAnalysisSpace(Base):
 def create_metadata_schema(engine) -> None:
     _migrate_legacy_datasource_schema(engine)
     Base.metadata.create_all(engine)
+    _ensure_metadata_extension_columns(engine)
+
+
+def _ensure_metadata_extension_columns(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        if "meta_tables" in existing_tables:
+            existing_columns = {column["name"] for column in inspector.get_columns("meta_tables")}
+            for column_name, ddl in {
+                "engine": "TEXT DEFAULT ''",
+                "partition_key": "TEXT DEFAULT ''",
+                "sorting_key": "TEXT DEFAULT ''",
+            }.items():
+                if column_name not in existing_columns:
+                    connection.execute(text(f"ALTER TABLE meta_tables ADD COLUMN {column_name} {ddl}"))
+
+        if "meta_columns" in existing_tables:
+            existing_columns = {column["name"] for column in inspector.get_columns("meta_columns")}
+            for column_name, ddl in {
+                "nullable": "BOOLEAN DEFAULT 0",
+                "is_partition_key": "BOOLEAN DEFAULT 0",
+                "is_sorting_key": "BOOLEAN DEFAULT 0",
+                "is_primary_key": "BOOLEAN DEFAULT 0",
+                "low_cardinality": "BOOLEAN DEFAULT 0",
+            }.items():
+                if column_name not in existing_columns:
+                    connection.execute(text(f"ALTER TABLE meta_columns ADD COLUMN {column_name} {ddl}"))
 
 
 def _migrate_legacy_datasource_schema(engine) -> None:
