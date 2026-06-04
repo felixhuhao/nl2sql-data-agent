@@ -79,6 +79,22 @@ def test_mock_provider_returns_top_products_verified_sql():
     assert "LIMIT 10" in result.sql
 
 
+def test_mock_provider_accepts_olap_context_for_topn_question():
+    provider = _provider()
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="最近30天销量最高的10个商品",
+            schema_context="# Schema Context",
+            olap_intents=["topn"],
+            olap_hint="TopN / ranking SQL guidance",
+        )
+    )
+
+    assert result.matched_query_id == "recent_30d_top_products"
+    assert "LIMIT 10" in result.sql
+
+
 def test_mock_provider_returns_delete_sql_for_delete_question():
     provider = _provider()
 

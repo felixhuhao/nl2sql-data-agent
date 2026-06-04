@@ -2,11 +2,13 @@ import json
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
 import backend.app.agent.nodes as nodes_module
-from backend.app.api.chat import iter_chat_events
+from backend.app.agent.state import AgentState
+from backend.app.api.chat import WorkflowPayloadError, _workflow_step_payload, iter_chat_events
 from backend.app.connectors.schema import DataSourceInfo
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationResult
 from backend.app.execution.runner import QueryResult
@@ -401,6 +403,35 @@ def test_iter_chat_events_returns_failure_event_for_sql_generation_timeout():
         "reason": "SQL generation timed out.",
         "error_kind": "failure",
     }
+
+
+def test_iter_chat_events_attributes_generation_failure_to_generate_sql():
+    class FailingProvider:
+        name = "failing"
+
+        def generate_sql(self, request):
+            raise ValueError("schema mismatch")
+
+    events = _parse_events(
+        iter_chat_events(
+            "按类目统计销售额",
+            provider=FailingProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["step", "step", "step", "step", "error"]
+    assert events[-1]["data"] == {
+        "step": "generate_sql",
+        "reason": "schema mismatch",
+        "error_kind": "failure",
+    }
+
+
+def test_workflow_step_payload_raises_for_unknown_step():
+    with pytest.raises(WorkflowPayloadError, match="Unsupported workflow step"):
+        _workflow_step_payload("unknown_step", AgentState(question="hello"))
 
 
 def test_chat_query_endpoint_is_registered(monkeypatch):

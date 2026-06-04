@@ -67,6 +67,7 @@ def test_sql_generation_prompt_includes_olap_hint():
     )
 
     assert "OLAP SQL guidance:" in messages[1]["content"]
+    assert "Detected OLAP intents" not in messages[1]["content"]
     assert "TopN / YoY guidance" in messages[1]["content"]
 
 
@@ -118,6 +119,8 @@ def test_sql_generation_repair_prompt_preserves_olap_hint():
     )
 
     assert "OLAP SQL guidance:" in messages[1]["content"]
+    assert "Detected OLAP intents" not in messages[1]["content"]
     assert "TopN / YoY guidance" in messages[1]["content"]
+    assert "Detected OLAP intents" not in messages[3]["content"]
     assert "OLAP SQL guidance:" in messages[3]["content"]
     assert "TopN / YoY guidance" in messages[3]["content"]

@@ -29,7 +29,7 @@ _CHINESE_NUMERAL = "一二三四五六七八九十百千万两"
 _TOPN_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"\btop\s*(?:\d+|n)\b",
+        r"\btop(?:[\s-]*(?:\d+|n)\b|\b(?!-[A-Za-z]))",
         rf"前\s*(?:\d+|[{_CHINESE_NUMERAL}]+)",
         rf"后\s*(?:\d+|[{_CHINESE_NUMERAL}]+)",
         r"排名",
@@ -119,23 +119,59 @@ def _topn_hint() -> str:
     return "\n".join(
         [
             "TopN / ranking SQL guidance:",
-            "- Use ORDER BY metric_value DESC with LIMIT N.",
+            "Key rules:",
+            "- Use ORDER BY metric_value DESC with LIMIT N for top rankings.",
+            "- Use ORDER BY metric_value ASC with LIMIT N only when the user asks for bottom/least/lowest.",
             "- For tiering or segmentation, use CASE WHEN and GROUP BY the tier alias.",
             "- If percentage share is requested, compute the total with SUM(metric_value) OVER ().",
+            "- Choose grouping dimensions and metric expressions from the schema context; do not invent columns.",
+            "Pattern:",
+            "SELECT dimension_name, metric_value",
+            "FROM (",
+            "  SELECT dimension_col AS dimension_name, SUM(metric_expression) AS metric_value",
+            "  FROM source_tables",
+            "  WHERE optional_filters",
+            "  GROUP BY dimension_col",
+            ") ranked",
+            "ORDER BY metric_value DESC",
+            "LIMIT N",
         ]
     )
 
 
 def _yoy_mom_hint(datasource_dialect: str) -> str:
-    date_function = "toStartOfMonth(dim_date.date_value)" if datasource_dialect == "clickhouse" else "DATE_TRUNC('month', dim_date.date_value)"
+    month_expr = _month_period_expr(datasource_dialect)
+    month_rule = _month_period_rule(datasource_dialect)
     return "\n".join(
         [
             "YoY / MoM SQL guidance:",
+            "Key rules:",
             "- Use a subquery: aggregate by period first, then apply LAG() in the outer query.",
-            f"- Use {date_function} as the month period when monthly comparison is requested.",
             "- Join fact_orders.date_key to dim_date.date_key when using business dates.",
+            month_rule,
             "- MoM uses LAG(value, 1); monthly YoY uses LAG(value, 12); quarterly YoY uses LAG(value, 4).",
             "- Use NULLIF(previous_value, 0) for percentage change division.",
+            "Pattern:",
+            "SELECT",
+            "  period,",
+            "  metric_value,",
+            "  prev_year_value,",
+            "  ROUND((metric_value - prev_year_value) / NULLIF(prev_year_value, 0) * 100, 2) AS yoy_pct",
+            "FROM (",
+            "  SELECT",
+            "    period,",
+            "    metric_value,",
+            "    LAG(metric_value, 12) OVER (ORDER BY period) AS prev_year_value",
+            "  FROM (",
+            "    SELECT",
+            f"      {month_expr} AS period,",
+            "      SUM(fo.payment_amount) AS metric_value",
+            "    FROM fact_orders fo",
+            "    JOIN dim_date dd ON fo.date_key = dd.date_key",
+            "    GROUP BY period",
+            "  ) base",
+            ") compared",
+            "ORDER BY period",
         ]
     )
 
@@ -144,8 +180,33 @@ def _moving_avg_hint() -> str:
     return "\n".join(
         [
             "Moving average SQL guidance:",
+            "Key rules:",
             "- Aggregate by date first, then compute AVG(metric_value) OVER in the outer query.",
             "- 7-day moving average uses ROWS BETWEEN 6 PRECEDING AND CURRENT ROW.",
             "- 30-day moving average uses ROWS BETWEEN 29 PRECEDING AND CURRENT ROW.",
+            "Pattern:",
+            "SELECT",
+            "  period,",
+            "  metric_value,",
+            "  AVG(metric_value) OVER (ORDER BY period ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma_7d",
+            "FROM (",
+            "  SELECT dd.date_value AS period, SUM(fo.payment_amount) AS metric_value",
+            "  FROM fact_orders fo",
+            "  JOIN dim_date dd ON fo.date_key = dd.date_key",
+            "  GROUP BY dd.date_value",
+            ") base",
+            "ORDER BY period",
         ]
     )
+
+
+def _month_period_expr(datasource_dialect: str) -> str:
+    if datasource_dialect == "clickhouse":
+        return "toStartOfMonth(dd.date_value)"
+    return "DATE_TRUNC('month', dd.date_value)"
+
+
+def _month_period_rule(datasource_dialect: str) -> str:
+    if datasource_dialect == "clickhouse":
+        return "- For ClickHouse monthly periods use toStartOfMonth(date_column)."
+    return "- For DuckDB monthly periods use DATE_TRUNC('month', date_column)."

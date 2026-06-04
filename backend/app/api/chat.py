@@ -28,6 +28,10 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
 
+class WorkflowPayloadError(RuntimeError):
+    pass
+
+
 class ChatQueryRequest(BaseModel):
     question: str
     datasource: str = DEFAULT_DATASOURCE
@@ -128,12 +132,14 @@ def iter_chat_events(
                 "error_kind": "failure",
             },
         )
+    except WorkflowPayloadError:
+        raise
     except Exception as exc:
         logger.exception("Chat query failed")
         yield _sse_event(
             "error",
             {
-                "step": state.completed_steps[-1] if state.completed_steps else "unknown",
+                "step": _failure_step(state),
                 "reason": str(exc),
                 "error_kind": "failure",
             },
@@ -219,7 +225,15 @@ def _workflow_step_payload(step: str, state: AgentState) -> dict:
             "sql": state.sql,
             "matched_query_id": state.matched_query_id,
         }
-    raise ValueError(f"Unsupported workflow step: {step}")
+    raise WorkflowPayloadError(f"Unsupported workflow step: {step}")
+
+
+def _failure_step(state: AgentState) -> str:
+    if state.stopped_at is not None:
+        return state.stopped_at
+    if state.completed_steps:
+        return state.completed_steps[-1]
+    return "unknown"
 
 
 def _pre_repair_error_kind(step: str) -> str:
@@ -265,7 +279,7 @@ def _repair_step_payload(event: RepairEvent) -> dict:
             "error_reason": latest_repair.get("error_reason"),
             "repair_history": event.state.repair_history,
         }
-    raise ValueError(f"Unsupported repair event step: {event.step}")
+    raise WorkflowPayloadError(f"Unsupported repair event step: {event.step}")
 
 
 def _repair_error_payload(event: RepairEvent) -> dict:

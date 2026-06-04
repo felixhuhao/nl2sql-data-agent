@@ -67,8 +67,6 @@ def run_query_workflow(
     ):
         if state.stopped_at is not None:
             return state
-    if state.stopped_at is not None:
-        return state
     sql_guard_node(state, scope_builder=scope_builder)
     if state.stopped_at is not None:
         return state
@@ -103,7 +101,12 @@ def iter_pre_repair_workflow(
     olap_intent_detect_node(state)
     yield "olap_detected"
 
-    generate_sql_node(state, provider=provider)
+    try:
+        generate_sql_node(state, provider=provider)
+    except Exception as exc:
+        state.stopped_at = "generate_sql"
+        state.error = str(exc)
+        raise
     yield "generate_sql"
 
 

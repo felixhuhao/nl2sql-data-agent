@@ -50,6 +50,25 @@ def test_deepseek_provider_posts_chat_completion_request():
     assert client.requests[0]["json"]["messages"][1]["role"] == "user"
 
 
+def test_deepseek_provider_posts_olap_guidance_in_messages():
+    client = FakeHTTPClient(_response("SELECT 1"))
+    provider = DeepSeekProvider(api_key="test-key", http_client=client)
+
+    provider.generate_sql(
+        SQLGenerationRequest(
+            question="查询销售额前10的商品同比增长",
+            schema_context="# Schema Context",
+            olap_intents=["topn", "yoy_mom"],
+            olap_hint="TopN / YoY guidance",
+        )
+    )
+
+    user_message = client.requests[0]["json"]["messages"][1]["content"]
+    assert "Detected OLAP intents" not in user_message
+    assert "OLAP SQL guidance:" in user_message
+    assert "TopN / YoY guidance" in user_message
+
+
 def test_deepseek_provider_strips_sql_markdown_fence():
     client = FakeHTTPClient(_response("```sql\nSELECT 1\n```"))
     provider = DeepSeekProvider(api_key="test-key", http_client=client)
