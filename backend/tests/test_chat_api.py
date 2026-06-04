@@ -212,6 +212,35 @@ def test_iter_chat_events_returns_olap_detected_step_for_composite_intent():
     assert events[-1]["data"]["olap_description"] == "检测到 TopN / 排名 / 分层分析意图；检测到同比 / 环比分析意图"
 
 
+def test_iter_chat_events_uses_olap_intents_for_chart_recommendation():
+    class SelectProvider:
+        name = "select-provider"
+
+        def generate_sql(self, request):
+            return SQLGenerationResult(sql="SELECT payment_amount FROM fact_orders", provider=self.name)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(
+            columns=["month", "sales_amount", "yoy_pct"],
+            rows=[["2025-12", 100000, 25.0]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询每月销售额同比增长",
+            provider=SelectProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    assert events[-1]["data"]["olap_intents"] == ["yoy_mom"]
+    assert events[-1]["data"]["chart_recommendation"]["chart_type"] == "dual_axis"
+    assert events[-1]["data"]["chart_recommendation"]["y_columns"] == ["sales_amount", "yoy_pct"]
+
+
 def test_iter_chat_events_returns_error_event_for_destructive_intent():
     def failing_retriever(question: str) -> dict:
         raise AssertionError("retriever should not be called")

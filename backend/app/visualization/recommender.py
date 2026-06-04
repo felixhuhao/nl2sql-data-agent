@@ -1,15 +1,66 @@
+import re
+
 from pydantic import BaseModel, Field
 
 from backend.app.execution.runner import QueryResult
 
 
-DATE_COLUMN_HINTS = ("date_value", "day", "week", "month", "year")
-METRIC_COLUMN_HINTS = ("amount", "count", "sales", "revenue", "aov", "quantity", "users")
+DATE_COLUMN_HINTS = ("date", "day", "week", "month", "year")
+METRIC_COLUMN_HINTS = (
+    "amount",
+    "count",
+    "sales",
+    "revenue",
+    "aov",
+    "quantity",
+    "users",
+    "value",
+    "avg",
+    "average",
+    "ma",
+    "share",
+    "proportion",
+    "contribution",
+    "pct",
+    "percent",
+    "rate",
+    "ratio",
+    "growth",
+    "change",
+)
+COMPARISON_ANCHOR_TOKENS = (
+    "prev",
+    "previous",
+    "last",
+    "prior",
+    "yoy",
+    "mom",
+)
+COMPARISON_DELTA_TOKENS = (
+    "growth",
+    "change",
+    "delta",
+)
+COMPARISON_SCALE_TOKENS = (
+    "pct",
+    "percent",
+    "rate",
+    "ratio",
+)
+DISTRIBUTION_COLUMN_HINTS = (
+    "share",
+    "contribution",
+    "proportion",
+    "ratio",
+    "percent",
+    "pct",
+)
 DETAIL_ROW_ID_COLUMNS = ("order_id", "item_id")
 DETAIL_ROW_KEY_THRESHOLD = 3
 DETAIL_ROW_COLUMN_THRESHOLD = 5
 METRIC_SCALE_GAP_RATIO = 20.0
 MAX_BAR_CATEGORIES = 30
+MAX_PIE_CATEGORIES = 8
 
 
 class ChartRecommendation(BaseModel):
@@ -19,14 +70,36 @@ class ChartRecommendation(BaseModel):
     reason: str
 
 
-def recommend_chart(result: QueryResult) -> ChartRecommendation:
+def recommend_chart(
+    result: QueryResult,
+    olap_intents: list[str] | None = None,
+) -> ChartRecommendation:
     if not result.columns:
         return _table("No columns returned.")
     if _looks_like_detail_rows(result):
         return _table("Result looks like record-level detail rows.")
 
+    primary_intent = olap_intents[0] if olap_intents else None
     x_column = _find_time_column(result.columns)
     y_columns = _find_metric_columns(result.columns, exclude=x_column)
+    if primary_intent == "yoy_mom" and x_column is not None and len(y_columns) >= 2:
+        dual_axis_columns = _select_dual_axis_columns(result, y_columns)
+        if len(dual_axis_columns) >= 2:
+            return ChartRecommendation(
+                chart_type="dual_axis",
+                x_column=x_column,
+                y_columns=dual_axis_columns,
+                reason="Year-over-year or month-over-month comparison detected.",
+            )
+    if primary_intent == "moving_avg" and x_column is not None and y_columns:
+        y_columns = _avoid_mixed_scale_metrics(result, y_columns)
+        return ChartRecommendation(
+            chart_type="line",
+            x_column=x_column,
+            y_columns=y_columns,
+            reason="Moving average analysis detected.",
+        )
+
     if x_column is not None and y_columns:
         y_columns = _avoid_mixed_scale_metrics(result, y_columns)
         return ChartRecommendation(
@@ -38,6 +111,22 @@ def recommend_chart(result: QueryResult) -> ChartRecommendation:
 
     category_column = _find_category_column(result, exclude=y_columns)
     if category_column is not None and y_columns and 0 < result.row_count <= MAX_BAR_CATEGORIES:
+        if primary_intent == "topn":
+            y_columns = _avoid_mixed_scale_metrics(result, y_columns)
+            return ChartRecommendation(
+                chart_type="bar",
+                x_column=category_column,
+                y_columns=y_columns,
+                reason="TopN analysis detected.",
+            )
+        pie_metric = _find_distribution_metric_column(y_columns)
+        if pie_metric is not None and result.row_count <= MAX_PIE_CATEGORIES:
+            return ChartRecommendation(
+                chart_type="pie",
+                x_column=category_column,
+                y_columns=[pie_metric],
+                reason="Distribution query with few categories.",
+            )
         y_columns = _avoid_mixed_scale_metrics(result, y_columns)
         return ChartRecommendation(
             chart_type="bar",
@@ -64,7 +153,7 @@ def _find_time_column(columns: list[str]) -> str | None:
         lower_column = column.lower()
         if lower_column.endswith("_key"):
             continue
-        if any(hint in lower_column for hint in DATE_COLUMN_HINTS):
+        if _has_any_token(column, DATE_COLUMN_HINTS):
             return column
     return None
 
@@ -73,8 +162,49 @@ def _find_metric_columns(columns: list[str], exclude: str | None) -> list[str]:
     return [
         column
         for column in columns
-        if column != exclude and any(hint in column.lower() for hint in METRIC_COLUMN_HINTS)
+        if column != exclude and _has_any_token(column, METRIC_COLUMN_HINTS)
     ]
+
+
+def _select_dual_axis_columns(result: QueryResult, y_columns: list[str]) -> list[str]:
+    comparison_columns = [column for column in y_columns if _is_comparison_column(column)]
+    primary_columns = [column for column in y_columns if column not in comparison_columns]
+    if not comparison_columns or not primary_columns:
+        return []
+
+    selected_columns = [primary_columns[0], _preferred_comparison_column(comparison_columns)]
+    if not _has_mixed_scale(result, selected_columns):
+        return []
+    return selected_columns
+
+
+def _is_comparison_column(column: str) -> bool:
+    tokens = set(_column_tokens(column))
+    if tokens & set(COMPARISON_ANCHOR_TOKENS):
+        return True
+    if tokens & set(COMPARISON_DELTA_TOKENS):
+        return True
+    return bool(tokens & set(COMPARISON_SCALE_TOKENS)) and bool(
+        tokens & (set(COMPARISON_ANCHOR_TOKENS) | set(COMPARISON_DELTA_TOKENS))
+    )
+
+
+def _preferred_comparison_column(columns: list[str]) -> str:
+    scale_columns = [
+        column
+        for column in columns
+        if _has_any_token(column, (*COMPARISON_SCALE_TOKENS, *COMPARISON_DELTA_TOKENS))
+    ]
+    return (scale_columns or columns)[0]
+
+
+def _find_distribution_metric_column(y_columns: list[str]) -> str | None:
+    for column in y_columns:
+        if _is_comparison_column(column):
+            continue
+        if _has_any_token(column, DISTRIBUTION_COLUMN_HINTS):
+            return column
+    return None
 
 
 def _find_category_column(result: QueryResult, exclude: list[str]) -> str | None:
@@ -136,6 +266,30 @@ def _metric_magnitude(result: QueryResult, column: str) -> float | None:
     if not numeric_values:
         return None
     return max(numeric_values)
+
+
+def _has_mixed_scale(result: QueryResult, columns: list[str]) -> bool:
+    magnitudes = [_metric_magnitude(result, column) for column in columns]
+    positive_magnitudes = [magnitude for magnitude in magnitudes if magnitude is not None and magnitude > 0]
+    if len(positive_magnitudes) <= 1:
+        return False
+    min_magnitude = min(positive_magnitudes)
+    max_magnitude = max(positive_magnitudes)
+    return max_magnitude / min_magnitude >= METRIC_SCALE_GAP_RATIO
+
+
+def _has_any_token(column: str, hints: tuple[str, ...]) -> bool:
+    tokens = set(_column_tokens(column))
+    return bool(tokens & set(hints))
+
+
+def _column_tokens(column: str) -> tuple[str, ...]:
+    snake_case = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", column)
+    return tuple(
+        part
+        for part in re.split(r"[^A-Za-z0-9]+", snake_case.lower())
+        if part
+    )
 
 
 def _table(reason: str) -> ChartRecommendation:

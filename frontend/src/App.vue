@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BarChart, LineChart } from "echarts/charts";
+import { BarChart, LineChart, PieChart } from "echarts/charts";
 import {
   GridComponent,
   LegendComponent,
@@ -12,7 +12,7 @@ import Admin from "./Admin.vue";
 import { API_BASE_URL } from "./api/config";
 import { listDatasources, type DatasourceInfo } from "./api/datasources";
 
-echarts.use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const workflowSteps = [
   { id: "datasource_selected", label: "选择数据源" },
@@ -97,6 +97,10 @@ type ChartRecommendation = {
   x_column?: string | null;
   y_columns?: string[];
   reason?: string;
+};
+type PieDatum = {
+  name: string;
+  value: number;
 };
 type HealthPayload = {
   status?: string;
@@ -186,7 +190,7 @@ const hasActivity = computed(
 const canRenderChart = computed(() => {
   const recommendation = chartRecommendation.value;
   return (
-    ["bar", "line"].includes(recommendation?.chart_type ?? "") &&
+    ["bar", "line", "dual_axis", "pie"].includes(recommendation?.chart_type ?? "") &&
     Boolean(recommendation?.x_column) &&
     Boolean(recommendation?.y_columns?.length) &&
     rows.value.length > 0
@@ -678,7 +682,7 @@ function renderChart() {
 
   const xColumn = chartRecommendation.value.x_column;
   const yColumns = chartRecommendation.value.y_columns ?? [];
-  const seriesType = chartRecommendation.value.chart_type === "bar" ? "bar" : "line";
+  const chartType = chartRecommendation.value.chart_type;
   if (!xColumn) {
     disposeChart();
     return;
@@ -694,6 +698,106 @@ function renderChart() {
   }
 
   chartInstance ??= echarts.init(chartContainer.value);
+
+  if (chartType === "pie") {
+    const yIndex = yIndexes[0].index;
+    const pieData = pieSeriesData(xIndex, yIndex);
+    const formatPieAsPercent = shouldFormatPieAsPercent(pieData);
+    chartInstance.setOption({
+      color: ["#235789", "#2e7d5b", "#b7791f", "#8a4f7d", "#5b6c8f", "#d07a3d", "#4f8f7a", "#9a6b35"],
+      tooltip: {
+        trigger: "item",
+        formatter: (params: any) => formatPieTooltip(params, formatPieAsPercent),
+      },
+      legend: {
+        top: 0,
+        right: 0,
+        orient: "vertical",
+      },
+      series: [
+        {
+          name: yIndexes[0].column,
+          type: "pie",
+          radius: ["34%", "68%"],
+          center: ["42%", "54%"],
+          data: pieData,
+        },
+      ],
+    }, true);
+    resizeChart();
+    return;
+  }
+
+  if (chartType === "bar") {
+    if (!isTopNRecommendation(chartRecommendation.value)) {
+      chartInstance.setOption({
+        color: ["#235789", "#2e7d5b", "#b7791f"],
+        grid: {
+          top: 28,
+          right: 20,
+          bottom: 36,
+          left: 56,
+        },
+        tooltip: {
+          trigger: "axis",
+        },
+        legend: {
+          top: 0,
+          right: 0,
+        },
+        xAxis: {
+          type: "category",
+          data: rows.value.map((row) => String(row[xIndex] ?? "")),
+        },
+        yAxis: {
+          type: "value",
+        },
+        series: yIndexes.map(({ column, index }) => ({
+          name: column,
+          type: "bar",
+          barMaxWidth: 48,
+          data: rows.value.map((row) => Number(row[index] ?? 0)),
+        })),
+      }, true);
+      resizeChart();
+      return;
+    }
+
+    chartInstance.setOption({
+      color: ["#235789", "#2e7d5b", "#b7791f"],
+      grid: {
+        top: 28,
+        right: 20,
+        bottom: 28,
+        left: 96,
+      },
+      tooltip: {
+        trigger: "axis",
+      },
+      legend: {
+        top: 0,
+        right: 0,
+      },
+      xAxis: {
+        type: "value",
+      },
+      yAxis: {
+        type: "category",
+        inverse: true,
+        data: rows.value.map((row) => String(row[xIndex] ?? "")),
+      },
+      series: yIndexes.map(({ column, index }) => ({
+        name: column,
+        type: "bar",
+        barMaxWidth: 32,
+        data: rows.value.map((row) => Number(row[index] ?? 0)),
+      })),
+    }, true);
+    resizeChart();
+    return;
+  }
+
+  const lineIndexes = chartType === "dual_axis" ? yIndexes.slice(0, 2) : yIndexes;
   chartInstance.setOption({
     color: ["#235789", "#2e7d5b", "#b7791f"],
     grid: {
@@ -713,17 +817,67 @@ function renderChart() {
       type: "category",
       data: rows.value.map((row) => String(row[xIndex] ?? "")),
     },
-    yAxis: {
-      type: "value",
-    },
-    series: yIndexes.map(({ column, index }) => ({
+    yAxis: chartType === "dual_axis"
+      ? [
+          {
+            type: "value",
+            name: lineIndexes[0]?.column ?? "",
+          },
+          {
+            type: "value",
+            name: lineIndexes[1]?.column ?? "",
+          },
+        ]
+      : {
+          type: "value",
+        },
+    series: lineIndexes.map(({ column, index }, seriesIndex) => ({
       name: column,
-      type: seriesType,
-      ...(seriesType === "line" ? { smooth: true, symbolSize: 5 } : { barMaxWidth: 48 }),
+      type: "line",
+      smooth: true,
+      symbolSize: 5,
+      ...(chartType === "dual_axis" ? { yAxisIndex: Math.min(seriesIndex, 1) } : {}),
       data: rows.value.map((row) => Number(row[index] ?? 0)),
     })),
-  });
+  }, true);
   resizeChart();
+}
+
+function isTopNRecommendation(recommendation: ChartRecommendation) {
+  return (recommendation.reason ?? "").toLowerCase().includes("topn");
+}
+
+function pieSeriesData(xIndex: number, yIndex: number): PieDatum[] {
+  const data = rows.value.map((row) => ({
+    name: String(row[xIndex] ?? ""),
+    value: Number(row[yIndex] ?? 0),
+  }));
+  if (data.length <= 8) {
+    return data;
+  }
+
+  const visible = data.slice(0, 7);
+  const otherValue = data.slice(7).reduce((total, item) => total + item.value, 0);
+  return [...visible, { name: "其他", value: otherValue }];
+}
+
+function shouldFormatPieAsPercent(data: PieDatum[]) {
+  if (!data.length) {
+    return false;
+  }
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  return total > 0 && total <= 1.01 && data.every((item) => item.value >= 0 && item.value <= 1);
+}
+
+function formatPieTooltip(params: any, asPercent: boolean) {
+  const value = Number(params.value ?? 0);
+  const displayValue = asPercent ? `${formatPercent(value * 100)}%` : value.toLocaleString();
+  const slicePercent = Number(params.percent ?? 0);
+  return `${params.marker ?? ""}${params.name ?? ""}<br/>${params.seriesName ?? "值"}: ${displayValue} (${formatPercent(slicePercent)}%)`;
+}
+
+function formatPercent(value: number) {
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
 }
 
 function resizeChart() {

@@ -96,7 +96,10 @@ def iter_chat_events(
             },
         )
 
-        chart_recommendation = recommend_chart(state.query_result or QueryResult(columns=[], rows=[], row_count=0))
+        chart_recommendation = recommend_chart(
+            state.query_result or QueryResult(columns=[], rows=[], row_count=0),
+            olap_intents=state.olap_intents,
+        )
         yield _sse_event(
             "step",
             {

@@ -13,7 +13,7 @@ import yaml
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.app.agent.nodes import generate_sql_node
+from backend.app.agent.nodes import generate_sql_node, olap_intent_detect_node
 from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
@@ -346,8 +346,10 @@ def _run_case(
             datasource_name=datasource.name,
             datasource_dialect=datasource.dialect,
             datasource_display_name=datasource.display_name,
+            retrieval_result=retrieval_result,
             schema_context=schema_context,
         )
+        olap_intent_detect_node(state)
         case_provider = _case_provider(case, provider=provider, provider_name=provider_name)
         try:
             generate_sql_node(state, provider=case_provider)
@@ -411,7 +413,7 @@ def _run_case(
             result.fail("repair workflow finished without query result.", "execution_error")
             return result
 
-        chart_recommendation = recommend_chart(state.query_result)
+        chart_recommendation = recommend_chart(state.query_result, olap_intents=state.olap_intents)
         result.chart_type = chart_recommendation.chart_type
 
         _validate_normal_case(
