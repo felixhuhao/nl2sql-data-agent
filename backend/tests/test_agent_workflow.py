@@ -7,6 +7,7 @@ from backend.app.agent.nodes import (
     execute_node,
     generate_sql_node,
     intent_guard_node,
+    iter_pre_repair_workflow,
     olap_intent_detect_node,
     repair_sql_node,
     retrieve_context_node,
@@ -131,6 +132,48 @@ def test_olap_intent_detect_node_sets_intents_and_step():
     assert "TopN / ranking SQL guidance" in state.olap_hint
     assert "YoY / MoM SQL guidance" in state.olap_hint
     assert state.completed_steps == ["olap_detected"]
+
+
+def test_iter_pre_repair_workflow_runs_shared_step_sequence(monkeypatch):
+    class SelectProvider:
+        name = "select-provider"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            return SQLGenerationResult(
+                sql="SELECT payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda retrieval_result, datasource_name: "# Focused Context",
+    )
+    state = AgentState(question="查询销售额前10的商品同比增长")
+
+    steps = list(
+        iter_pre_repair_workflow(
+            state,
+            provider=SelectProvider(),
+            retriever=lambda question, datasource_name: {
+                "question": question,
+                "datasource": datasource_name,
+                "metrics": [{"name": "sales_amount"}],
+            },
+        )
+    )
+
+    assert steps == [
+        "datasource_selected",
+        "intent_guard",
+        "retrieve_context",
+        "build_context",
+        "olap_detected",
+        "generate_sql",
+    ]
+    assert state.completed_steps == steps
+    assert state.olap_intents == ["topn", "yoy_mom"]
+    assert state.sql == "SELECT payment_amount FROM fact_orders"
 
 
 def test_generate_sql_node_passes_olap_context_to_provider():

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 from backend.app.agent.explainability import build_query_explainability
 from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
@@ -58,23 +58,53 @@ def run_query_workflow(
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> AgentState:
     state = AgentState(question=question, datasource_name=datasource_name)
-    datasource_selected_node(state)
+    active_provider = provider or MockLLMProvider()
+    for _step in iter_pre_repair_workflow(
+        state,
+        provider=active_provider,
+        schema_context_builder=schema_context_builder,
+        retriever=retriever,
+    ):
+        if state.stopped_at is not None:
+            return state
     if state.stopped_at is not None:
         return state
-    intent_guard_node(state)
-    if state.stopped_at is not None:
-        return state
-    if schema_context_builder is None:
-        retrieve_context_node(state, retriever=retriever)
-    build_context_node(state, schema_context_builder=schema_context_builder)
-    olap_intent_detect_node(state)
-    generate_sql_node(state, provider=provider or MockLLMProvider())
     sql_guard_node(state, scope_builder=scope_builder)
     if state.stopped_at is not None:
         return state
     execute_node(state, executor=executor)
     summarize_node(state)
     return state
+
+
+def iter_pre_repair_workflow(
+    state: AgentState,
+    provider: LLMProvider,
+    schema_context_builder: SchemaContextBuilder | None = None,
+    retriever: Retriever = retrieve_metadata_assets,
+) -> Iterator[str]:
+    datasource_selected_node(state)
+    yield "datasource_selected"
+    if state.stopped_at is not None:
+        return
+
+    intent_guard_node(state)
+    yield "intent_guard"
+    if state.stopped_at is not None:
+        return
+
+    if schema_context_builder is None:
+        retrieve_context_node(state, retriever=retriever)
+        yield "retrieve_context"
+
+    build_context_node(state, schema_context_builder=schema_context_builder)
+    yield "build_context"
+
+    olap_intent_detect_node(state)
+    yield "olap_detected"
+
+    generate_sql_node(state, provider=provider)
+    yield "generate_sql"
 
 
 def datasource_selected_node(state: AgentState) -> AgentState:

@@ -9,12 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.app.agent.nodes import (
-    build_context_node,
-    datasource_selected_node,
-    generate_sql_node,
-    intent_guard_node,
-    olap_intent_detect_node,
-    retrieve_context_node,
+    iter_pre_repair_workflow,
     summarize_node,
 )
 from backend.app.agent.olap_intent import describe_olap_intents
@@ -57,54 +52,24 @@ def iter_chat_events(
 ) -> Iterator[str]:
     state = AgentState(question=question, datasource_name=datasource_name)
     try:
-        datasource_selected_node(state)
-        if state.stopped_at is not None:
-            yield _sse_event(
-                "error",
-                {
-                    "step": state.stopped_at,
-                    "reason": state.error,
-                    "error_kind": "failure",
-                },
-            )
-            return
-        yield _sse_event("step", _datasource_step_payload(state))
-
-        intent_guard_node(state)
-        if state.stopped_at is not None:
-            yield _sse_event(
-                "error",
-                {
-                    "step": state.stopped_at,
-                    "reason": state.error,
-                    "error_kind": "blocked",
-                },
-            )
-            return
-        yield _sse_event("step", {"step": "intent_guard", "status": "completed"})
-
-        if schema_context_builder is None:
-            retrieve_context_node(state, retriever=retriever)
-            yield _sse_event("step", _retrieval_step_payload(state.retrieval_result))
-
-        build_context_node(state, schema_context_builder=schema_context_builder)
-        yield _sse_event("step", {"step": "build_context", "status": "completed"})
-
-        olap_intent_detect_node(state)
-        yield _sse_event("step", _olap_step_payload(state))
-
         active_provider = provider or get_default_llm_provider()
-        generate_sql_node(state, provider=active_provider)
-        yield _sse_event(
-            "step",
-            {
-                "step": "generate_sql",
-                "status": "completed",
-                "provider": state.provider,
-                "sql": state.sql,
-                "matched_query_id": state.matched_query_id,
-            },
-        )
+        for step in iter_pre_repair_workflow(
+            state,
+            provider=active_provider,
+            schema_context_builder=schema_context_builder,
+            retriever=retriever,
+        ):
+            if state.stopped_at is not None:
+                yield _sse_event(
+                    "error",
+                    {
+                        "step": state.stopped_at,
+                        "reason": state.error,
+                        "error_kind": _pre_repair_error_kind(state.stopped_at),
+                    },
+                )
+                return
+            yield _sse_event("step", _workflow_step_payload(step, state))
 
         for repair_event in iter_sql_repair_events(
             state,
@@ -233,6 +198,34 @@ def _datasource_payload(state: AgentState) -> dict:
         "dialect": state.datasource_dialect,
         "display_name": state.datasource_display_name,
     }
+
+
+def _workflow_step_payload(step: str, state: AgentState) -> dict:
+    if step == "datasource_selected":
+        return _datasource_step_payload(state)
+    if step == "intent_guard":
+        return {"step": "intent_guard", "status": "completed"}
+    if step == "retrieve_context":
+        return _retrieval_step_payload(state.retrieval_result)
+    if step == "build_context":
+        return {"step": "build_context", "status": "completed"}
+    if step == "olap_detected":
+        return _olap_step_payload(state)
+    if step == "generate_sql":
+        return {
+            "step": "generate_sql",
+            "status": "completed",
+            "provider": state.provider,
+            "sql": state.sql,
+            "matched_query_id": state.matched_query_id,
+        }
+    raise ValueError(f"Unsupported workflow step: {step}")
+
+
+def _pre_repair_error_kind(step: str) -> str:
+    if step == "intent_guard":
+        return "blocked"
+    return "failure"
 
 
 def _olap_step_payload(state: AgentState) -> dict:
