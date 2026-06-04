@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LineChart } from "echarts/charts";
+import { BarChart, LineChart } from "echarts/charts";
 import {
   GridComponent,
   LegendComponent,
@@ -12,7 +12,7 @@ import Admin from "./Admin.vue";
 import { API_BASE_URL } from "./api/config";
 import { listDatasources, type DatasourceInfo } from "./api/datasources";
 
-echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const workflowSteps = [
   { id: "datasource_selected", label: "选择数据源" },
@@ -114,6 +114,7 @@ const question = ref("查询最近30天每日销售额和订单数");
 const dataSources = ref<DatasourceInfo[]>([fallbackDatasource]);
 const selectedDatasourceName = ref(fallbackDatasource.name);
 const datasourceLoadError = ref("");
+const isLoadingDatasources = ref(false);
 const isSubmitting = ref(false);
 const errorMessage = ref("");
 const errorStep = ref("");
@@ -155,6 +156,15 @@ const currentDatasource = computed(
   () => dataSources.value.find((source) => source.name === selectedDatasourceName.value) ?? dataSources.value[0] ?? fallbackDatasource,
 );
 const resultDatasource = computed(() => queryDatasource.value ?? currentDatasource.value);
+const datasourceStatusLabel = computed(() => {
+  if (isLoadingDatasources.value) {
+    return "加载中";
+  }
+  if (datasourceLoadError.value) {
+    return "加载失败";
+  }
+  return `${dataSources.value.length} 个数据源`;
+});
 const formattedElapsedMs = computed(() => {
   if (queryElapsedMs.value === null) {
     return "-";
@@ -172,13 +182,15 @@ const hasActivity = computed(
     Boolean(summary.value) ||
     Boolean(errorMessage.value),
 );
-const canRenderLineChart = computed(
-  () =>
-    chartRecommendation.value?.chart_type === "line" &&
-    Boolean(chartRecommendation.value.x_column) &&
-    Boolean(chartRecommendation.value.y_columns?.length) &&
-    rows.value.length > 0,
-);
+const canRenderChart = computed(() => {
+  const recommendation = chartRecommendation.value;
+  return (
+    ["bar", "line"].includes(recommendation?.chart_type ?? "") &&
+    Boolean(recommendation?.x_column) &&
+    Boolean(recommendation?.y_columns?.length) &&
+    rows.value.length > 0
+  );
+});
 const retrievalSourceGroups = computed<RetrievalSourceGroup[]>(() => {
   const sourceMap = retrievalMeta.value?.retrieval_sources ?? {};
   const groups = createSourceGroups();
@@ -317,6 +329,7 @@ async function submitQuestion() {
 
 async function fetchDatasources() {
   datasourceLoadError.value = "";
+  isLoadingDatasources.value = true;
   try {
     const payload = await listDatasources();
     dataSources.value = payload.sources.length ? payload.sources : [fallbackDatasource];
@@ -328,6 +341,8 @@ async function fetchDatasources() {
     dataSources.value = [fallbackDatasource];
     selectedDatasourceName.value = fallbackDatasource.name;
     datasourceLoadError.value = error instanceof Error ? error.message : "数据源加载失败";
+  } finally {
+    isLoadingDatasources.value = false;
   }
 }
 
@@ -637,7 +652,7 @@ function handleSseChunk(chunk: string) {
     explainability.value = payload.explainability ?? null;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
-    void nextTick(renderLineChart);
+    void nextTick(renderChart);
   }
   if (event === "error") {
     failStep(payload.step);
@@ -654,14 +669,15 @@ function handleSseChunk(chunk: string) {
   }
 }
 
-function renderLineChart() {
-  if (!canRenderLineChart.value || !chartContainer.value || !chartRecommendation.value) {
+function renderChart() {
+  if (!canRenderChart.value || !chartContainer.value || !chartRecommendation.value) {
     disposeChart();
     return;
   }
 
   const xColumn = chartRecommendation.value.x_column;
   const yColumns = chartRecommendation.value.y_columns ?? [];
+  const seriesType = chartRecommendation.value.chart_type === "bar" ? "bar" : "line";
   if (!xColumn) {
     disposeChart();
     return;
@@ -701,9 +717,8 @@ function renderLineChart() {
     },
     series: yIndexes.map(({ column, index }) => ({
       name: column,
-      type: "line",
-      smooth: true,
-      symbolSize: 5,
+      type: seriesType,
+      ...(seriesType === "line" ? { smooth: true, symbolSize: 5 } : { barMaxWidth: 48 }),
       data: rows.value.map((row) => Number(row[index] ?? 0)),
     })),
   });
@@ -722,7 +737,7 @@ function disposeChart() {
 function switchView(view: "chat" | "admin") {
   activeView.value = view;
   if (view === "chat") {
-    void nextTick(renderLineChart);
+    void nextTick(renderChart);
   }
 }
 </script>
@@ -741,12 +756,23 @@ function switchView(view: "chat" | "admin") {
             <select
               id="datasource"
               v-model="selectedDatasourceName"
-              :disabled="isSubmitting || dataSources.length <= 1"
+              :disabled="isSubmitting || isLoadingDatasources"
             >
               <option v-for="source in dataSources" :key="source.name" :value="source.name">
                 {{ source.display_name }}
               </option>
             </select>
+            <button
+              type="button"
+              class="datasource-refresh"
+              :disabled="isSubmitting || isLoadingDatasources"
+              @click="fetchDatasources"
+            >
+              刷新
+            </button>
+            <span class="datasource-status" :class="{ error: datasourceLoadError }">
+              {{ datasourceStatusLabel }}
+            </span>
           </div>
           <nav class="view-toggle" aria-label="view switcher">
             <button
@@ -834,8 +860,8 @@ function switchView(view: "chat" | "admin") {
               <section v-if="sql || summary || rows.length" class="answer-section">
                 <h2>查询信息</h2>
                 <div class="result-meta">
-                  <span class="info-chip">{{ resultDatasource.display_name }}</span>
-                  <span class="info-chip">{{ resultDatasource.dialect }}</span>
+                  <span class="info-chip">数据源 {{ resultDatasource.display_name }}</span>
+                  <span class="info-chip">方言 {{ resultDatasource.dialect }}</span>
                   <span class="info-chip">行数 {{ resultRowCount ?? rows.length }}</span>
                   <span class="info-chip">耗时 {{ formattedElapsedMs }}</span>
                 </div>
@@ -851,7 +877,7 @@ function switchView(view: "chat" | "admin") {
                 <p>{{ summary }}</p>
               </section>
 
-              <section v-if="canRenderLineChart" class="answer-section chart-section">
+              <section v-if="canRenderChart" class="answer-section chart-section">
                 <h2>图表</h2>
                 <div ref="chartContainer" class="chart-canvas" />
               </section>

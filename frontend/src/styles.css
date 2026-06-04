@@ -90,6 +90,8 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .datasource-select label {
@@ -106,6 +108,30 @@ textarea {
   padding: 0 10px;
   color: #1d2433;
   background: #ffffff;
+}
+
+.datasource-refresh {
+  height: 34px;
+  border: 1px solid #cdd8e6;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #245076;
+  background: #f7f9fc;
+  cursor: pointer;
+}
+
+.datasource-refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.datasource-status {
+  color: #667085;
+  font-size: 12px;
+}
+
+.datasource-status.error {
+  color: #a63a3a;
 }
 
 .view-toggle,
@@ -826,6 +852,7 @@ textarea {
   }
 
   .datasource-select {
+    justify-content: flex-start;
     width: 100%;
   }
 

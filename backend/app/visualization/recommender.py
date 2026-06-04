@@ -9,6 +9,7 @@ DETAIL_ROW_ID_COLUMNS = ("order_id", "item_id")
 DETAIL_ROW_KEY_THRESHOLD = 3
 DETAIL_ROW_COLUMN_THRESHOLD = 5
 METRIC_SCALE_GAP_RATIO = 20.0
+MAX_BAR_CATEGORIES = 30
 
 
 class ChartRecommendation(BaseModel):
@@ -33,6 +34,16 @@ def recommend_chart(result: QueryResult) -> ChartRecommendation:
             x_column=x_column,
             y_columns=y_columns,
             reason="Detected a time column and numeric metric columns.",
+        )
+
+    category_column = _find_category_column(result, exclude=y_columns)
+    if category_column is not None and y_columns and 0 < result.row_count <= MAX_BAR_CATEGORIES:
+        y_columns = _avoid_mixed_scale_metrics(result, y_columns)
+        return ChartRecommendation(
+            chart_type="bar",
+            x_column=category_column,
+            y_columns=y_columns,
+            reason="Detected a category column and numeric metric columns.",
         )
 
     return _table("No supported chart pattern detected.")
@@ -64,6 +75,31 @@ def _find_metric_columns(columns: list[str], exclude: str | None) -> list[str]:
         for column in columns
         if column != exclude and any(hint in column.lower() for hint in METRIC_COLUMN_HINTS)
     ]
+
+
+def _find_category_column(result: QueryResult, exclude: list[str]) -> str | None:
+    excluded_columns = set(exclude)
+    for column in result.columns:
+        lower_column = column.lower()
+        if column in excluded_columns:
+            continue
+        if lower_column.endswith("_key") or lower_column in DETAIL_ROW_ID_COLUMNS:
+            continue
+        if _find_time_column([column]) is not None:
+            continue
+        column_index = result.columns.index(column)
+        values = [row[column_index] for row in result.rows if len(row) > column_index]
+        if values and not all(_is_number(value) for value in values):
+            return column
+    return None
+
+
+def _is_number(value: object) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _avoid_mixed_scale_metrics(result: QueryResult, y_columns: list[str]) -> list[str]:

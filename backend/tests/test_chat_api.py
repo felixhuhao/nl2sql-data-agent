@@ -458,6 +458,18 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
     assert api_response.json() == {"status": "ok", "llm_provider": "deepseek"}
 
 
+def test_api_allows_local_vite_origin():
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/api/datasources",
+        headers={"Origin": "http://127.0.0.1:5175"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5175"
+
+
 def test_iter_chat_events_uses_configured_deepseek_provider(monkeypatch):
     class FakeDeepSeekProvider:
         name = "deepseek"

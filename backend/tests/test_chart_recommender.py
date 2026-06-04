@@ -105,7 +105,7 @@ def test_recommend_chart_ignores_date_key_as_time_axis():
     assert recommendation.chart_type == "table"
 
 
-def test_recommend_chart_returns_table_when_no_time_column():
+def test_recommend_chart_returns_bar_for_category_metric_rows():
     recommendation = recommend_chart(
         QueryResult(
             columns=["channel_name", "sales_amount"],
@@ -114,9 +114,21 @@ def test_recommend_chart_returns_table_when_no_time_column():
         )
     )
 
+    assert recommendation.chart_type == "bar"
+    assert recommendation.x_column == "channel_name"
+    assert recommendation.y_columns == ["sales_amount"]
+
+
+def test_recommend_chart_returns_table_for_too_many_category_rows():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["channel_name", "sales_amount"],
+            rows=[[f"渠道{i}", i * 100] for i in range(31)],
+            row_count=31,
+        )
+    )
+
     assert recommendation.chart_type == "table"
-    assert recommendation.x_column is None
-    assert recommendation.y_columns == []
 
 
 def test_recommend_chart_returns_table_when_no_metric_column():
