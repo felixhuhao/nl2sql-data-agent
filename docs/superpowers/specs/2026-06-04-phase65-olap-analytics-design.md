@@ -131,6 +131,8 @@ class AgentState:
     # Phase 6.5 新增
     olap_intents: list[str] = field(default_factory=list)  # 命中的 OLAP 意图列表
     olap_hint: str = ""                # 给 generate_sql 的合并提示文本
+
+    # I65.4 EXPLAIN 节点落地时新增
     plan_hints: list[str] = field(default_factory=list)    # EXPLAIN 计划提示
     runtime_stats: dict | None = None  # ClickHouse 运行时统计（尽力而为）
 ```
@@ -507,7 +509,7 @@ Eval 报告新增 Phase 6.5 section，按 DuckDB / ClickHouse 分列展示：
 ```text
 I65.1 OLAP 意图识别
   → olap_intent.py 规则匹配（返回 list[OLAPIntentType]）
-  → Agent State 扩展（olap_intents / olap_hint / plan_hints / runtime_stats）
+  → Agent State 扩展（olap_intents / olap_hint）
   → olap_intent_detect 节点接入链路
   → SSE olap_detected 事件（step id + completed 状态）
   → 意图识别单元测试
@@ -528,6 +530,7 @@ I65.3 图表扩展
 I65.4 ClickHouse EXPLAIN
   → Connector 协议新增同步 explain() 方法
   → ClickHouse connector 实现 EXPLAIN PIPELINE TREE
+  → Agent State 扩展（plan_hints / runtime_stats）
   → plan_hints 解析（分区/排序键/JOIN 数）+ runtime_stats 尽力而为
   → performance.py 节点接入链路（同步）
   → SSE explain_plan 事件（step id + completed 状态）
@@ -546,7 +549,7 @@ I65.5 Eval 扩展与回归
 |------|---------|------|
 | `backend/app/agent/olap_intent.py` | 新增 | OLAP 意图识别（返回 list） |
 | `backend/app/agent/performance.py` | 新增 | EXPLAIN 解析（plan_hints + runtime_stats） |
-| `backend/app/agent/state.py` | 修改 | 新增 olap_intents / olap_hint / plan_hints / runtime_stats 字段 |
+| `backend/app/agent/state.py` | 修改 | I65.1 新增 olap_intents / olap_hint；I65.4 新增 plan_hints / runtime_stats |
 | `backend/app/agent/nodes.py` | 修改 | 接入 olap_intent_detect 和 explain_performance 节点（同步） |
 | `backend/app/agent/prompts/sql_generation.py` | 修改 | 追加 OLAP SQL 模式指导（子查询模板） |
 | `backend/app/visualization/recommender.py` | 修改 | 扩展 bar + 新增 dual_axis / pie 推荐规则 |

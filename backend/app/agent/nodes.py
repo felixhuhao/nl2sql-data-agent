@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from backend.app.agent.explainability import build_query_explainability
-from backend.app.agent.olap_intent import detect_olap_intents
+from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
 from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
 from backend.app.connectors.registry import get_datasource_manager
@@ -130,8 +130,12 @@ def olap_intent_detect_node(state: AgentState) -> AgentState:
     metrics = []
     if state.retrieval_result is not None:
         metrics = state.retrieval_result.get("metrics", [])
-    state.olap_intents = detect_olap_intents(state.question, matched_metrics=metrics)
-    state.olap_hint = ""
+    state.olap_intents = detect_olap_intents(state.question)
+    state.olap_hint = build_olap_hint(
+        state.olap_intents,
+        datasource_dialect=state.datasource_dialect,
+        matched_metrics=metrics,
+    )
     state.completed_steps.append("olap_detected")
     return state
 
@@ -149,6 +153,8 @@ def generate_sql_node(
             schema_context=state.schema_context,
             datasource_name=state.datasource_name,
             datasource_dialect=state.datasource_dialect,
+            olap_intents=state.olap_intents,
+            olap_hint=state.olap_hint,
         )
     )
     state.sql = normalize_generated_sql(result.sql)
@@ -173,6 +179,8 @@ def repair_sql_node(
             repair=repair_context,
             datasource_name=state.datasource_name,
             datasource_dialect=state.datasource_dialect,
+            olap_intents=state.olap_intents,
+            olap_hint=state.olap_hint,
         )
     )
     state.sql = normalize_generated_sql(result.sql)

@@ -56,6 +56,20 @@ def test_sql_generation_prompt_includes_schema_context_and_question():
     assert "查询订单" in messages[1]["content"]
 
 
+def test_sql_generation_prompt_includes_olap_hint():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="查询销售额前10的商品同比增长",
+            schema_context="# Schema Context",
+            olap_intents=["topn", "yoy_mom"],
+            olap_hint="TopN / YoY guidance",
+        )
+    )
+
+    assert "OLAP SQL guidance:" in messages[1]["content"]
+    assert "TopN / YoY guidance" in messages[1]["content"]
+
+
 def test_sql_generation_prompt_uses_multi_turn_repair_context():
     messages = build_sql_generation_messages(
         SQLGenerationRequest(
@@ -84,3 +98,26 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
     assert "Normalized SQL:" in repair_message
     assert "fact_order_items.item_amount" in repair_message
     assert "Return corrected SQL only." in repair_message
+
+
+def test_sql_generation_repair_prompt_preserves_olap_hint():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="查询销售额前10的商品同比增长",
+            schema_context="# Schema Context",
+            repair=SQLRepairContext(
+                attempt=1,
+                original_sql="SELECT product_id FROM fact_orders",
+                error_stage="sql_guard",
+                error_kind="scope_guard",
+                error_reason="Column fact_orders.product_id is not allowed.",
+            ),
+            olap_intents=["topn", "yoy_mom"],
+            olap_hint="TopN / YoY guidance",
+        )
+    )
+
+    assert "OLAP SQL guidance:" in messages[1]["content"]
+    assert "TopN / YoY guidance" in messages[1]["content"]
+    assert "OLAP SQL guidance:" in messages[3]["content"]
+    assert "TopN / YoY guidance" in messages[3]["content"]

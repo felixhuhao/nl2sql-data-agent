@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from backend.app.metadata.models import DEFAULT_DATASOURCE
@@ -25,6 +25,8 @@ class SQLGenerationRequest:
     repair: SQLRepairContext | None = None
     datasource_name: str = DEFAULT_DATASOURCE
     datasource_dialect: str = "duckdb"
+    olap_intents: list[str] = field(default_factory=list)
+    olap_hint: str = ""
 
 
 @dataclass(frozen=True)

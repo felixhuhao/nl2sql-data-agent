@@ -18,12 +18,16 @@ DIALECT_INSTRUCTIONS = {
 
 
 def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[str, str]]:
+    user_content = (
+        f"Schema context:\n{request.schema_context}\n\n"
+        f"Question:\n{request.question}"
+    )
+    if request.olap_hint:
+        user_content = f"{user_content}\n\nOLAP SQL guidance:\n{request.olap_hint}"
+
     user_message = {
         "role": "user",
-        "content": (
-            f"Schema context:\n{request.schema_context}\n\n"
-            f"Question:\n{request.question}"
-        ),
+        "content": user_content,
     }
     if request.repair is not None:
         return [
@@ -65,6 +69,8 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
     ]
     if request.repair.normalized_sql:
         lines.extend(["", "Normalized SQL:", request.repair.normalized_sql])
+    if request.olap_hint:
+        lines.extend(["", "OLAP SQL guidance:", request.olap_hint])
     if request.repair.error_kind == "fanout_guard":
         lines.extend(
             [

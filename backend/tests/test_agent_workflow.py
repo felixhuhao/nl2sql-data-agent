@@ -118,13 +118,45 @@ def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch)
 
 
 def test_olap_intent_detect_node_sets_intents_and_step():
-    state = AgentState(question="查询销售额前10的商品同比增长")
+    state = AgentState(
+        question="查询销售额前10的商品同比增长",
+        datasource_dialect="clickhouse",
+        retrieval_result={"metrics": [{"name": "sales_amount"}]},
+    )
 
     olap_intent_detect_node(state)
 
     assert state.olap_intents == ["topn", "yoy_mom"]
-    assert state.olap_hint == ""
+    assert "sales_amount" in state.olap_hint
+    assert "TopN / ranking SQL guidance" in state.olap_hint
+    assert "YoY / MoM SQL guidance" in state.olap_hint
     assert state.completed_steps == ["olap_detected"]
+
+
+def test_generate_sql_node_passes_olap_context_to_provider():
+    captured_requests = []
+
+    class CapturingProvider:
+        name = "capturing"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="SELECT payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    state = AgentState(
+        question="查询销售额前10的商品同比增长",
+        schema_context="# Schema Context",
+        olap_intents=["topn", "yoy_mom"],
+        olap_hint="TopN guidance",
+    )
+
+    generate_sql_node(state, provider=CapturingProvider())
+
+    assert captured_requests[0].olap_intents == ["topn", "yoy_mom"]
+    assert captured_requests[0].olap_hint == "TopN guidance"
 
 
 def test_generate_sql_node_requires_schema_context():

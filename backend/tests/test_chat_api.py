@@ -69,6 +69,7 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
     assert events[-1]["data"]["chart_recommendation"]["chart_type"] == "line"
     assert events[-1]["data"]["explainability"]["guard_result"]["allowed"] is True
     assert events[-1]["data"]["olap_intents"] == []
+    assert events[-1]["data"]["olap_description"] == "未检测到 OLAP 分析意图"
 
 
 def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
@@ -206,6 +207,7 @@ def test_iter_chat_events_returns_olap_detected_step_for_composite_intent():
         "description": "检测到 TopN / 排名 / 分层分析意图；检测到同比 / 环比分析意图",
     }
     assert events[-1]["data"]["olap_intents"] == ["topn", "yoy_mom"]
+    assert events[-1]["data"]["olap_description"] == "检测到 TopN / 排名 / 分层分析意图；检测到同比 / 环比分析意图"
 
 
 def test_iter_chat_events_returns_error_event_for_destructive_intent():

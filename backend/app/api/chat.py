@@ -150,6 +150,7 @@ def iter_chat_events(
                 "repair_history": state.repair_history,
                 "datasource": _datasource_payload(state),
                 "olap_intents": state.olap_intents,
+                "olap_description": describe_olap_intents(state.olap_intents),
             },
         )
     except httpx.ReadTimeout:
