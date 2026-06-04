@@ -30,6 +30,20 @@ def test_recommend_chart_keeps_same_scale_time_series_metrics():
     assert recommendation.y_columns == ["total_amount", "payment_amount"]
 
 
+def test_recommend_chart_returns_line_for_week_start_alias():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["week_start", "active_users"],
+            rows=[["2025-12-29", 12]],
+            row_count=1,
+        )
+    )
+
+    assert recommendation.chart_type == "line"
+    assert recommendation.x_column == "week_start"
+    assert recommendation.y_columns == ["active_users"]
+
+
 def test_recommend_chart_returns_table_for_detail_rows():
     recommendation = recommend_chart(
         QueryResult(

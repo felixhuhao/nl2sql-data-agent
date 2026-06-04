@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field
 from backend.app.execution.runner import QueryResult
 
 
-DATE_COLUMN_HINTS = ("date_value", "day", "month", "year")
-METRIC_COLUMN_HINTS = ("amount", "count", "sales", "revenue", "aov", "quantity")
+DATE_COLUMN_HINTS = ("date_value", "day", "week", "month", "year")
+METRIC_COLUMN_HINTS = ("amount", "count", "sales", "revenue", "aov", "quantity", "users")
 DETAIL_ROW_ID_COLUMNS = ("order_id", "item_id")
 DETAIL_ROW_KEY_THRESHOLD = 3
 DETAIL_ROW_COLUMN_THRESHOLD = 5
