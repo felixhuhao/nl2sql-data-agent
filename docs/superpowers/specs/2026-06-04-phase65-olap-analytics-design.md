@@ -20,7 +20,7 @@
 | 同环比/移动平均 | Agent 自动路由 + Prompt 增强（LAG 窗口函数指导） |
 | TopN/分层分析 | Agent 自动路由 + Prompt 增强（排序+限制模式） |
 | ClickHouse EXPLAIN | 每次查询自动触发，解析为可读性能提示 |
-| 图表扩展 | 新增 bar / dual_axis / pie，覆盖 BI 常见场景 |
+| 图表扩展 | 扩展 bar，新增 dual_axis / pie，覆盖 BI 常见场景 |
 
 ### 文档标记 Deferred
 
@@ -51,9 +51,9 @@ receive_question
   → ★ olap_intent_detect       (Phase 6.5 新增)
   → generate_sql               (Phase 1 已有，prompt 增强)
   → sql_guard                  (Phase 1 已有)
-  → execute_sql                (Phase 1 已有)
+  → execute                    (Phase 1 已有)
   → ★ explain_performance      (Phase 6.5 新增，仅 ClickHouse)
-  → summarize_result           (Phase 1 已有)
+  → summarize                  (Phase 1 已有)
   → recommend_chart            (Phase 1 已有，图表类型扩展)
 ```
 
@@ -84,6 +84,12 @@ def detect_olap_intent(question: str, matched_metrics: list) -> list[OLAPIntentT
 
 **多意图处理：** 返回所有命中的意图列表，不互斥。例如"Top10 商品销售额同比"同时命中 `["topn", "yoy_mom"]`，生成的 hint 合并两者的 SQL 模式指导。首个意图决定图表推荐优先级（topn > yoy_mom > moving_avg）。
 
+**排序规则：** detector 必须按固定优先级返回结果，避免关键词扫描顺序影响图表推荐。
+
+```python
+OLAP_INTENT_PRIORITY = ["topn", "yoy_mom", "moving_avg"]
+```
+
 #### explain_performance 节点
 
 **职责：** ClickHouse 查询执行后自动跑 EXPLAIN，解析为可读性能提示。
@@ -96,15 +102,20 @@ def explain_performance_node(state: AgentState) -> AgentState:
     if state.datasource_dialect != "clickhouse":
         return state
 
-    # 对 normalized_sql 执行 EXPLAIN（同步，与现有 Agent 链路一致）
+    # 对 Guard 产出的 normalized_sql 执行 EXPLAIN（同步，与现有 Agent 链路一致）
+    normalized_sql = state.guard_result.normalized_sql if state.guard_result else None
+    if not normalized_sql:
+        return state
+
     connector = get_datasource_manager().get(state.datasource_name)
-    explain_result = connector.explain(state.normalized_sql)
+    explain_result = connector.explain(normalized_sql)
 
     if explain_result is None:
         return state
 
     # 解析为可读提示
-    state.plan_hints = parse_plan_hints(explain_result, state.matched_tables)
+    matched_tables = (state.explainability or {}).get("matched_tables", [])
+    state.plan_hints = parse_plan_hints(explain_result, matched_tables)
 
     return state
 ```
@@ -134,7 +145,7 @@ step: olap_detected  → { "step": "olap_detected", "status": "completed", "olap
 step: explain_plan   → { "step": "explain_plan", "status": "completed", "plan_hints": [...], "runtime_stats": {...} }
 ```
 
-> **对齐规则：** step id 命名与现有一致（`datasource_selected` / `intent_guard` / `execute` / `summarize` / `recommend_chart` 等），status 统一用 `completed`。链路图中 `execute_sql` 对应实际 step id `execute`，`summarize_result` 对应 `summarize`。
+> **对齐规则：** step id 命名与现有一致（`datasource_selected` / `intent_guard` / `execute` / `summarize` / `recommend_chart` 等），status 统一用 `completed`。
 
 ## 4. OLAP Prompt 增强策略
 
@@ -182,9 +193,10 @@ SELECT
   ) AS yoy_pct
 FROM (
   SELECT
-    toStartOfMonth(order_date) AS month,
-    SUM(payment_amount) AS sales
-  FROM fact_orders
+    toStartOfMonth(dd.date_value) AS month,
+    SUM(fo.payment_amount) AS sales
+  FROM fact_orders fo
+  JOIN dim_date dd ON fo.date_key = dd.date_key
   GROUP BY month
 ) t
 ORDER BY month
@@ -194,7 +206,8 @@ ORDER BY month
 - 环比 = LAG(1)，同比 = LAG(12)（月度）或 LAG(4)（季度）
 - 计算百分比变化时用 NULLIF 做除零保护
 - 保留 2 位小数
-- DuckDB 用 dim_date.date_value 做时间列，ClickHouse 直接用 order_date
+- DuckDB 和 ClickHouse 都用 fact_orders.date_key -> dim_date.date_key 关联日期维表，再用 dim_date.date_value 做业务日期
+- ClickHouse 性能治理仍关注 fact_orders.date_key，因为它是分区键和排序键的一部分
 ```
 
 ### 4.3 TopN/分层 SQL 模式指导
@@ -244,34 +257,47 @@ AVG(metric_value) OVER (ORDER BY date_col ROWS BETWEEN 6 PRECEDING AND CURRENT R
 
 ### 4.5 Prompt 注入位置
 
-在 `agent/prompts/sql_generation.py` 的 `build_sql_prompt()` 中追加：
+在 `backend/app/core/llm_provider.py` 的 `SQLGenerationRequest` 中新增 `olap_hint: str = ""`，并在 `agent/prompts/sql_generation.py` 的 `build_sql_generation_messages()` 中追加到 user message：
 
 ```python
-def build_sql_prompt(context: SchemaContext, question: str, olap_hint: str = "", ...) -> str:
-    prompt = base_prompt  # 现有 prompt
+@dataclass(frozen=True)
+class SQLGenerationRequest:
+    question: str
+    schema_context: str
+    repair: SQLRepairContext | None = None
+    datasource_name: str = DEFAULT_DATASOURCE
+    datasource_dialect: str = "duckdb"
+    olap_hint: str = ""
 
-    if olap_hint:
-        prompt += f"\n\n{olap_hint}"  # 追加 OLAP SQL 模式指导
 
-    return prompt
+def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[str, str]]:
+    content_parts = [
+        f"Schema context:\n{request.schema_context}",
+        f"Question:\n{request.question}",
+    ]
+    if request.olap_hint:
+        content_parts.append(f"OLAP SQL guidance:\n{request.olap_hint}")
+    user_message = {"role": "user", "content": "\n\n".join(content_parts)}
+    ...
 ```
 
 设计要点：
-- OLAP hint 追加到现有 prompt，不替换
+- OLAP hint 追加到现有 user message，不替换 schema context / question
 - hint 内容根据 datasource_dialect 动态选择示例
 - 现有 schema context、verified query few-shot 照常工作
+- repair path 也带同一个 olap_hint，避免修复后丢失 OLAP 模式约束
 
 ## 5. ClickHouse EXPLAIN 与性能提示
 
 ### 5.1 EXPLAIN 执行流程
 
 ```text
-execute_sql (ClickHouse)
+execute (ClickHouse)
   → 成功
   → explain_performance_node
     → connector.explain(normalized_sql)
     → 解析 EXPLAIN 输出
-    → 生成 performance_hints[]
+    → 生成 plan_hints[]
     → 写入 AgentState
   → SSE 推送 explain_plan 事件
 ```
@@ -280,17 +306,17 @@ execute_sql (ClickHouse)
 
 ```python
 # connectors/base.py — 新增协议方法
-async def explain(self, sql: str) -> dict | None:
+def explain(self, sql: str) -> dict | None:
     """执行 EXPLAIN 并返回解析结果，不支持则返回 None"""
 
 # connectors/clickhouse.py — 实现
-async def explain(self, sql: str) -> dict | None:
+def explain(self, sql: str) -> dict | None:
     explain_sql = f"EXPLAIN PIPELINE TREE {sql}"
-    result = await self.execute_readonly(explain_sql)
+    result = self.execute(explain_sql)
     return self._parse_explain(result)
 
 # connectors/duckdb.py — 不实现，返回 None
-async def explain(self, sql: str) -> dict | None:
+def explain(self, sql: str) -> dict | None:
     return None
 ```
 
@@ -322,8 +348,8 @@ EXPLAIN 和运行时统计来源不同，拆为两类：
 ```json
 {
   "plan_hints": [
-    "✅ 命中分区键 order_date，扫描 3/24 分区",
-    "⚠️ 未利用排序键，添加 ORDER BY order_date 可提升性能",
+    "✅ 命中分区键 date_key，扫描 3/24 分区",
+    "⚠️ 未利用排序键 date_key，建议增加明确的日期范围过滤",
     "🔗 包含 1 个 JOIN"
   ],
   "runtime_stats": {
@@ -344,7 +370,7 @@ EXPLAIN 和运行时统计来源不同，拆为两类：
   "data": {
     "step": "explain_plan",
     "status": "completed",
-    "plan_hints": ["✅ 命中分区键 order_date", "🔗 包含 1 个 JOIN"],
+    "plan_hints": ["✅ 命中分区键 date_key", "🔗 包含 1 个 JOIN"],
     "runtime_stats": { "rows_read": 15230, "execution_time_ms": 45 }
   }
 }
@@ -441,10 +467,10 @@ Case 格式新增字段：
 
 ```yaml
 expected:
-  olap_intent: yoy_mom              # 期望识别的 OLAP 意图
+  olap_intents: [yoy_mom]           # 期望识别的 OLAP 意图列表
   required_sql_patterns: ["LAG", "OVER"]  # SQL 模式校验
   chart_type: bar                   # 期望的图表推荐类型
-  performance_hints_exist: true     # 是否期望生成性能提示
+  plan_hints_exist: true            # 是否期望生成 EXPLAIN 计划提示
 ```
 
 ### 7.2 Eval Runner 扩展
@@ -454,7 +480,7 @@ expected:
 - OLAP 意图识别准确率校验
 - SQL 模式命中校验（required_sql_patterns）
 - 图表推荐匹配校验（chart_type）
-- 性能提示生成校验（performance_hints_exist）
+- 性能提示生成校验（plan_hints_exist）
 
 ### 7.3 报告新增维度
 
