@@ -172,20 +172,22 @@ python scripts/run_smoke_eval.py
 
 当前 smoke eval 覆盖：
 
-- 28 条正常查询：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback、Value Recall、语义向量召回
-- 9 条安全用例：DELETE、DROP、CREATE、UPDATE、TRUNCATE、非白名单表、外部读取函数、fanout 风险
+- DuckDB 42 条基线 case：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback、Value Recall、语义向量召回、安全拦截和修复链路
+- ClickHouse 17 条方言 case：日期函数、条件聚合、`uniqExact` / `sumIf` / `countIf`、OLAP TopN，以及 ClickHouse 特有危险命令/函数拦截
 - retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation
-- 错误归因：retrieval_miss、sql_generation_error、sql_generation_timeout、sql_generation_mismatch、sql_invalid、guard_blocked、fanout_risk、guard_mismatch、execution_error、result_mismatch、chart_mismatch、explainability_error、explainability_mismatch
+- 错误归因：retrieval_miss、sql_generation_error、sql_generation_timeout、sql_generation_mismatch、dialect_mismatch、sql_invalid、guard_blocked、fanout_risk、guard_mismatch、execution_error、result_mismatch、chart_mismatch、explainability_error、explainability_mismatch
 
 通过时输出类似：
 
 ```text
-37/37 smoke cases passed.
-focused context: avg=2288 chars, full=7155 chars, avg_reduction=68.0%, fallback=3/37
+42/42 smoke cases passed.
+DuckDB (本地) - 42 cases: 42/42 passed.
+skipped 17 cases for provider=mock.
+focused context: avg=1911 chars, full=7875 chars, avg_reduction=75.7%, fallback=4/42
 report: evals\reports\smoke_latest.md
 ```
 
-报告会写入 `evals/reports/smoke_latest.md`，包含 provider、skipped cases、错误类型分布、retrieval expected hit rate、full schema vs focused context 对比、每条 case 的 SQL、检索资产和失败详情。
+报告会写入 `evals/reports/smoke_latest.md`，包含 provider、skipped cases、按数据源分组的通过率、错误类型分布、retrieval expected hit rate、full schema vs focused context 对比、每条 case 的 SQL、检索资产和失败详情。ClickHouse 未启用或不可连接时，ClickHouse case 会自动跳过。
 
 运行 DeepSeek real eval：
 

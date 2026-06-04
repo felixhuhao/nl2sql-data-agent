@@ -17,6 +17,7 @@ from backend.app.agent.nodes import generate_sql_node
 from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
+from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.deepseek_provider import DeepSeekProvider
 from backend.app.core.llm_provider import (
     LLMProvider,
@@ -25,6 +26,7 @@ from backend.app.core.llm_provider import (
     SQLGenerationResult,
 )
 from backend.app.execution.runner import execute_guarded_sql
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context_from_retrieval, build_schema_context
 from backend.app.sql_guard import build_default_guard_scope, guard_sql
@@ -39,11 +41,28 @@ class RetrievalCheck:
     missing: list[str]
 
 
+@dataclass(frozen=True)
+class DatasourceRef:
+    name: str
+    dialect: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class CaseResources:
+    datasource: DatasourceRef
+    scope: Any
+    full_schema_context: str
+
+
 @dataclass
 class SmokeResult:
     case_id: str
     case_type: str
     question: str
+    datasource_name: str = DEFAULT_DATASOURCE
+    datasource_dialect: str = "duckdb"
+    datasource_display_name: str = "DuckDB (本地)"
     passed: bool = True
     messages: list[str] = field(default_factory=list)
     sql: str | None = None
@@ -118,32 +137,34 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    cases = _load_cases(Path(args.cases_path))
-    scope = build_default_guard_scope()
     try:
+        cases = _load_cases(Path(args.cases_path))
         provider = _create_provider(args.provider)
-        selected_cases, skipped_case_ids = _filter_cases(cases, provider_name=args.provider)
+        available_datasources = _available_datasources()
+        selected_cases, skipped_case_ids = _filter_cases(
+            cases,
+            provider_name=args.provider,
+            available_datasources=available_datasources,
+        )
+        resources_by_datasource = _build_case_resources(selected_cases, available_datasources)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    full_schema_context = build_schema_context()
     if args.vector_compare:
         return _run_vector_compare(
             selected_cases=selected_cases,
-            scope=scope,
             provider=provider,
-            full_schema_context=full_schema_context,
             provider_name=args.provider,
             report_path=Path(args.report_path),
             skipped_case_ids=skipped_case_ids,
+            resources_by_datasource=resources_by_datasource,
         )
 
     results = [
         _run_case(
             case,
-            scope,
+            resources_by_datasource[_case_datasource(case)],
             provider,
-            full_schema_context,
             provider_name=args.provider,
             use_vector=False,
         )
@@ -158,19 +179,17 @@ def main() -> int:
 def _run_vector_compare(
     *,
     selected_cases: list[dict[str, Any]],
-    scope,
     provider: LLMProvider,
-    full_schema_context: str,
     provider_name: str,
     report_path: Path,
     skipped_case_ids: list[str],
+    resources_by_datasource: dict[str, CaseResources],
 ) -> int:
     rule_results = [
         _run_case(
             case,
-            scope,
+            resources_by_datasource[_case_datasource(case)],
             provider,
-            full_schema_context,
             provider_name=provider_name,
             use_vector=False,
         )
@@ -179,9 +198,8 @@ def _run_vector_compare(
     vector_results = [
         _run_case(
             case,
-            scope,
+            resources_by_datasource[_case_datasource(case)],
             provider,
-            full_schema_context,
             provider_name=provider_name,
             use_vector=True,
             validate_vector_expectations=True,
@@ -220,6 +238,7 @@ def _create_provider(provider_name: str) -> LLMProvider:
 def _filter_cases(
     cases: list[dict[str, Any]],
     provider_name: str,
+    available_datasources: dict[str, DatasourceRef],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     selected_cases = []
     skipped_case_ids = []
@@ -227,10 +246,14 @@ def _filter_cases(
         case_provider = case.get("provider", "both")
         if case_provider not in {"both", "mock", "real"}:
             raise ValueError(f"Unknown case provider {case_provider!r} in {case['id']}.")
-        if _case_matches_provider(case_provider, provider_name):
-            selected_cases.append(case)
-        else:
-            skipped_case_ids.append(case["id"])
+        datasource_name = _case_datasource(case)
+        if datasource_name not in available_datasources:
+            skipped_case_ids.append(f"{case['id']} (datasource unavailable: {datasource_name})")
+            continue
+        if not _case_matches_provider(case_provider, provider_name):
+            skipped_case_ids.append(f"{case['id']} (provider={case_provider})")
+            continue
+        selected_cases.append(case)
     return selected_cases, skipped_case_ids
 
 
@@ -242,42 +265,89 @@ def _case_matches_provider(case_provider: str, provider_name: str) -> bool:
     return provider_name != "mock"
 
 
+def _case_datasource(case: dict[str, Any]) -> str:
+    return str(case.get("datasource") or DEFAULT_DATASOURCE)
+
+
+def _available_datasources() -> dict[str, DatasourceRef]:
+    manager = get_datasource_manager()
+    return {
+        source.name: DatasourceRef(
+            name=source.name,
+            dialect=source.dialect,
+            display_name=source.display_name,
+        )
+        for source in manager.list_sources()
+    }
+
+
+def _build_case_resources(
+    cases: list[dict[str, Any]],
+    available_datasources: dict[str, DatasourceRef],
+) -> dict[str, CaseResources]:
+    resources: dict[str, CaseResources] = {}
+    for datasource_name in sorted({_case_datasource(case) for case in cases}):
+        datasource = available_datasources[datasource_name]
+        resources[datasource_name] = CaseResources(
+            datasource=datasource,
+            scope=build_default_guard_scope(datasource_name=datasource_name),
+            full_schema_context=build_schema_context(datasource_name=datasource_name),
+        )
+    return resources
+
+
 def _run_case(
     case: dict[str, Any],
-    scope,
+    resources: CaseResources,
     provider: LLMProvider,
-    full_schema_context: str,
     provider_name: str,
     use_vector: bool | None = None,
     validate_vector_expectations: bool = False,
 ) -> SmokeResult:
+    datasource = resources.datasource
     result = SmokeResult(
         case_id=case["id"],
         case_type=case.get("type", ""),
         question=case["question"],
+        datasource_name=datasource.name,
+        datasource_dialect=datasource.dialect,
+        datasource_display_name=datasource.display_name,
     )
     started_at = time.perf_counter()
     try:
         expected = case.get("expected", {})
         try:
-            retrieval_result = retrieve_metadata_assets(case["question"], use_vector=use_vector)
+            retrieval_result = retrieve_metadata_assets(
+                case["question"],
+                use_vector=use_vector,
+                datasource_name=datasource.name,
+            )
             _record_retrieval_result(result, retrieval_result)
             _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
             if validate_vector_expectations:
                 _validate_vector_retrieval(result, expected.get("vector") or {})
-            schema_context = build_focused_context_from_retrieval(retrieval_result)
+            schema_context = build_focused_context_from_retrieval(
+                retrieval_result,
+                datasource_name=datasource.name,
+            )
         except Exception as exc:
             result.fail(f"retrieval/context failed: {exc}", "retrieval_miss")
             return result
 
         result.focused_context_chars = len(schema_context)
-        result.full_context_chars = len(full_schema_context)
+        result.full_context_chars = len(resources.full_schema_context)
         result.context_reduction_ratio = _context_reduction_ratio(
             focused_chars=result.focused_context_chars,
             full_chars=result.full_context_chars,
         )
 
-        state = AgentState(question=case["question"], schema_context=schema_context)
+        state = AgentState(
+            question=case["question"],
+            datasource_name=datasource.name,
+            datasource_dialect=datasource.dialect,
+            datasource_display_name=datasource.display_name,
+            schema_context=schema_context,
+        )
         case_provider = _case_provider(case, provider=provider, provider_name=provider_name)
         try:
             generate_sql_node(state, provider=case_provider)
@@ -295,7 +365,13 @@ def _run_case(
             return result
 
         if expected.get("should_execute") is False and not expected.get("repair_should_fail"):
-            _run_guard_only_case(result=result, state=state, scope=scope, expected=expected)
+            _run_guard_only_case(
+                result=result,
+                state=state,
+                scope=resources.scope,
+                expected=expected,
+                datasource_name=datasource.name,
+            )
             return result
 
         try:
@@ -303,7 +379,7 @@ def _run_case(
                 iter_sql_repair_events(
                     state,
                     provider=case_provider,
-                    scope_builder=lambda: scope,
+                    scope_builder=lambda datasource_name=datasource.name: resources.scope,
                     executor=execute_guarded_sql,
                 )
             )
@@ -402,9 +478,10 @@ def _run_guard_only_case(
     state: AgentState,
     scope,
     expected: dict[str, Any],
+    datasource_name: str,
 ) -> None:
     try:
-        guard_result = guard_sql(state.sql or "", scope=scope)
+        guard_result = guard_sql(state.sql or "", scope=scope, datasource_name=datasource_name)
     except Exception as exc:
         result.fail(f"SQL Guard failed: {exc}", "guard_blocked")
         return
@@ -413,6 +490,7 @@ def _run_guard_only_case(
     result.guard_stage = guard_result.stage
     result.guard_reason = guard_result.reason
     result.normalized_sql = guard_result.normalized_sql
+    _validate_dialect_hints(result, expected)
     _validate_safety_case(result, guard_result, expected)
     _validate_repair_expectations(result, expected)
 
@@ -587,6 +665,8 @@ def _validate_normal_case(
             "result_mismatch",
         )
 
+    _validate_dialect_hints(result, expected)
+
     expected_sql_keywords = expected.get("expected_sql_keywords") or []
     if expected_sql_keywords and result.generated_sql:
         normalized_sql = result.generated_sql.lower()
@@ -641,6 +721,33 @@ def _validate_normal_case(
         actual=[_format_join_path(path) for path in explainability.get("join_paths") or []],
         error_category="explainability_mismatch",
     )
+
+
+DUCKDB_SYNTAX_MARKERS = ("date_trunc(", "::", "read_csv(", "read_json(", "read_parquet(")
+
+
+def _validate_dialect_hints(result: SmokeResult, expected: dict[str, Any]) -> None:
+    hints = expected.get("dialect_hints") or []
+    if not hints:
+        return
+    sql_text = "\n".join(part for part in (result.generated_sql, result.normalized_sql) if part)
+    normalized_sql = sql_text.casefold()
+    for hint in hints:
+        if not isinstance(hint, dict):
+            continue
+        function_name = hint.get("function")
+        if function_name and function_name.casefold() not in normalized_sql:
+            result.fail(
+                f"expected dialect function {function_name!r} in SQL",
+                "dialect_mismatch",
+            )
+        if hint.get("no_duckdb_syntax"):
+            markers = [marker for marker in DUCKDB_SYNTAX_MARKERS if marker in normalized_sql]
+            if markers:
+                result.fail(
+                    f"unexpected DuckDB syntax markers for {result.datasource_dialect}: {markers}",
+                    "dialect_mismatch",
+                )
 
 
 def _validate_subset(
@@ -708,7 +815,10 @@ def _print_results(
 ) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
-        details = f"category={result.error_category or '-'} guard={result.guard_stage}"
+        details = (
+            f"datasource={result.datasource_name} "
+            f"category={result.error_category or '-'} guard={result.guard_stage}"
+        )
         if result.repair_count:
             details += f" repairs={result.repair_count}"
         if result.row_count is not None:
@@ -721,6 +831,9 @@ def _print_results(
 
     passed = sum(1 for result in results if result.passed)
     print(f"\n{passed}/{len(results)} smoke cases passed.")
+    for _, group in _group_results_by_datasource(results):
+        group_passed = sum(1 for result in group if result.passed)
+        print(f"{_datasource_section_title(group)}: {group_passed}/{len(group)} passed.")
     if skipped_case_ids:
         print(f"skipped {len(skipped_case_ids)} cases for provider={provider_name}.")
     summary = _summary_metrics(results)
@@ -905,11 +1018,37 @@ def _render_report(
         f"- Avg elapsed: {_format_elapsed(summary['avg_elapsed_ms'])}",
         f"- Chart recommendations: {_format_distribution(chart_distribution)}",
         "",
+        "## Datasource Summary",
+        "",
+        "| Datasource | Dialect | Cases | Passed | Avg elapsed |",
+        "|------------|---------|-------|--------|-------------|",
+    ]
+    for _, group in _group_results_by_datasource(results):
+        group_summary = _summary_metrics(group)
+        first = group[0]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(first.datasource_display_name),
+                    _md_cell(first.datasource_dialect),
+                    str(group_summary["total_cases"]),
+                    f"{group_summary['passed_cases']}/{group_summary['total_cases']}",
+                    _format_elapsed(group_summary["avg_elapsed_ms"]),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(
+        [
+        "",
         "## Error Distribution",
         "",
         "| Category | Count | Cases |",
         "|----------|-------|-------|",
-    ]
+        ]
+    )
     if error_distribution:
         for category, case_ids in error_distribution.items():
             lines.append(
@@ -948,32 +1087,40 @@ def _render_report(
             "",
             "## Case Results",
             "",
-            "| Case | Status | Type | Category | Fallback | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
-            "|------|--------|------|----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
         ]
     )
-    for result in results:
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    _md_cell(result.case_id),
-                    "PASS" if result.passed else "FAIL",
-                    _md_cell(result.case_type or "-"),
-                    _md_cell(result.error_category or "-"),
-                    str(result.retrieval_fallback_used),
-                    str(result.repair_count),
-                    _format_elapsed(result.elapsed_ms),
-                    str(result.focused_context_chars),
-                    _format_percent(result.context_reduction_ratio),
-                    _md_cell(result.guard_stage or "-"),
-                    str(result.row_count) if result.row_count is not None else "-",
-                    _md_cell(result.chart_type or "-"),
-                    _md_cell(_short_sql(result.generated_sql) or "-"),
-                ]
-            )
-            + " |"
+    for _, group in _group_results_by_datasource(results):
+        lines.extend(
+            [
+                f"### {_datasource_section_title(group)}",
+                "",
+                "| Case | Status | Type | Category | Fallback | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
+                "|------|--------|------|----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
+            ]
         )
+        for result in group:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _md_cell(result.case_id),
+                        "PASS" if result.passed else "FAIL",
+                        _md_cell(result.case_type or "-"),
+                        _md_cell(result.error_category or "-"),
+                        str(result.retrieval_fallback_used),
+                        str(result.repair_count),
+                        _format_elapsed(result.elapsed_ms),
+                        str(result.focused_context_chars),
+                        _format_percent(result.context_reduction_ratio),
+                        _md_cell(result.guard_stage or "-"),
+                        str(result.row_count) if result.row_count is not None else "-",
+                        _md_cell(result.chart_type or "-"),
+                        _md_cell(_short_sql(result.generated_sql) or "-"),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
 
     lines.extend(["", "## Failure Details", ""])
     failures = [result for result in results if not result.passed]
@@ -985,6 +1132,7 @@ def _render_report(
             lines.extend(
                 [
                     f"- Category: {result.error_category or '-'}",
+                    f"- Datasource: {result.datasource_display_name} ({result.datasource_name})",
                     f"- Elapsed: {_format_elapsed(result.elapsed_ms)}",
                     f"- Guard: {result.guard_stage or '-'}",
                     f"- Guard reason: {result.guard_reason or '-'}",
@@ -1003,26 +1151,28 @@ def _render_report(
             lines.append("")
 
     lines.extend(["", "## Retrieval Details", ""])
-    for result in results:
-        lines.extend(
-            [
-                f"### {result.case_id}",
-                "",
-                f"- Question: {result.question}",
-                f"- Tables: {', '.join(result.retrieval_tables) or '-'}",
-                f"- Columns: {', '.join(result.retrieval_columns) or '-'}",
-                f"- Metrics: {', '.join(result.retrieval_metrics) or '-'}",
-                f"- Verified queries: {', '.join(result.retrieval_verified_queries) or '-'}",
-            ]
-        )
-        if result.retrieval_checks:
-            lines.append("- Expected retrieval checks:")
-            for check in result.retrieval_checks:
-                status = "PASS" if not check.missing else "FAIL"
-                lines.append(
-                    f"  - {check.label}: {status}; expected={check.expected}; missing={check.missing}"
-                )
-        lines.append("")
+    for _, group in _group_results_by_datasource(results):
+        lines.extend([f"### {_datasource_section_title(group)}", ""])
+        for result in group:
+            lines.extend(
+                [
+                    f"#### {result.case_id}",
+                    "",
+                    f"- Question: {result.question}",
+                    f"- Tables: {', '.join(result.retrieval_tables) or '-'}",
+                    f"- Columns: {', '.join(result.retrieval_columns) or '-'}",
+                    f"- Metrics: {', '.join(result.retrieval_metrics) or '-'}",
+                    f"- Verified queries: {', '.join(result.retrieval_verified_queries) or '-'}",
+                ]
+            )
+            if result.retrieval_checks:
+                lines.append("- Expected retrieval checks:")
+                for check in result.retrieval_checks:
+                    status = "PASS" if not check.missing else "FAIL"
+                    lines.append(
+                        f"  - {check.label}: {status}; expected={check.expected}; missing={check.missing}"
+                    )
+            lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1050,13 +1200,27 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
         "fallback_cases": sum(1 for result in results if result.retrieval_fallback_used),
         "repair_cases": sum(1 for result in results if result.repair_count > 0),
         "total_repair_attempts": sum(result.repair_count for result in results),
-        "full_context_chars": full_lengths[0] if full_lengths else 0,
+        "full_context_chars": _average_int(full_lengths),
         "avg_focused_context_chars": _average_int(focused_lengths),
         "avg_context_reduction_ratio": _average_float(reductions),
         "avg_elapsed_ms": _average_int(
             [result.elapsed_ms for result in results if result.elapsed_ms is not None]
         ),
     }
+
+
+def _group_results_by_datasource(results: list[SmokeResult]) -> list[tuple[str, list[SmokeResult]]]:
+    groups: dict[str, list[SmokeResult]] = {}
+    for result in results:
+        groups.setdefault(result.datasource_name, []).append(result)
+    return list(groups.items())
+
+
+def _datasource_section_title(results: list[SmokeResult]) -> str:
+    if not results:
+        return "Unknown - 0 cases"
+    first = results[0]
+    return f"{first.datasource_display_name} - {len(results)} cases"
 
 
 def _value_recall_stats(results: list[SmokeResult]) -> dict[str, int]:

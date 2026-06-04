@@ -842,59 +842,83 @@ execute_sql failed
 
 4 到 6 天。
 
-## 10. Phase 6：ClickHouse 与 OLAP 能力增强
+## 10. Phase 6：ClickHouse 接入与多数据源方言适配
 
 ### 目标
 
-从 DuckDB 本地演示升级到更接近真实企业环境的 OLAP 数据源，重点体现 ClickHouse 接入、SQL 方言适配、性能治理和复杂分析能力。
+从 DuckDB 本地演示升级到支持 ClickHouse 的多数据源架构，重点体现 Connector 抽象、SQL 方言适配、ClickHouse 安全执行和回归评测能力。
 
 ### 能力
 
 1. ClickHouse 数据源连接器。
 2. DuckDB / ClickHouse 方言差异处理。
 3. ClickHouse schema 同步。
-4. ClickHouse EXPLAIN / query log 集成。
-5. 大宽表聚合查询支持。
+4. SQL Guard 按 datasource 动态选择方言和安全规则。
+5. 前端和 Admin UI 支持数据源切换。
 6. 分区字段、排序键、低基数字段等 OLAP 元数据展示。
-7. 查询性能提示，例如是否命中分区、是否缺少时间过滤。
+7. Eval runner 按数据源分组报告，并跳过不可用数据源。
 
-### OLAP 分析场景
+### ClickHouse 覆盖场景
 
 - 销售额、订单数、客单价趋势。
 - 品类、地区、渠道贡献分析。
 - TopN 商品和用户分层。
-- 同比、环比、移动平均。
-- 漏斗转化。
-- 留存分析。
-- 异常波动解释。
+- 条件聚合，例如 `countIf` / `sumIf`。
+- ClickHouse 日期函数，例如 `toStartOfDay` / `toStartOfMonth`。
 
 ### Agent 增强
 
-Agent 需要理解 OLAP 常见查询约束：
+Agent 需要理解数据源方言差异：
 
-- 大表查询必须尽量带时间过滤。
-- 明细查询默认限制行数。
-- 聚合查询优先使用分区字段和排序键。
 - 生成 SQL 时考虑 ClickHouse 函数和日期语法。
-- 当用户问题过宽时，主动要求缩小时间范围或维度。
+- Repair prompt 要继承当前数据源方言。
+- SQL Guard 和执行器必须使用同一个 datasource。
+- Mock / real eval 都要能区分 DuckDB 和 ClickHouse case。
 
 ```text
 用户：统计今年每月各渠道销售额同比增长率
-路由：NL2SQL -> ClickHouse dialect -> SQL Guard -> EXPLAIN -> Execute
+路由：NL2SQL -> ClickHouse dialect -> SQL Guard -> Execute
 ```
 
 ### 验收标准
 
 - 可以在配置中切换 DuckDB 和 ClickHouse 数据源。
 - 同一类业务问题可以在 DuckDB 和 ClickHouse 上生成对应方言 SQL。
-- ClickHouse 查询经过 SQL Guard、EXPLAIN 和超时控制。
-- 前端可以展示数据源类型、查询耗时、返回行数和性能提示。
+- ClickHouse 查询经过 SQL Guard、只读连接和超时控制。
+- 前端可以展示数据源类型、查询耗时、返回行数。
+- ClickHouse eval 至少 15 条 case，报告按数据源分 section。
+
+### 建议用时
+
+4 到 6 天。
+
+## 11. Phase 6.5：OLAP 分析工具与性能治理
+
+### 目标
+
+在 Phase 6 的多数据源基础上，补齐更面向真实经营分析的 OLAP 工具、性能解释和复杂分析能力。
+
+### 能力
+
+1. 同比、环比、移动平均等指标计算工具。
+2. 漏斗转化分析。
+3. 留存分析。
+4. TopN / 分层分析。
+5. 数据质量检查。
+6. ClickHouse EXPLAIN / query log 集成。
+7. 性能提示，例如是否命中分区、是否利用排序键、是否缺少时间过滤。
+
+### 验收标准
+
+- 前端可以展示 EXPLAIN 或性能提示。
+- 可以回答同环比、漏斗、留存等 OLAP 问题。
+- Eval 中新增复杂 OLAP case，并按错误类型聚合报告。
 
 ### 建议用时
 
 5 到 8 天。
 
-## 11. Phase 7：MCP 工具化
+## 12. Phase 7：MCP 工具化
 
 ### 目标
 
@@ -931,7 +955,7 @@ mcp_servers/olap_tools
 
 4 到 6 天。
 
-## 12. Phase 8：产品化与求职包装
+## 13. Phase 8：产品化与求职包装
 
 ### 目标
 
@@ -982,7 +1006,7 @@ mcp_servers/olap_tools
 
 3 到 5 天。
 
-## 13. 里程碑计划
+## 14. 里程碑计划
 
 ### Milestone 1：可运行的 NL2SQL 工业闭环
 
@@ -1027,7 +1051,7 @@ mcp_servers/olap_tools
 
 ### Milestone 4：具备 OLAP 工业数据源能力
 
-覆盖 Phase 6。
+覆盖 Phase 6 + Phase 6.5。
 
 成果：
 
@@ -1051,7 +1075,7 @@ mcp_servers/olap_tools
 
 这是最终求职包装版本。
 
-## 14. 第一版最小任务清单
+## 15. 第一版最小任务清单
 
 如果马上开始开发，建议先做以下任务：
 
@@ -1074,7 +1098,7 @@ mcp_servers/olap_tools
 17. 实现基础折线图推荐。
 18. 写 10 条 eval case。
 
-## 15. 不做清单
+## 16. 不做清单
 
 第一阶段明确不做：
 
@@ -1089,7 +1113,7 @@ mcp_servers/olap_tools
 
 这些能力可以写进后续规划，但不要干扰第一版闭环。
 
-## 16. 推荐开发顺序
+## 17. 推荐开发顺序
 
 实际编码顺序建议如下：
 
@@ -1110,7 +1134,7 @@ backend config
 
 其中 SQL Guard 要尽早完成，因为后续所有执行链路都要依赖它。
 
-## 17. 简历可讲故事线
+## 18. 简历可讲故事线
 
 项目讲解时可以按这个逻辑：
 

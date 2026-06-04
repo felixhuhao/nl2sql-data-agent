@@ -1,5 +1,5 @@
 version: 1
-description: Phase 3 deterministic smoke cases for retrieval, focused context, Mock provider, SQL Guard, executor, explainability, and chart recommendation.
+description: Deterministic smoke cases for retrieval, focused context, Mock provider, SQL Guard, executor, explainability, chart recommendation, and datasource dialect coverage.
 cases:
   - id: recent_30d_daily_sales
     type: normal
@@ -111,7 +111,7 @@ cases:
       matched_query_id: null
       retrieval:
         fallback_used: false
-        required_tables: [fact_orders, dim_date]
+        required_tables: [fact_orders]
         required_columns:
           - fact_orders.payment_amount
           - fact_orders.order_id
@@ -928,3 +928,411 @@ cases:
       should_execute: false
       guard_stage: function_guard
       reason_contains: read_parquet is not allowed
+
+  - id: ch_monthly_sales
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天每月销售额
+    tags: [phase6, clickhouse, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      SELECT toStartOfMonth(d.date_value) AS month_start, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY month_start
+      ORDER BY month_start
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: toStartOfMonth
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - dim_date.date_value
+        - fact_orders.payment_amount
+      result_columns: [month_start, sales_amount]
+      min_row_count: 1
+      chart_type: line
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_daily_order_count
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天每日订单数
+    tags: [phase6, clickhouse, orders, time_series]
+    provider: mock
+    mock_sql: >-
+      SELECT toStartOfDay(d.date_value) AS order_day, uniqExact(o.order_id) AS order_count
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY order_day
+      ORDER BY order_day
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: toStartOfDay
+        - function: uniqExact
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - dim_date.date_value
+        - fact_orders.order_id
+      result_columns: [order_day, order_count]
+      min_row_count: 30
+      chart_type: line
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_channel_sales_30d
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 按渠道统计最近30天销售额
+    tags: [phase6, clickhouse, sales, channel]
+    provider: mock
+    mock_sql: >-
+      SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY c.channel_name
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_channels, dim_date]
+      required_columns:
+        - dim_channels.channel_name
+        - fact_orders.payment_amount
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_region_sales_30d
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 按地区统计最近30天销售额
+    tags: [phase6, clickhouse, sales, region]
+    provider: mock
+    mock_sql: >-
+      SELECT r.region_group, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_regions r ON o.region_key = r.region_key
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY r.region_group
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_regions, dim_date]
+      required_columns:
+        - dim_regions.region_group
+        - fact_orders.payment_amount
+      result_columns: [region_group, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.region_key -> dim_regions.region_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_paid_order_count_if
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 统计最近30天已支付订单数
+    tags: [phase6, clickhouse, orders, conditional_aggregation]
+    provider: mock
+    mock_sql: >-
+      SELECT countIf(o.order_status = 'paid') AS paid_order_count
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: countIf
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.order_status
+      result_columns: [paid_order_count]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_recent_7d_vs_30d_sales
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近7天与30天销售额对比
+    tags: [phase6, clickhouse, sales, conditional_aggregation]
+    provider: mock
+    mock_sql: >-
+      SELECT
+        sumIf(o.payment_amount, d.date_value BETWEEN toDate('2025-12-25') AND toDate('2025-12-31')) AS recent_7d_sales,
+        sumIf(o.payment_amount, d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')) AS recent_30d_sales
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: sumIf
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - fact_orders.payment_amount
+        - dim_date.date_value
+      result_columns: [recent_7d_sales, recent_30d_sales]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_average_order_value
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 客单价
+    tags: [phase6, clickhouse, metric, aov]
+    provider: mock
+    mock_sql: >-
+      SELECT SUM(toFloat64(o.payment_amount)) / uniqExact(o.order_id) AS aov
+      FROM fact_orders o
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: toFloat64
+        - function: uniqExact
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.payment_amount
+        - fact_orders.order_id
+      result_columns: [aov]
+      min_row_count: 1
+      chart_type: table
+
+  - id: ch_top_products_30d
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天销量最高的10个商品
+    tags: [phase6, clickhouse, product, topn]
+    provider: mock
+    mock_sql: >-
+      SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY p.name
+      ORDER BY quantity_sold DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - no_duckdb_syntax: true
+      required_tables: [fact_order_items, dim_products, dim_date]
+      required_columns:
+        - dim_products.name
+        - fact_order_items.quantity
+      result_columns: [product_name, quantity_sold]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+        - fact_order_items.date_key -> dim_date.date_key
+
+  - id: ch_category_sales_30d
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天按品类统计销售额
+    tags: [phase6, clickhouse, category, sales]
+    provider: mock
+    mock_sql: >-
+      SELECT p.category, SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY p.category
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - no_duckdb_syntax: true
+      required_tables: [fact_order_items, dim_products, dim_date]
+      required_columns:
+        - dim_products.category
+        - fact_order_items.item_amount
+      result_columns: [category, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+        - fact_order_items.date_key -> dim_date.date_key
+
+  - id: ch_region_channel_cross
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 按地区和渠道交叉统计销售额
+    tags: [phase6, clickhouse, sales, region, channel]
+    provider: mock
+    mock_sql: >-
+      SELECT r.region_group, c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_regions r ON o.region_key = r.region_key
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY r.region_group, c.channel_name
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_regions, dim_channels, dim_date]
+      required_columns:
+        - dim_regions.region_group
+        - dim_channels.channel_name
+        - fact_orders.payment_amount
+      result_columns: [region_group, channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: table
+      join_paths:
+        - fact_orders.region_key -> dim_regions.region_key
+        - fact_orders.channel_key -> dim_channels.channel_key
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_weekly_user_count
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天每周活跃用户数
+    tags: [phase6, clickhouse, user, time_series]
+    provider: mock
+    mock_sql: >-
+      SELECT toStartOfWeek(d.date_value) AS week_start, uniqExact(o.user_key) AS active_users
+      FROM fact_orders o
+      JOIN dim_date d ON o.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY week_start
+      ORDER BY week_start
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: toStartOfWeek
+        - function: uniqExact
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders, dim_date]
+      required_columns:
+        - dim_date.date_value
+        - fact_orders.user_key
+      result_columns: [week_start, active_users]
+      min_row_count: 1
+      chart_type: line
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+
+  - id: ch_payment_bucket
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 订单金额分布
+    tags: [phase6, clickhouse, sales, distribution]
+    provider: mock
+    mock_sql: >-
+      SELECT
+        multiIf(o.payment_amount < 100, '0-100', o.payment_amount < 500, '100-500', o.payment_amount < 1000, '500-1000', '1000+') AS payment_bucket,
+        COUNT(*) AS order_count
+      FROM fact_orders o
+      GROUP BY payment_bucket
+      ORDER BY min(o.payment_amount)
+    expected:
+      should_execute: true
+      matched_query_id: null
+      dialect_hints:
+        - function: multiIf
+        - no_duckdb_syntax: true
+      required_tables: [fact_orders]
+      required_columns:
+        - fact_orders.payment_amount
+      result_columns: [payment_bucket, order_count]
+      min_row_count: 1
+      chart_type: table
+
+  - id: ch_unsafe_system_command
+    type: safety
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 执行 SYSTEM FLUSH LOGS
+    tags: [phase6, clickhouse, security, operation]
+    provider: mock
+    mock_sql: SYSTEM FLUSH LOGS
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: SYSTEM is not allowed
+
+  - id: ch_unsafe_kill_query
+    type: safety
+    datasource: clickhouse_ecommerce
+    question: ClickHouse KILL 查询
+    tags: [phase6, clickhouse, security, operation]
+    provider: mock
+    mock_sql: KILL QUERY WHERE query_id = 'abc'
+    expected:
+      should_execute: false
+      guard_stage: operation_guard
+      reason_contains: KILL is not allowed
+
+  - id: ch_unsafe_s3_function
+    type: safety
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 从 s3 读取订单
+    tags: [phase6, clickhouse, security, function]
+    provider: mock
+    mock_sql: SELECT * FROM s3('https://example.com/orders.csv', 'CSV', 'order_id String')
+    expected:
+      should_execute: false
+      guard_stage: function_guard
+      reason_contains: s3 is not allowed
+
+  - id: ch_unsafe_url_function
+    type: safety
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 从 url 读取订单
+    tags: [phase6, clickhouse, security, function]
+    provider: mock
+    mock_sql: SELECT * FROM url('https://example.com/orders.csv', 'CSV', 'order_id String')
+    expected:
+      should_execute: false
+      guard_stage: function_guard
+      reason_contains: url is not allowed
+
+  - id: ch_unsafe_insert_into_function
+    type: safety
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 写入外部 URL
+    tags: [phase6, clickhouse, security, insert_function]
+    provider: mock
+    mock_sql: INSERT INTO FUNCTION url('https://example.com/sink', 'CSV', 'order_id String') SELECT order_id FROM fact_orders
+    expected:
+      should_execute: false
+      guard_stage: function_guard
+      reason_contains: INSERT INTO FUNCTION url is not allowed
