@@ -203,7 +203,7 @@ def _check_insert_into_function(expression, dialect: str) -> list[str]:
 
 ### scope_guard 适配
 
-scope_guard 从 Analysis Space 读取表白名单，已按 `datasource` 字段过滤，不需要改动。只需确保 ClickHouse 的 Analysis Space seed 数据正确注册。
+scope_guard 需要改造成 datasource-aware。`build_default_guard_scope(datasource_name)` 从对应数据源的 Analysis Space 读取表白名单，并用同一 `datasource_name` 过滤 `MetaTable` / `MetaColumn`，避免前端选择 ClickHouse 后仍套用 DuckDB 的 scope。ClickHouse 的 Analysis Space seed 数据也要单独注册。
 
 ### cost_guard 适配
 
@@ -316,6 +316,8 @@ ALTER TABLE meta_column_aliases ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duc
 -- meta_tables: UNIQUE(datasource, table_name) 替代 UNIQUE(table_name)
 -- meta_metrics: UNIQUE(datasource, name) 替代 UNIQUE(name)
 -- meta_verified_queries: UNIQUE(datasource, query_id) 替代 UNIQUE(query_id)
+-- meta_relationships: UNIQUE(datasource, source_table, source_column, target_table, target_column)
+-- meta_column_aliases: UNIQUE(datasource, table_name, column_name, alias)
 -- meta_columns: 外键 table_id 对应的 meta_tables 行已含 datasource
 
 -- OLAP 特有字段
@@ -342,7 +344,12 @@ ALTER TABLE meta_columns ADD COLUMN low_cardinality BOOLEAN DEFAULT FALSE;
 
 向量检索时增加 `metadata.datasource` 过滤条件，只返回当前数据源的向量结果。
 
-迁移策略：用简单的版本检查 + `ALTER TABLE` 即可，不引入 Alembic。迁移脚本需在加列后更新现有数据的 `datasource` 值。
+迁移策略：不引入 Alembic，但不能只依赖 `ALTER TABLE`。SQLite 不能用简单 `ALTER` 删除旧 unique 约束，迁移需要二选一：
+
+1. 演示环境可接受重建 metadata DB：备份旧库，删除并重新 seed，现有 DuckDB 元数据写入 `duckdb_ecommerce`。
+2. 需要保留现有元数据时：写版本化迁移脚本，按 SQLite table-rebuild 流程创建新表、复制数据、重建索引和复合 unique 约束。
+
+ORM 模型也必须同步更新列定义和 `UniqueConstraint`，否则数据库迁移后应用层仍会按旧模型创建全局唯一约束。
 
 ### 关系推断
 
@@ -412,7 +419,7 @@ CREATE TABLE ecommerce.fact_orders (
     created_at     DateTime
 )
 ENGINE = MergeTree()
-PARTITION BY toYYYYMM(toDate(date_key))    -- date_key 是整数，需转换
+PARTITION BY intDiv(date_key, 100)         -- date_key 为 YYYYMMDD 整数，按 YYYYMM 分区
 ORDER BY (date_key, region_key, channel_key)
 PRIMARY KEY (date_key, region_key, channel_key);
 
@@ -427,7 +434,7 @@ CREATE TABLE ecommerce.fact_order_items (
     date_key    UInt32
 )
 ENGINE = MergeTree()
-PARTITION BY toYYYYMM(toDate(date_key))
+PARTITION BY intDiv(date_key, 100)
 ORDER BY (date_key, product_key)
 PRIMARY KEY (date_key, product_key);
 
@@ -487,17 +494,18 @@ ORDER BY user_key;
 
 设计要点：
 - 所有字段名与 DuckDB 电商数仓完全一致，共享语义层零修改
-- `PARTITION BY toYYYYMM(toDate(date_key))` 按月分区，典型 OLAP 做法
+- `date_key` 使用现有 `YYYYMMDD` 整数键，`PARTITION BY intDiv(date_key, 100)` 直接得到 `YYYYMM` 月分区，避免 `toDate(UInt32)` 误解析
 - `ORDER BY` 按常见查询维度排列
 - `LowCardinality` 用于低基数字段（订单状态、品类、渠道类型等）
 - 维表用简单 MergeTree，按主键排序
 
 ### 数据导入
 
-复用现有电商数仓数据生成脚本，分两步：
+复用现有 `scripts/generate_ecommerce_data.py` 作为唯一数据源，ClickHouse 导入分三步：
 
-1. `scripts/seed_ecommerce.py --output-format=csv` 生成 CSV
-2. `scripts/seed_clickhouse.py` 建表 + 导入 + 验证行数
+1. `python scripts/generate_ecommerce_data.py` 生成 DuckDB 标准电商数据集
+2. 新增 `python scripts/export_ecommerce_csv.py --output-dir data/clickhouse_csv`，从 DuckDB 导出同名表 CSV
+3. 新增 `python scripts/seed_clickhouse.py --input-dir data/clickhouse_csv`，建表 + 导入 + 验证行数
 
 ### 启动集成
 
@@ -578,9 +586,9 @@ class AgentState(TypedDict):
 API 请求 (datasource 参数)
   → run_query_workflow(datasource_name)
     → retrieve_context_node
-        → retrieve_metadata_assets(question, datasource=datasource_name)  # 按数据源检索
+        → retrieve_metadata_assets(question, datasource_name=datasource_name)  # 按数据源检索
     → build_context_node
-        → build_focused_context(retrieval_result, datasource=datasource_name)  # 按数据源构建
+        → build_focused_context(retrieval_result, datasource_name=datasource_name)  # 按数据源构建
     → generate_sql_node
         → prompt 选择方言 (duckdb/clickhouse)
     → sql_guard_node
@@ -618,19 +626,21 @@ def build_default_guard_scope(datasource_name: str = "duckdb_ecommerce") -> Guar
 
 ### SSE 步骤流增强
 
-```python
+```text
 StepType.DATASOURCE_SELECTED = "datasource_selected"
 
 # SSE 事件
-{
-    "type": "datasource_selected",
-    "data": {
-        "name": "clickhouse_ecommerce",
-        "dialect": "clickhouse",
-        "display_name": "ClickHouse (OLAP)"
-    }
+event: step
+data: {
+    "step": "datasource_selected",
+    "status": "completed",
+    "name": "clickhouse_ecommerce",
+    "dialect": "clickhouse",
+    "display_name": "ClickHouse (OLAP)"
 }
 ```
+
+沿用现有 SSE 协议：前端仍监听 `event === "step"`，通过 `payload.step` 识别 `datasource_selected`。
 
 ### 设计决策
 
@@ -683,7 +693,7 @@ interface DatasourceState {
 
 ### 查询结果展示增强
 
-- 步骤流新增 `datasource_selected` 事件展示
+- 步骤流新增 `datasource_selected` step 展示
 - SQL 展示区域新增：数据源名称、方言、查询耗时、返回行数
 - 查询耗时由 execute 节点记录
 
