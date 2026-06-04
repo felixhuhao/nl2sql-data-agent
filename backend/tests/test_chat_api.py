@@ -45,12 +45,14 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
         "step",
         "step",
         "step",
+        "step",
         "done",
     ]
     assert [event["data"].get("step") for event in events[:-1]] == [
         "datasource_selected",
         "intent_guard",
         "build_context",
+        "olap_detected",
         "generate_sql",
         "sql_guard",
         "execute",
@@ -66,6 +68,7 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
     }
     assert events[-1]["data"]["chart_recommendation"]["chart_type"] == "line"
     assert events[-1]["data"]["explainability"]["guard_result"]["allowed"] is True
+    assert events[-1]["data"]["olap_intents"] == []
 
 
 def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
@@ -166,12 +169,43 @@ def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
         "intent_guard",
         "retrieve_context",
         "build_context",
+        "olap_detected",
         "generate_sql",
         "sql_guard",
         "execute",
         "summarize",
         "recommend_chart",
     ]
+
+
+def test_iter_chat_events_returns_olap_detected_step_for_composite_intent():
+    class SelectProvider:
+        name = "select-provider"
+
+        def generate_sql(self, request):
+            return SQLGenerationResult(sql="SELECT payment_amount FROM fact_orders", provider=self.name)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(columns=["payment_amount"], rows=[[100]], row_count=1)
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询销售额前10的商品同比增长",
+            provider=SelectProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    olap_step = next(event for event in events if event["data"].get("step") == "olap_detected")
+    assert olap_step["data"] == {
+        "step": "olap_detected",
+        "status": "completed",
+        "olap_intents": ["topn", "yoy_mom"],
+        "description": "检测到 TopN / 排名 / 分层分析意图；检测到同比 / 环比分析意图",
+    }
+    assert events[-1]["data"]["olap_intents"] == ["topn", "yoy_mom"]
 
 
 def test_iter_chat_events_returns_error_event_for_destructive_intent():
@@ -231,7 +265,7 @@ def test_iter_chat_events_returns_error_event_for_guard_rejection():
         )
     )
 
-    assert [event["event"] for event in events] == ["step", "step", "step", "step", "step", "error"]
+    assert [event["event"] for event in events] == ["step", "step", "step", "step", "step", "step", "error"]
     assert events[-1]["data"]["step"] == "sql_guard"
     assert events[-1]["data"]["reason"] == "DELETE is not allowed."
     assert events[-1]["data"]["error_kind"] == "blocked"
@@ -269,6 +303,7 @@ def test_iter_chat_events_repairs_guard_rejection_and_returns_repair_step():
         "datasource_selected",
         "intent_guard",
         "build_context",
+        "olap_detected",
         "generate_sql",
         "sql_guard",
         "repair_sql",
@@ -325,6 +360,7 @@ def test_iter_chat_events_repairs_execution_failure_and_returns_repair_step():
         "datasource_selected",
         "intent_guard",
         "build_context",
+        "olap_detected",
         "generate_sql",
         "sql_guard",
         "repair_sql",
@@ -357,7 +393,7 @@ def test_iter_chat_events_returns_failure_event_for_sql_generation_timeout():
         )
     )
 
-    assert [event["event"] for event in events] == ["step", "step", "step", "error"]
+    assert [event["event"] for event in events] == ["step", "step", "step", "step", "error"]
     assert events[-1]["data"] == {
         "step": "generate_sql",
         "reason": "SQL generation timed out.",

@@ -19,6 +19,7 @@ const workflowSteps = [
   { id: "intent_guard", label: "意图检查" },
   { id: "retrieve_context", label: "检索上下文" },
   { id: "build_context", label: "构建上下文" },
+  { id: "olap_detected", label: "分析意图" },
   { id: "generate_sql", label: "生成 SQL" },
   { id: "sql_guard", label: "SQL Guard" },
   { id: "repair_sql", label: "SQL 修复" },

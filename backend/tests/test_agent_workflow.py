@@ -7,6 +7,7 @@ from backend.app.agent.nodes import (
     execute_node,
     generate_sql_node,
     intent_guard_node,
+    olap_intent_detect_node,
     repair_sql_node,
     retrieve_context_node,
     run_query_workflow,
@@ -114,6 +115,16 @@ def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch)
 
     assert state.schema_context == "# Focused duckdb_ecommerce test"
     assert state.completed_steps == ["build_context"]
+
+
+def test_olap_intent_detect_node_sets_intents_and_step():
+    state = AgentState(question="查询销售额前10的商品同比增长")
+
+    olap_intent_detect_node(state)
+
+    assert state.olap_intents == ["topn", "yoy_mom"]
+    assert state.olap_hint == ""
+    assert state.completed_steps == ["olap_detected"]
 
 
 def test_generate_sql_node_requires_schema_context():
@@ -261,6 +272,7 @@ def test_run_query_workflow_executes_demo_question():
         "datasource_selected",
         "intent_guard",
         "build_context",
+        "olap_detected",
         "generate_sql",
         "sql_guard",
         "execute",
@@ -316,6 +328,7 @@ def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypat
         "intent_guard",
         "retrieve_context",
         "build_context",
+        "olap_detected",
         "generate_sql",
         "sql_guard",
         "execute",
@@ -378,7 +391,14 @@ def test_run_query_workflow_stops_when_guard_rejects_sql():
     assert state.explainability["guard_result"]["stage"] == "operation_guard"
     assert state.query_result is None
     assert executed == []
-    assert state.completed_steps == ["datasource_selected", "intent_guard", "build_context", "generate_sql", "sql_guard"]
+    assert state.completed_steps == [
+        "datasource_selected",
+        "intent_guard",
+        "build_context",
+        "olap_detected",
+        "generate_sql",
+        "sql_guard",
+    ]
 
 
 def test_run_query_workflow_passes_clickhouse_datasource_through_chain(monkeypatch):

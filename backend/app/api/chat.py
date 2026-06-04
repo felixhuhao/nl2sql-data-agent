@@ -13,9 +13,11 @@ from backend.app.agent.nodes import (
     datasource_selected_node,
     generate_sql_node,
     intent_guard_node,
+    olap_intent_detect_node,
     retrieve_context_node,
     summarize_node,
 )
+from backend.app.agent.olap_intent import describe_olap_intents
 from backend.app.agent.repair import RepairEvent, iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
@@ -88,6 +90,9 @@ def iter_chat_events(
         build_context_node(state, schema_context_builder=schema_context_builder)
         yield _sse_event("step", {"step": "build_context", "status": "completed"})
 
+        olap_intent_detect_node(state)
+        yield _sse_event("step", _olap_step_payload(state))
+
         active_provider = provider or get_default_llm_provider()
         generate_sql_node(state, provider=active_provider)
         yield _sse_event(
@@ -144,6 +149,7 @@ def iter_chat_events(
                 "explainability": state.explainability,
                 "repair_history": state.repair_history,
                 "datasource": _datasource_payload(state),
+                "olap_intents": state.olap_intents,
             },
         )
     except httpx.ReadTimeout:
@@ -225,6 +231,15 @@ def _datasource_payload(state: AgentState) -> dict:
         "name": state.datasource_name,
         "dialect": state.datasource_dialect,
         "display_name": state.datasource_display_name,
+    }
+
+
+def _olap_step_payload(state: AgentState) -> dict:
+    return {
+        "step": "olap_detected",
+        "status": "completed",
+        "olap_intents": state.olap_intents,
+        "description": describe_olap_intents(state.olap_intents),
     }
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from backend.app.agent.explainability import build_query_explainability
+from backend.app.agent.olap_intent import detect_olap_intents
 from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
 from backend.app.connectors.registry import get_datasource_manager
@@ -66,6 +67,7 @@ def run_query_workflow(
     if schema_context_builder is None:
         retrieve_context_node(state, retriever=retriever)
     build_context_node(state, schema_context_builder=schema_context_builder)
+    olap_intent_detect_node(state)
     generate_sql_node(state, provider=provider or MockLLMProvider())
     sql_guard_node(state, scope_builder=scope_builder)
     if state.stopped_at is not None:
@@ -121,6 +123,16 @@ def build_context_node(
     else:
         state.schema_context = build_focused_context(state.question, datasource_name=state.datasource_name)
     state.completed_steps.append("build_context")
+    return state
+
+
+def olap_intent_detect_node(state: AgentState) -> AgentState:
+    metrics = []
+    if state.retrieval_result is not None:
+        metrics = state.retrieval_result.get("metrics", [])
+    state.olap_intents = detect_olap_intents(state.question, matched_metrics=metrics)
+    state.olap_hint = ""
+    state.completed_steps.append("olap_detected")
     return state
 
 

@@ -21,6 +21,10 @@ class AgentState:
     summary: str | None = None
     explainability: dict | None = None
     execution_error: str | None = None
+    olap_intents: list[str] = field(default_factory=list)
+    olap_hint: str = ""
+    plan_hints: list[str] = field(default_factory=list)
+    runtime_stats: dict | None = None
     error: str | None = None
     stopped_at: str | None = None
     repair_history: list[dict] = field(default_factory=list)
