@@ -1,6 +1,7 @@
 from backend.app.agent.nodes import (
     build_context_node,
     execute_node,
+    explain_performance_node,
     generate_sql_node,
     intent_guard_node,
     iter_pre_repair_workflow,
@@ -15,6 +16,7 @@ __all__ = [
     "AgentState",
     "build_context_node",
     "execute_node",
+    "explain_performance_node",
     "generate_sql_node",
     "intent_guard_node",
     "iter_pre_repair_workflow",

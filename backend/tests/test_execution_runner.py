@@ -36,6 +36,40 @@ def test_execute_guarded_sql_delegates_to_datasource_connector(monkeypatch):
     assert result.elapsed_ms is not None
 
 
+def test_execute_guarded_sql_uses_clickhouse_execute_with_explain(monkeypatch):
+    calls = []
+
+    class FakeConnector:
+        dialect = "clickhouse"
+
+        def execute_with_explain(self, sql: str):
+            calls.append(sql)
+            return (
+                RawResult(columns=["id"], rows=[[1]], row_count=1),
+                {"lines": ["HashJoin"]},
+            )
+
+    class FakeManager:
+        def get(self, datasource_name: str):
+            assert datasource_name == "clickhouse_ecommerce"
+            return FakeConnector()
+
+    monkeypatch.setattr(runner, "get_datasource_manager", lambda: FakeManager())
+
+    result = runner.execute_guarded_sql(
+        GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql="SELECT id FROM orders LIMIT 2",
+        ),
+        datasource_name="clickhouse_ecommerce",
+    )
+
+    assert calls == ["SELECT id FROM orders LIMIT 2"]
+    assert result.columns == ["id"]
+    assert result.explain_plan == {"lines": ["HashJoin"]}
+
+
 def test_execute_guarded_sql_rejects_failed_guard_result():
     guard_result = GuardResult(
         allowed=False,

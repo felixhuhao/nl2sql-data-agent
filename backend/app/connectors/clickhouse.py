@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 import re
 from typing import Any
 
@@ -6,6 +7,7 @@ from backend.app.config import Settings
 from backend.app.connectors.schema import ColumnMeta, RawResult, SchemaSnapshot, TableMeta
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+logger = logging.getLogger(__name__)
 
 
 class ClickHouseConnector:
@@ -108,11 +110,28 @@ class ClickHouseConnector:
     def execute(self, sql: str, timeout: int | None = None) -> RawResult:
         client = self.get_connection(read_only=True)
         try:
-            query_settings = {"max_execution_time": timeout} if timeout is not None else None
-            result = client.query(sql, settings=query_settings)
-            rows = [list(row) for row in _result_rows(result)]
-            columns = list(getattr(result, "column_names", []) or [])
-            return RawResult(columns=columns, rows=rows, row_count=len(rows))
+            return _query_raw(client, sql, timeout=timeout)
+        finally:
+            _close_client(client)
+
+    def execute_with_explain(self, sql: str, timeout: int | None = None) -> tuple[RawResult, dict | None]:
+        client = self.get_connection(read_only=True)
+        try:
+            result = _query_raw(client, sql, timeout=timeout)
+            try:
+                explain_result = _query_raw(client, f"EXPLAIN PIPELINE TREE {sql}")
+            except Exception as exc:
+                logger.warning("ClickHouse EXPLAIN failed: %s", exc)
+                explain_result = None
+            return result, _parse_explain_result(explain_result) if explain_result is not None else None
+        finally:
+            _close_client(client)
+
+    def explain(self, sql: str) -> dict | None:
+        client = self.get_connection(read_only=True)
+        try:
+            result = _query_raw(client, f"EXPLAIN PIPELINE TREE {sql}")
+            return _parse_explain_result(result)
         finally:
             _close_client(client)
 
@@ -146,6 +165,29 @@ def _close_client(client: Any) -> None:
 
 def _result_rows(result: Any) -> list:
     return list(getattr(result, "result_rows", None) or getattr(result, "result_set", None) or [])
+
+
+def _query_raw(client: Any, sql: str, timeout: int | None = None) -> RawResult:
+    query_settings = {"max_execution_time": timeout} if timeout is not None else None
+    result = client.query(sql, settings=query_settings)
+    rows = [list(row) for row in _result_rows(result)]
+    columns = list(getattr(result, "column_names", []) or [])
+    return RawResult(columns=columns, rows=rows, row_count=len(rows))
+
+
+def _parse_explain_result(result: RawResult) -> dict | None:
+    lines = [
+        " ".join(str(cell) for cell in row if cell is not None).strip()
+        for row in result.rows
+    ]
+    lines = [line for line in lines if line]
+    if not lines:
+        return None
+    return {
+        "format": "PIPELINE TREE",
+        "lines": lines,
+        "text": "\n".join(lines),
+    }
 
 
 def _quote_identifier(identifier: str) -> str:

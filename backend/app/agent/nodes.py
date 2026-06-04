@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator
 
 from backend.app.agent.explainability import build_query_explainability
 from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
+from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
 from backend.app.connectors.registry import get_datasource_manager
@@ -71,6 +72,7 @@ def run_query_workflow(
     if state.stopped_at is not None:
         return state
     execute_node(state, executor=executor)
+    explain_performance_node(state)
     summarize_node(state)
     return state
 

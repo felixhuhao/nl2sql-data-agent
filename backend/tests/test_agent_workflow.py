@@ -5,6 +5,7 @@ from backend.app.agent.nodes import (
     build_context_node,
     datasource_selected_node,
     execute_node,
+    explain_performance_node,
     generate_sql_node,
     intent_guard_node,
     iter_pre_repair_workflow,
@@ -308,6 +309,79 @@ def test_execute_node_skips_rejected_guard_result_without_overwriting_error():
     assert state.stopped_at == "sql_guard"
     assert state.query_result is None
     assert state.completed_steps == []
+
+
+def test_explain_performance_node_skips_non_clickhouse_datasource():
+    state = AgentState(
+        question="test",
+        datasource_dialect="duckdb",
+        query_result=QueryResult(columns=["x"], rows=[[1]], row_count=1, elapsed_ms=3.2),
+    )
+
+    explain_performance_node(state)
+
+    assert state.plan_hints == []
+    assert state.runtime_stats is None
+    assert state.completed_steps == []
+
+
+def test_explain_performance_node_skips_failed_execution(monkeypatch):
+    class FailingManager:
+        def get(self, datasource_name: str):
+            raise AssertionError("EXPLAIN should not be requested")
+
+    monkeypatch.setattr("backend.app.agent.performance.get_datasource_manager", lambda: FailingManager())
+    state = AgentState(
+        question="test",
+        datasource_name="clickhouse_ecommerce",
+        datasource_dialect="clickhouse",
+        guard_result=GuardResult(allowed=True, stage="passed", normalized_sql="SELECT 1"),
+        execution_error="boom",
+    )
+
+    explain_performance_node(state)
+
+    assert state.plan_hints == []
+    assert state.runtime_stats is None
+    assert state.completed_steps == []
+
+
+def test_explain_performance_node_sets_clickhouse_plan_hints(monkeypatch):
+    class FakeConnector:
+        def explain(self, sql: str):
+            assert sql == "SELECT * FROM fact_orders"
+            return {
+                "lines": [
+                    "ReadFromMergeTree Parts: 3/24 SortingKey",
+                    "JoiningTransform",
+                ]
+            }
+
+    class FakeManager:
+        def get(self, datasource_name: str):
+            assert datasource_name == "clickhouse_ecommerce"
+            return FakeConnector()
+
+    monkeypatch.setattr("backend.app.agent.performance.get_datasource_manager", lambda: FakeManager())
+    state = AgentState(
+        question="test",
+        datasource_name="clickhouse_ecommerce",
+        datasource_dialect="clickhouse",
+        guard_result=GuardResult(allowed=True, stage="passed", normalized_sql="SELECT * FROM fact_orders"),
+        query_result=QueryResult(columns=["x"], rows=[[1]], row_count=1, elapsed_ms=12.5),
+        explainability={"matched_tables": ["fact_orders"]},
+    )
+
+    explain_performance_node(state)
+
+    assert state.plan_hints == [
+        "命中分区裁剪，扫描 3/24 parts。",
+        "查询计划包含排序键相关读取。",
+        "包含 1 个 JOIN。",
+        "建议添加明确的时间范围过滤以减少 ClickHouse 扫描。",
+    ]
+    assert state.runtime_stats == {"execution_time_ms": 12.5}
+    assert state.completed_steps == ["explain_plan"]
 
 
 def test_run_query_workflow_executes_demo_question():

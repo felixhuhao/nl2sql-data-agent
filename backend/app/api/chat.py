@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.app.agent.nodes import (
+    explain_performance_node,
     iter_pre_repair_workflow,
     summarize_node,
 )
@@ -86,6 +87,10 @@ def iter_chat_events(
                 return
             yield _sse_event("step", _repair_step_payload(repair_event))
 
+        explain_performance_node(state)
+        if state.datasource_dialect == "clickhouse":
+            yield _sse_event("step", _explain_plan_step_payload(state))
+
         summarize_node(state)
         yield _sse_event(
             "step",
@@ -123,6 +128,8 @@ def iter_chat_events(
                 "datasource": _datasource_payload(state),
                 "olap_intents": state.olap_intents,
                 "olap_description": describe_olap_intents(state.olap_intents),
+                "plan_hints": state.plan_hints,
+                "runtime_stats": state.runtime_stats,
             },
         )
     except httpx.ReadTimeout:
@@ -229,6 +236,15 @@ def _workflow_step_payload(step: str, state: AgentState) -> dict:
             "matched_query_id": state.matched_query_id,
         }
     raise WorkflowPayloadError(f"Unsupported workflow step: {step}")
+
+
+def _explain_plan_step_payload(state: AgentState) -> dict:
+    return {
+        "step": "explain_plan",
+        "status": "completed",
+        "plan_hints": state.plan_hints,
+        "runtime_stats": state.runtime_stats,
+    }
 
 
 def _failure_step(state: AgentState) -> str:

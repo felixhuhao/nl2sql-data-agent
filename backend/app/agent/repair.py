@@ -69,6 +69,8 @@ def reset_failure_state(state: AgentState) -> None:
     state.summary = None
     state.explainability = None
     state.execution_error = None
+    state.plan_hints = []
+    state.runtime_stats = None
 
 
 def iter_sql_repair_events(

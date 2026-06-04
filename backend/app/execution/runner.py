@@ -1,7 +1,7 @@
 import time
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.app.connectors.registry import get_datasource_manager
 from backend.app.metadata.models import DEFAULT_DATASOURCE
@@ -13,6 +13,7 @@ class QueryResult(BaseModel):
     rows: list[list[Any]]
     row_count: int
     elapsed_ms: float | None = None
+    explain_plan: dict | None = Field(default=None, exclude=True)
 
 
 def execute_guarded_sql(
@@ -25,11 +26,17 @@ def execute_guarded_sql(
         raise ValueError("Guard result does not include normalized_sql.")
 
     started_at = time.perf_counter()
-    raw_result = get_datasource_manager().get(datasource_name).execute(guard_result.normalized_sql)
+    connector = get_datasource_manager().get(datasource_name)
+    explain_plan = None
+    if getattr(connector, "dialect", "") == "clickhouse" and hasattr(connector, "execute_with_explain"):
+        raw_result, explain_plan = connector.execute_with_explain(guard_result.normalized_sql)
+    else:
+        raw_result = connector.execute(guard_result.normalized_sql)
     elapsed_ms = round((time.perf_counter() - started_at) * 1000, 3)
     return QueryResult(
         columns=raw_result.columns,
         rows=raw_result.rows,
         row_count=raw_result.row_count,
         elapsed_ms=elapsed_ms,
+        explain_plan=explain_plan,
     )

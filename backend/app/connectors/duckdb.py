@@ -70,6 +70,9 @@ class DuckDBConnector:
         finally:
             connection.close()
 
+    def explain(self, sql: str) -> dict | None:
+        return None
+
     def close(self) -> None:
         return None
 

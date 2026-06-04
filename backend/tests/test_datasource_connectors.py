@@ -21,6 +21,12 @@ def test_duckdb_connector_executes_readonly_query(tmp_path: Path):
     assert result.row_count == 2
 
 
+def test_duckdb_connector_explain_is_not_supported(tmp_path: Path):
+    connector = DuckDBConnector(_settings(tmp_path, tmp_path / "ecommerce.duckdb"))
+
+    assert connector.explain("SELECT 1") is None
+
+
 def test_duckdb_connector_sync_schema_returns_snapshot(tmp_path: Path):
     db_path = tmp_path / "ecommerce.duckdb"
     _create_orders_db(db_path)

@@ -14,7 +14,7 @@ import { listDatasources, type DatasourceInfo } from "./api/datasources";
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
-const workflowSteps = [
+const allWorkflowSteps = [
   { id: "datasource_selected", label: "选择数据源" },
   { id: "intent_guard", label: "意图检查" },
   { id: "retrieve_context", label: "检索上下文" },
@@ -24,11 +24,12 @@ const workflowSteps = [
   { id: "sql_guard", label: "SQL Guard" },
   { id: "repair_sql", label: "SQL 修复" },
   { id: "execute", label: "执行查询" },
+  { id: "explain_plan", label: "性能解释" },
   { id: "summarize", label: "生成回答" },
   { id: "recommend_chart", label: "推荐图表" },
 ] as const;
 
-type WorkflowStepId = (typeof workflowSteps)[number]["id"];
+type WorkflowStepId = (typeof allWorkflowSteps)[number]["id"];
 type StepStatus = "pending" | "running" | "completed" | "error";
 type GuardResult = {
   allowed?: boolean;
@@ -102,6 +103,11 @@ type PieDatum = {
   name: string;
   value: number;
 };
+type RuntimeStats = {
+  execution_time_ms?: number;
+  rows_read?: number;
+  bytes_read?: number;
+};
 type HealthPayload = {
   status?: string;
   llm_provider?: string;
@@ -131,6 +137,8 @@ const rows = ref<unknown[][]>([]);
 const columns = ref<string[]>([]);
 const explainability = ref<Explainability | null>(null);
 const retrievalMeta = ref<RetrievalMeta | null>(null);
+const planHints = ref<string[]>([]);
+const runtimeStats = ref<RuntimeStats | null>(null);
 const repairHistory = ref<RepairHistoryItem[]>([]);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
@@ -174,10 +182,7 @@ const formattedElapsedMs = computed(() => {
   if (queryElapsedMs.value === null) {
     return "-";
   }
-  if (queryElapsedMs.value >= 1000) {
-    return `${(queryElapsedMs.value / 1000).toFixed(2)}s`;
-  }
-  return `${queryElapsedMs.value.toFixed(1)}ms`;
+  return formatDuration(queryElapsedMs.value);
 });
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -298,6 +303,8 @@ async function submitQuestion() {
   columns.value = [];
   explainability.value = null;
   retrievalMeta.value = null;
+  planHints.value = [];
+  runtimeStats.value = null;
   repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
@@ -365,10 +372,17 @@ async function fetchAgentStatus() {
 }
 
 function createStepStates() {
-  return workflowSteps.map((step) => ({
+  return visibleWorkflowSteps().map((step) => ({
     ...step,
     status: "pending" as StepStatus,
   }));
+}
+
+function visibleWorkflowSteps() {
+  const datasource =
+    dataSources.value.find((source) => source.name === selectedDatasourceName.value) ??
+    fallbackDatasource;
+  return allWorkflowSteps.filter((step) => step.id !== "explain_plan" || datasource.dialect === "clickhouse");
 }
 
 function setStepStatus(stepId: string, status: StepStatus) {
@@ -473,6 +487,13 @@ function retrievalStatusTitle(status?: string | null) {
     error: "向量检索状态检查失败",
   };
   return status ? (labels[status] ?? status) : "";
+}
+
+function formatDuration(milliseconds: number) {
+  if (milliseconds >= 1000) {
+    return `${(milliseconds / 1000).toFixed(2)}s`;
+  }
+  return `${milliseconds.toFixed(1)}ms`;
 }
 
 function retrievalSourceClass(source: string) {
@@ -643,6 +664,10 @@ function handleSseChunk(chunk: string) {
       resultRowCount.value = payload.row_count ?? null;
       queryElapsedMs.value = payload.elapsed_ms ?? null;
     }
+    if (payload.step === "explain_plan") {
+      planHints.value = payload.plan_hints ?? [];
+      runtimeStats.value = payload.runtime_stats ?? null;
+    }
   }
   if (event === "done") {
     stepStates.value = stepStates.value.map((step) => ({ ...step, status: "completed" }));
@@ -655,6 +680,8 @@ function handleSseChunk(chunk: string) {
     queryDatasource.value = payload.datasource ?? queryDatasource.value;
     chartRecommendation.value = payload.chart_recommendation ?? null;
     explainability.value = payload.explainability ?? null;
+    planHints.value = payload.plan_hints ?? planHints.value;
+    runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     void nextTick(renderChart);
@@ -665,6 +692,8 @@ function handleSseChunk(chunk: string) {
     errorKind.value = payload.error_kind === "blocked" ? "blocked" : "failure";
     errorMessage.value = payload.reason ?? "请求失败";
     explainability.value = payload.explainability ?? null;
+    planHints.value = payload.plan_hints ?? planHints.value;
+    runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     chartRecommendation.value = null;
@@ -1057,9 +1086,33 @@ function switchView(view: "chat" | "admin") {
                 </div>
               </section>
 
-              <section v-if="explainability || retrievalMeta" class="answer-section explain-section">
+              <section
+                v-if="explainability || retrievalMeta || planHints.length || runtimeStats"
+                class="answer-section explain-section"
+              >
                 <h2>解释信息</h2>
                 <dl class="detail-list">
+                  <div v-if="planHints.length || runtimeStats">
+                    <dt>性能提示</dt>
+                    <dd>
+                      <span
+                        v-for="hint in planHints"
+                        :key="hint"
+                        class="info-chip"
+                      >
+                        {{ hint }}
+                      </span>
+                      <span v-if="runtimeStats?.execution_time_ms !== undefined" class="info-chip">
+                        执行耗时 {{ formatDuration(runtimeStats.execution_time_ms) }}
+                      </span>
+                      <span v-if="runtimeStats?.rows_read !== undefined" class="info-chip">
+                        读取行 {{ runtimeStats.rows_read }}
+                      </span>
+                      <span v-if="runtimeStats?.bytes_read !== undefined" class="info-chip">
+                        读取字节 {{ runtimeStats.bytes_read }}
+                      </span>
+                    </dd>
+                  </div>
                   <div v-if="retrievalMeta?.index_status">
                     <dt>检索状态</dt>
                     <dd>

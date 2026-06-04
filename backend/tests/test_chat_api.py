@@ -72,6 +72,7 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
     assert events[-1]["data"]["explainability"]["guard_result"]["allowed"] is True
     assert events[-1]["data"]["olap_intents"] == []
     assert events[-1]["data"]["olap_description"] == "未检测到 OLAP 分析意图"
+    assert all(event["data"].get("step") != "explain_plan" for event in events[:-1])
 
 
 def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
@@ -239,6 +240,64 @@ def test_iter_chat_events_uses_olap_intents_for_chart_recommendation():
     assert events[-1]["data"]["olap_intents"] == ["yoy_mom"]
     assert events[-1]["data"]["chart_recommendation"]["chart_type"] == "dual_axis"
     assert events[-1]["data"]["chart_recommendation"]["y_columns"] == ["sales_amount", "yoy_pct"]
+
+
+def test_iter_chat_events_returns_explain_plan_for_clickhouse(monkeypatch):
+    class FakeConnector:
+        name = "clickhouse_ecommerce"
+        dialect = "clickhouse"
+        display_name = "ClickHouse (OLAP)"
+
+        def explain(self, sql: str):
+            assert sql == "SELECT payment_amount FROM fact_orders LIMIT 500"
+            return {"lines": ["ReadFromMergeTree Parts: 1/12", "JoiningTransform"]}
+
+    class FakeManager:
+        def get(self, datasource_name: str):
+            assert datasource_name == "clickhouse_ecommerce"
+            return FakeConnector()
+
+    class SelectProvider:
+        name = "select-provider"
+
+        def generate_sql(self, request):
+            return SQLGenerationResult(sql="SELECT payment_amount FROM fact_orders", provider=self.name)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(
+            columns=["payment_amount"],
+            rows=[[100]],
+            row_count=1,
+            elapsed_ms=9.5,
+        )
+
+    monkeypatch.setattr(nodes_module, "get_datasource_manager", lambda: FakeManager())
+    monkeypatch.setattr("backend.app.agent.performance.get_datasource_manager", lambda: FakeManager())
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询销售额",
+            datasource_name="clickhouse_ecommerce",
+            provider=SelectProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    explain_step = next(event for event in events if event["data"].get("step") == "explain_plan")
+    assert explain_step["data"] == {
+        "step": "explain_plan",
+        "status": "completed",
+        "plan_hints": [
+            "命中分区裁剪，扫描 1/12 parts。",
+            "包含 1 个 JOIN。",
+            "建议添加明确的时间范围过滤以减少 ClickHouse 扫描。",
+        ],
+        "runtime_stats": {"execution_time_ms": 9.5},
+    }
+    assert events[-1]["data"]["plan_hints"] == explain_step["data"]["plan_hints"]
+    assert events[-1]["data"]["runtime_stats"] == {"execution_time_ms": 9.5}
 
 
 def test_iter_chat_events_returns_error_event_for_destructive_intent():
