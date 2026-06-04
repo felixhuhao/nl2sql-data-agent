@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from backend.app.agent.state import AgentState
 from backend.app.agent.explainability import build_query_explainability
+from backend.app.agent.sql_postprocess import normalize_generated_sql
 from backend.app.core.llm_provider import (
     LLMProvider,
     MockLLMProvider,
@@ -113,7 +114,7 @@ def generate_sql_node(
             schema_context=state.schema_context,
         )
     )
-    state.sql = result.sql
+    state.sql = normalize_generated_sql(result.sql)
     state.provider = result.provider
     state.matched_query_id = result.matched_query_id
     state.completed_steps.append("generate_sql")
@@ -135,7 +136,7 @@ def repair_sql_node(
             repair=repair_context,
         )
     )
-    state.sql = result.sql
+    state.sql = normalize_generated_sql(result.sql)
     state.provider = result.provider
     state.matched_query_id = result.matched_query_id
     state.repair_history.append(

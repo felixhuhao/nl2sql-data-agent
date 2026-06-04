@@ -21,6 +21,7 @@ from backend.app.metadata.models import (
     MetaVerifiedQuery,
     create_metadata_schema,
 )
+from backend.app.metadata.vector.searcher import is_recallable_value
 
 
 DEFAULT_TABLE_LIMIT = 5
@@ -28,6 +29,46 @@ DEFAULT_COLUMN_LIMIT = 20
 DEFAULT_METRIC_LIMIT = 5
 DEFAULT_VERIFIED_QUERY_LIMIT = 3
 QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
+TIME_INTENT_PATTERNS = (
+    re.compile(r"(最近|近|过去)\d+(天|日|周|月|年)"),
+    re.compile(r"\d{4}年\d{1,2}月"),
+    re.compile(r"\d{4}[-/]\d{1,2}"),
+)
+TIME_INTENT_TERMS = (
+    "最近",
+    "过去",
+    "今日",
+    "今天",
+    "昨日",
+    "昨天",
+    "本周",
+    "上周",
+    "每周",
+    "按周",
+    "周度",
+    "本月",
+    "上月",
+    "每月",
+    "按月",
+    "月度",
+    "月份",
+    "本季",
+    "上季",
+    "季度",
+    "今年",
+    "去年",
+    "每年",
+    "按年",
+    "年度",
+    "每日",
+    "按日",
+    "按天",
+    "日期",
+    "时间",
+    "趋势",
+    "同比",
+    "环比",
+)
 
 
 def retrieve_metadata_assets(
@@ -170,7 +211,8 @@ def _match_column(
             )
 
     for sample_value in _parse_json_list(column.sample_values):
-        if _contains(normalized_question, str(sample_value)):
+        value_text = str(sample_value)
+        if is_recallable_value(value_text) and _contains(normalized_question, value_text):
             _add_column_match(column_matches, column, 7, f"sample_value:{sample_value}")
             _add_table_match(
                 table_matches,
@@ -210,7 +252,7 @@ def _match_metric(
             source="metric_expansion",
         )
         _add_synthetic_column_match(column_matches, table_name, column_name, 7, f"metric_expression:{metric.name}")
-    if metric.default_time_column:
+    if metric.default_time_column and _has_time_intent(normalized_question):
         table_name, column_name = _split_qualified_name(metric.default_time_column)
         if table_name and column_name:
             _add_synthetic_table_match(
@@ -483,6 +525,12 @@ def _match_sort_key(item: dict) -> str:
 def _contains(normalized_text: str, candidate: str | None) -> bool:
     normalized_candidate = _normalize_text(candidate or "")
     return bool(normalized_text and normalized_candidate and normalized_candidate in normalized_text)
+
+
+def _has_time_intent(normalized_text: str) -> bool:
+    if any(term in normalized_text for term in TIME_INTENT_TERMS):
+        return True
+    return any(pattern.search(normalized_text) for pattern in TIME_INTENT_PATTERNS)
 
 
 def _normalize_text(text: str) -> str:

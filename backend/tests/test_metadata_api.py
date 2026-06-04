@@ -94,6 +94,8 @@ def test_rebuild_vector_index_endpoint_returns_build_result(monkeypatch):
 def test_create_alias_endpoint_makes_retrieval_hit_alias(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    _capture_vector_stale_reasons(monkeypatch)
+    _disable_retrieval_vector(monkeypatch)
     client = TestClient(main.app)
 
     create_response = client.post(
@@ -118,11 +120,7 @@ def test_create_alias_endpoint_makes_retrieval_hit_alias(monkeypatch):
 def test_admin_mutation_marks_vector_index_stale(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
-    stale_reasons = []
-    monkeypatch.setattr(
-        "backend.app.api.metadata.mark_vector_index_stale",
-        lambda reason: stale_reasons.append(reason),
-    )
+    stale_reasons = _capture_vector_stale_reasons(monkeypatch)
     client = TestClient(main.app)
 
     response = client.post(
@@ -141,6 +139,7 @@ def test_admin_mutation_marks_vector_index_stale(monkeypatch):
 def test_create_alias_endpoint_rejects_duplicate_and_invalid_column(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    _capture_vector_stale_reasons(monkeypatch)
     client = TestClient(main.app)
     payload = {
         "table_name": "fact_orders",
@@ -167,6 +166,7 @@ def test_create_alias_endpoint_rejects_duplicate_and_invalid_column(monkeypatch)
 def test_metric_endpoints_create_update_toggle_and_filter(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    _capture_vector_stale_reasons(monkeypatch)
     client = TestClient(main.app)
 
     create_response = client.post(
@@ -220,6 +220,8 @@ def test_create_metric_endpoint_rejects_invalid_expression(monkeypatch):
 def test_verified_query_endpoints_validate_sql_and_affect_retrieval(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    _capture_vector_stale_reasons(monkeypatch)
+    _disable_retrieval_vector(monkeypatch)
     client = TestClient(main.app)
 
     create_response = client.post(
@@ -251,6 +253,7 @@ def test_verified_query_endpoints_validate_sql_and_affect_retrieval(monkeypatch)
 def test_verified_query_update_toggle_and_filter(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    _capture_vector_stale_reasons(monkeypatch)
     client = TestClient(main.app)
     client.post(
         "/api/metadata/verified-queries",
@@ -287,6 +290,7 @@ def test_verified_query_update_toggle_and_filter(monkeypatch):
 def test_update_analysis_space_endpoint_validates_assets_and_operations(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    _capture_vector_stale_reasons(monkeypatch)
     client = TestClient(main.app)
 
     update_response = client.put(
@@ -316,6 +320,7 @@ def test_update_analysis_space_endpoint_validates_assets_and_operations(monkeypa
 def test_relationship_endpoint_updates_metadata_only(monkeypatch):
     engine = _patch_metadata_db(monkeypatch)
     _insert_admin_api_assets(engine)
+    stale_reasons = _capture_vector_stale_reasons(monkeypatch)
     client = TestClient(main.app)
 
     relationships_response = client.get("/api/metadata/relationships")
@@ -341,6 +346,7 @@ def test_relationship_endpoint_updates_metadata_only(monkeypatch):
     assert update_response.json()["source"] == "overlay"
     assert update_response.json()["description"] is None
     assert invalid_response.status_code == 422
+    assert stale_reasons == ["Relationship changed."]
 
 
 def test_validate_metadata_endpoint_accepts_valid_assets(monkeypatch):
@@ -452,6 +458,19 @@ def _patch_metadata_db(monkeypatch):
     monkeypatch.setattr(retrieval, "get_sqlite_engine", lambda: engine)
     monkeypatch.setattr(retrieval, "sqlite_session", session_scope)
     return engine
+
+
+def _capture_vector_stale_reasons(monkeypatch) -> list[str]:
+    stale_reasons: list[str] = []
+    monkeypatch.setattr("backend.app.api.metadata.mark_vector_index_stale", stale_reasons.append)
+    return stale_reasons
+
+
+def _disable_retrieval_vector(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "backend.app.metadata.retrieval.get_settings",
+        lambda: type("Settings", (), {"vector_enabled": False})(),
+    )
 
 
 def _insert_admin_api_assets(engine) -> None:

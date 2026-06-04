@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from backend.app.config import get_settings
@@ -8,6 +9,8 @@ from backend.app.metadata.vector.store import VectorIndexStatus, VectorSearchHit
 
 
 DEFAULT_VECTOR_LIMIT = 10
+LOW_INFORMATION_VALUE_PATTERN = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+DATE_LITERAL_PATTERN = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")
 
 
 @dataclass(frozen=True)
@@ -118,7 +121,7 @@ def _exact_value_hits(question: str, hits: list[VectorSearchHit]) -> list[ValueH
     for hit in hits:
         value = str(hit.metadata.get("value") or hit.text).strip()
         normalized_value = _normalize_value(value)
-        if normalized_value and normalized_value in normalized_question:
+        if is_recallable_value(value) and normalized_value in normalized_question:
             value_hits.append(_value_hit(hit, value, "exact", 1.0))
     return value_hits
 
@@ -127,7 +130,7 @@ def _vector_value_hits(hits: list[VectorSearchHit], threshold: float) -> list[Va
     return [
         _value_hit(hit, str(hit.metadata.get("value") or hit.text), "vector", hit.score)
         for hit in hits
-        if hit.score >= threshold
+        if hit.score >= threshold and is_recallable_value(str(hit.metadata.get("value") or hit.text))
     ]
 
 
@@ -159,3 +162,14 @@ def _split_value_asset_id(asset_id: str) -> tuple[str, str]:
 
 def _normalize_value(value: str) -> str:
     return "".join(str(value).lower().split())
+
+
+def is_recallable_value(value: str) -> bool:
+    normalized = _normalize_value(value)
+    if not normalized:
+        return False
+    if LOW_INFORMATION_VALUE_PATTERN.fullmatch(normalized):
+        return False
+    if DATE_LITERAL_PATTERN.fullmatch(normalized):
+        return False
+    return True

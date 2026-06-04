@@ -89,6 +89,24 @@ def test_generate_sql_node_requires_schema_context():
         generate_sql_node(state, provider=MockLLMProvider())
 
 
+def test_generate_sql_node_normalizes_metric_alias():
+    class MetricProvider:
+        name = "metric-provider"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            return SQLGenerationResult(
+                sql="SELECT SUM(fact_orders.payment_amount) FROM fact_orders",
+                provider=self.name,
+            )
+
+    state = AgentState(question="营收总额是多少", schema_context="# Schema Context")
+
+    generate_sql_node(state, provider=MetricProvider())
+
+    assert state.sql == "SELECT SUM(fact_orders.payment_amount) AS sales_amount FROM fact_orders"
+    assert state.provider == "metric-provider"
+
+
 def test_repair_sql_node_records_repair_history():
     captured_requests = []
 

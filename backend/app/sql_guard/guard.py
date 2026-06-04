@@ -167,6 +167,8 @@ def _select_aggregates_order_amount(select: exp.Select) -> bool:
 def _apply_cost_guard(expression: exp.Expression) -> tuple[exp.Expression, list[str]] | GuardResult:
     limit = expression.args.get("limit")
     if limit is None:
+        if _is_scalar_aggregate_select(expression):
+            return expression, []
         return (
             expression.limit(MAX_RESULT_ROWS),
             [f"LIMIT {MAX_RESULT_ROWS} was added automatically."],
@@ -204,6 +206,29 @@ def _literal_int(expression: exp.Expression | None) -> int | None:
         return int(expression.this)
     except (TypeError, ValueError):
         return None
+
+
+def _is_scalar_aggregate_select(expression: exp.Select) -> bool:
+    if expression.args.get("group") is not None:
+        return False
+    aggregates = [aggregate for aggregate in expression.find_all(exp.AggFunc) if _nearest_select(aggregate) is expression]
+    if not aggregates:
+        return False
+    for column in expression.find_all(exp.Column):
+        if _nearest_select(column) is expression and _nearest_aggregate(column) is None:
+            return False
+    return True
+
+
+def _nearest_aggregate(expression: exp.Expression) -> exp.AggFunc | None:
+    current = expression.parent
+    while current is not None:
+        if isinstance(current, exp.AggFunc):
+            return current
+        if isinstance(current, exp.Select):
+            return None
+        current = current.parent
+    return None
 
 
 def _cte_names(expression: exp.Expression) -> set[str]:

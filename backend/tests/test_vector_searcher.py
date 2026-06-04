@@ -112,6 +112,88 @@ def test_search_values_prefers_exact_and_deduplicates(monkeypatch):
     }
 
 
+def test_search_values_ignores_numeric_exact_matches(monkeypatch):
+    fake_store = FakeVectorStore(
+        status=VectorIndexStatus(status="ready"),
+        value_hits=[
+            VectorSearchHit(
+                "value",
+                "dim_date.month:3",
+                "3",
+                0.0,
+                0.5,
+                {"table_name": "dim_date", "column_name": "month", "value": "3"},
+            ),
+            VectorSearchHit(
+                "value",
+                "fact_orders.channel_key:3",
+                "3",
+                0.0,
+                0.5,
+                {"table_name": "fact_orders", "column_name": "channel_key", "value": "3"},
+            ),
+            VectorSearchHit(
+                "value",
+                "dim_date.week:30",
+                "30",
+                0.0,
+                0.5,
+                {"table_name": "dim_date", "column_name": "week", "value": "30"},
+            ),
+            VectorSearchHit(
+                "value",
+                "dim_regions.region_group:华东",
+                "华东",
+                0.0,
+                0.5,
+                {"table_name": "dim_regions", "column_name": "region_group", "value": "华东"},
+            ),
+        ],
+    )
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(threshold=0.7))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+
+    hits = searcher.search_values("最近30天华东销售额", query_vector=[0.1, 0.2, 0.3])
+
+    assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source) for hit in hits] == [
+        ("dim_regions", "region_group", "华东", "exact")
+    ]
+
+
+def test_search_values_ignores_numeric_vector_matches(monkeypatch):
+    fake_store = FakeVectorStore(
+        status=VectorIndexStatus(status="ready"),
+        hits={
+            "value_vectors": [
+                VectorSearchHit(
+                    "value",
+                    "dim_date.month:3",
+                    "3",
+                    0.01,
+                    0.99,
+                    {"table_name": "dim_date", "column_name": "month", "value": "3"},
+                ),
+                VectorSearchHit(
+                    "value",
+                    "dim_products.category:美妆个护",
+                    "美妆个护",
+                    0.1,
+                    0.9,
+                    {"table_name": "dim_products", "column_name": "category", "value": "美妆个护"},
+                ),
+            ]
+        },
+    )
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(threshold=0.7))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+
+    hits = searcher.search_values("彩妆护肤销售额", query_vector=[0.1, 0.2, 0.3])
+
+    assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source, hit.score) for hit in hits] == [
+        ("dim_products", "category", "美妆个护", "vector", 0.9)
+    ]
+
+
 def test_search_values_embeds_question_for_vector_value_search(monkeypatch):
     fake_store = FakeVectorStore(
         status=VectorIndexStatus(status="ready"),

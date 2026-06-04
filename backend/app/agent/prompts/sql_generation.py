@@ -76,6 +76,8 @@ def _system_prompt() -> str:
             "Use only tables and columns present in the provided schema context.",
             "Use only assets inside the Analysis Space.",
             "Qualify every physical column with its table name or table alias.",
+            "Alias every computed projection with a stable snake_case name.",
+            "When using a Metric Layer expression, use the metric name as the SELECT alias, such as sales_amount, order_count, or aov.",
             "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
             "Do not use DuckDB external file functions such as read_csv, read_json, or read_parquet.",
             "For product or category sales amount, use SUM(fact_order_items.item_amount), not SUM(fact_orders.payment_amount).",

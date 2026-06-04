@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.app.metadata import retrieval
@@ -26,7 +26,7 @@ def test_retrieve_assets_matches_channel_aliases(monkeypatch):
     engine = _patch_retrieval_db(monkeypatch)
     _insert_demo_physical_metadata(engine)
 
-    result = retrieval.retrieve_metadata_assets("按渠道统计最近30天销售额")
+    result = retrieval.retrieve_metadata_assets("按渠道统计最近30天销售额", use_vector=False)
 
     assert _item_by_name(result["tables"], "dim_channels", "table_name")["source"] == "direct_match"
     assert _item_by_name(result["tables"], "fact_orders", "table_name")["source"] in {
@@ -36,19 +36,33 @@ def test_retrieve_assets_matches_channel_aliases(monkeypatch):
     }
     assert "sales_amount" in _names(result["metrics"], "name")
     assert "dim_channels" in _names(result["tables"], "table_name")
+    assert "dim_date" in _names(result["tables"], "table_name")
     assert ("fact_orders", "channel_key") in _column_keys(result)
     assert ("dim_channels", "channel_name") in _column_keys(result)
+    assert ("dim_date", "date_value") in _column_keys(result)
 
 
 def test_retrieve_assets_matches_metric_label(monkeypatch):
     engine = _patch_retrieval_db(monkeypatch)
     _insert_demo_physical_metadata(engine)
 
-    result = retrieval.retrieve_metadata_assets("客单价")
+    result = retrieval.retrieve_metadata_assets("客单价", use_vector=False)
 
     assert result["metrics"][0]["name"] == "aov"
     assert _item_by_name(result["tables"], "fact_orders", "table_name")["source"] == "metric_expansion"
-    assert {"fact_orders", "dim_date"}.issubset(set(_names(result["tables"], "table_name")))
+    assert "dim_date" not in _names(result["tables"], "table_name")
+
+
+def test_retrieve_assets_skips_metric_time_column_without_time_intent(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+
+    result = retrieval.retrieve_metadata_assets("华东地区销售额", use_vector=False)
+
+    assert "dim_date" not in _names(result["tables"], "table_name")
+    assert ("dim_date", "date_value") not in _column_keys(result)
+    assert all("metric_time_column:sales_amount" not in table["reasons"] for table in result["tables"])
+    assert all("metric_time_column:sales_amount" not in column["reasons"] for column in result["columns"])
 
 
 def test_retrieve_assets_matches_sample_values(monkeypatch):
@@ -63,6 +77,19 @@ def test_retrieve_assets_matches_sample_values(monkeypatch):
         if column["table_name"] == "dim_regions" and column["column_name"] == "region_group"
     )
     assert "sample_value:华东" in region_group["reasons"]
+
+
+def test_retrieve_assets_ignores_numeric_sample_values(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+    _set_sample_values(engine, "dim_date", "date_key", "[3]")
+    _set_sample_values(engine, "dim_channels", "channel_key", "[3]")
+
+    result = retrieval.retrieve_metadata_assets("最近30天销售额", use_vector=False)
+
+    assert ("dim_date", "date_key") not in _column_keys(result)
+    assert ("dim_channels", "channel_key") not in _column_keys(result)
+    assert all("sample_value:3" not in column["reasons"] for column in result["columns"])
 
 
 def test_retrieve_assets_falls_back_to_allowed_tables_when_no_assets_match(monkeypatch):
@@ -105,7 +132,7 @@ def test_retrieve_assets_applies_per_type_limits(monkeypatch):
 def test_retrieve_assets_handles_empty_analysis_space(monkeypatch):
     _patch_retrieval_db(monkeypatch)
 
-    result = retrieval.retrieve_metadata_assets("销售额")
+    result = retrieval.retrieve_metadata_assets("销售额", use_vector=False)
 
     assert result["fallback_used"] is True
     assert result["tables"] == []
@@ -194,6 +221,18 @@ def _insert_demo_physical_metadata(engine) -> None:
                 ]
             )
         seed_semantics(session)
+        session.commit()
+
+
+def _set_sample_values(engine, table_name: str, column_name: str, sample_values: str) -> None:
+    with Session(engine) as session:
+        column = session.scalar(
+            select(MetaColumn)
+            .join(MetaTable)
+            .where(MetaTable.table_name == table_name, MetaColumn.column_name == column_name)
+        )
+        assert column is not None
+        column.sample_values = sample_values
         session.commit()
 
 

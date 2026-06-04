@@ -55,6 +55,29 @@ type RetrievalMeta = {
   value_hits?: RetrievalValueHit[];
   retrieval_sources?: Record<string, string[]>;
 };
+type RetrievalSourceDisplay = {
+  raw: string;
+  label: string;
+  className: string;
+};
+type RetrievalSourceItem = {
+  assetKey: string;
+  assetLabel: string;
+  assetTypeLabel: string;
+  sources: RetrievalSourceDisplay[];
+};
+type RetrievalSourceGroup = {
+  id: string;
+  label: string;
+  items: RetrievalSourceItem[];
+};
+type RetrievalSourceStat = {
+  id: string;
+  label: string;
+  count: number;
+  className: string;
+  title: string;
+};
 type RepairHistoryItem = {
   attempt?: number;
   original_sql?: string | null;
@@ -95,7 +118,14 @@ const chartRecommendation = ref<ChartRecommendation | null>(null);
 const chartContainer = ref<HTMLDivElement | null>(null);
 const activeView = ref<"chat" | "admin">("chat");
 const llmProvider = ref("");
-const apiTarget = computed(() => `${API_BASE_URL || "same origin"}/api/chat/query`);
+const sourceGroupOrder = ["table", "column", "metric", "verified_query", "other"];
+const sourceGroupLabels: Record<string, string> = {
+  table: "表",
+  column: "字段",
+  metric: "指标",
+  verified_query: "验证查询",
+  other: "其他",
+};
 const providerStatusLabel = computed(() => {
   if (llmProvider.value === "deepseek") {
     return "DeepSeek Agent Ready";
@@ -120,6 +150,78 @@ const canRenderLineChart = computed(
     Boolean(chartRecommendation.value.y_columns?.length) &&
     rows.value.length > 0,
 );
+const retrievalSourceGroups = computed<RetrievalSourceGroup[]>(() => {
+  const sourceMap = retrievalMeta.value?.retrieval_sources ?? {};
+  const groups = createSourceGroups();
+
+  Object.entries(sourceMap).forEach(([assetKey, sources]) => {
+    if (!sources.length) {
+      return;
+    }
+    const asset = formatRetrievalAsset(assetKey);
+    groups[asset.type].items.push({
+      assetKey,
+      assetLabel: asset.label,
+      assetTypeLabel: asset.typeLabel,
+      sources: sources.map(formatRetrievalSource),
+    });
+  });
+
+  return sourceGroupOrder.map((groupId) => groups[groupId]).filter((group) => group.items.length);
+});
+const retrievalSourceStats = computed<RetrievalSourceStat[]>(() => {
+  const counts: Record<string, number> = {
+    rule: 0,
+    value: 0,
+    vector: 0,
+    other: 0,
+  };
+  const valueEvidence = new Set<string>();
+
+  Object.values(retrievalMeta.value?.retrieval_sources ?? {}).forEach((sources) => {
+    sources.forEach((source) => {
+      const family = retrievalSourceFamily(source);
+      if (family === "value") {
+        valueEvidence.add(source);
+        return;
+      }
+      counts[family] += 1;
+    });
+  });
+  counts.value = valueEvidence.size;
+
+  return [
+    {
+      id: "rule",
+      label: "规则命中",
+      count: counts.rule,
+      className: "source-rule",
+      title: "字段别名、指标表达式、验证查询等确定性规则命中的证据数量",
+    },
+    {
+      id: "value",
+      label: "值命中",
+      count: counts.value,
+      className: "source-value",
+      title: "问题中的业务取值命中的证据数量，例如 华东、天猫",
+    },
+    {
+      id: "vector",
+      label: "向量匹配",
+      count: counts.vector,
+      className: "source-vector",
+      title: "语义相似度检索命中的证据数量",
+    },
+    {
+      id: "other",
+      label: "其他证据",
+      count: counts.other,
+      className: "",
+      title: "其他来源的证据数量",
+    },
+  ].filter((stat) => stat.count > 0);
+});
+const hasRetrievalSources = computed(() => retrievalSourceGroups.value.length > 0);
 let chartInstance: echarts.ECharts | null = null;
 
 onMounted(() => {
@@ -269,6 +371,38 @@ function formatValueHit(hit: RetrievalValueHit) {
   return hit.matched_value ?? column;
 }
 
+function retrievalModeLabel(vectorUsed?: boolean) {
+  return vectorUsed ? "向量检索" : "规则检索";
+}
+
+function retrievalModeTitle(vectorUsed?: boolean) {
+  return vectorUsed
+    ? "本次元数据检索启用了向量语义检索，并与规则命中合并"
+    : "本次元数据检索只使用规则命中";
+}
+
+function retrievalStatusLabel(status?: string | null) {
+  const labels: Record<string, string> = {
+    ready: "索引就绪",
+    stale: "索引需重建",
+    missing: "索引缺失",
+    disabled: "向量关闭",
+    error: "索引异常",
+  };
+  return status ? (labels[status] ?? status) : "";
+}
+
+function retrievalStatusTitle(status?: string | null) {
+  const labels: Record<string, string> = {
+    ready: "向量索引可用",
+    stale: "元数据已变化，向量索引需要重建",
+    missing: "没有找到向量索引",
+    disabled: "向量检索未启用",
+    error: "向量检索状态检查失败",
+  };
+  return status ? (labels[status] ?? status) : "";
+}
+
 function retrievalSourceClass(source: string) {
   if (source.startsWith("value:")) {
     return "source-value";
@@ -280,6 +414,85 @@ function retrievalSourceClass(source: string) {
     return "source-rule";
   }
   return "";
+}
+
+function createSourceGroups() {
+  return sourceGroupOrder.reduce<Record<string, RetrievalSourceGroup>>((groups, id) => {
+    groups[id] = { id, label: sourceGroupLabels[id], items: [] };
+    return groups;
+  }, {});
+}
+
+function formatRetrievalAsset(assetKey: string) {
+  const separatorIndex = assetKey.indexOf(":");
+  const rawType = separatorIndex >= 0 ? assetKey.slice(0, separatorIndex) : "other";
+  const type = sourceGroupLabels[rawType] ? rawType : "other";
+  const label = separatorIndex >= 0 ? assetKey.slice(separatorIndex + 1) : assetKey;
+  return {
+    type,
+    typeLabel: sourceGroupLabels[type],
+    label,
+  };
+}
+
+function formatRetrievalSource(source: string): RetrievalSourceDisplay {
+  return {
+    raw: source,
+    label: formatRetrievalSourceLabel(source),
+    className: retrievalSourceClass(source),
+  };
+}
+
+function retrievalSourceFamily(source: string) {
+  if (source.startsWith("rule:")) {
+    return "rule";
+  }
+  if (source.startsWith("value:")) {
+    return "value";
+  }
+  if (source.startsWith("vector:")) {
+    return "vector";
+  }
+  return "other";
+}
+
+function formatRetrievalSourceLabel(source: string) {
+  if (source.startsWith("value:")) {
+    return `值 ${source.slice("value:".length)}`;
+  }
+  if (source.startsWith("vector:")) {
+    return `向量 ${source.slice("vector:".length)}`;
+  }
+  if (!source.startsWith("rule:")) {
+    return source;
+  }
+
+  const reason = source.slice("rule:".length);
+  const separatorIndex = reason.indexOf(":");
+  const kind = separatorIndex >= 0 ? reason.slice(0, separatorIndex) : reason;
+  const detail = separatorIndex >= 0 ? reason.slice(separatorIndex + 1) : "";
+  const detailText = detail ? ` ${detail}` : "";
+  const ruleLabels: Record<string, string> = {
+    alias: "别名",
+    matched_alias: "别名命中",
+    sample_value: "样本值",
+    matched_sample: "样本命中",
+    metric_expression: "指标表达式",
+    metric_time_column: "指标时间列",
+    metric_label: "指标名",
+    metric_name: "指标名",
+    metric_description: "指标描述",
+    verified_query: "验证查询",
+    verified_question_exact: "验证问法",
+    verified_question_partial: "验证问法",
+    table_name: "表名",
+    table_display_name: "表展示名",
+    table_domain: "业务域",
+    table_description: "表描述",
+    column_name: "字段名",
+    column_description: "字段描述",
+  };
+  return `${ruleLabels[kind] ?? kind.replaceAll("_", " ")}${detailText}`;
 }
 
 async function readSseStream(body: ReadableStream<Uint8Array>) {
@@ -476,25 +689,25 @@ function switchView(view: "chat" | "admin") {
       </header>
 
       <section v-if="activeView === 'chat'" class="chat-layout" aria-label="chat workspace">
-        <aside class="steps-panel">
-          <h2>执行步骤</h2>
-          <ol>
-            <li
-              v-for="step in stepStates"
-              :key="step.id"
-              :class="['workflow-step', step.status]"
-            >
-              <span>{{ step.label }}</span>
-              <strong>{{ step.status }}</strong>
-            </li>
-          </ol>
-        </aside>
-
         <section class="conversation-panel">
+          <form class="composer" @submit.prevent="submitQuestion">
+            <label for="question">问题</label>
+            <div class="composer-row">
+              <textarea
+                id="question"
+                v-model="question"
+                rows="2"
+                placeholder="输入经营分析问题"
+              />
+              <button type="submit" :disabled="!canSubmit">
+                {{ isSubmitting ? "发送中" : "发送" }}
+              </button>
+            </div>
+          </form>
+
           <div class="result-area">
             <div v-if="!hasActivity" class="empty-state">
-              <h2>开始一次问数</h2>
-              <p>输入经营分析问题，Agent 会生成 SQL 并返回查询结果。</p>
+              <h2>暂无查询结果</h2>
             </div>
 
             <div v-else class="answer-stack">
@@ -572,21 +785,27 @@ function switchView(view: "chat" | "admin") {
                 <h2>解释信息</h2>
                 <dl class="detail-list">
                   <div v-if="retrievalMeta?.index_status">
-                    <dt>召回状态</dt>
+                    <dt>检索状态</dt>
                     <dd>
                       <span
                         :class="['info-chip', retrievalMeta.vector_used ? 'source-vector' : 'source-rule']"
+                        :title="retrievalModeTitle(retrievalMeta.vector_used)"
                       >
-                        {{ retrievalMeta.vector_used ? "vector" : "rule-only" }}
+                        {{ retrievalModeLabel(retrievalMeta.vector_used) }}
                       </span>
-                      <span class="info-chip">{{ retrievalMeta.index_status }}</span>
+                      <span
+                        class="info-chip"
+                        :title="retrievalStatusTitle(retrievalMeta.index_status)"
+                      >
+                        {{ retrievalStatusLabel(retrievalMeta.index_status) }}
+                      </span>
                       <span v-if="retrievalMeta.stale_reason" class="info-chip">
                         {{ retrievalMeta.stale_reason }}
                       </span>
                     </dd>
                   </div>
                   <div v-if="retrievalMeta?.value_hits?.length">
-                    <dt>Value Recall</dt>
+                    <dt>业务取值</dt>
                     <dd>
                       <span
                         v-for="hit in retrievalMeta.value_hits"
@@ -597,27 +816,57 @@ function switchView(view: "chat" | "admin") {
                       </span>
                     </dd>
                   </div>
-                  <div
-                    v-if="
-                      retrievalMeta?.retrieval_sources &&
-                      Object.keys(retrievalMeta.retrieval_sources).length
-                    "
-                  >
-                    <dt>召回来源</dt>
-                    <dd class="source-list">
-                      <div
-                        v-for="(sources, assetKey) in retrievalMeta.retrieval_sources"
-                        :key="assetKey"
-                        class="source-row"
-                      >
-                        <span class="source-asset">{{ assetKey }}</span>
+                  <div v-if="hasRetrievalSources">
+                    <dt>证据来源</dt>
+                    <dd class="source-panel">
+                      <div class="source-summary">
                         <span
-                          v-for="source in sources"
-                          :key="`${assetKey}:${source}`"
-                          :class="['info-chip', retrievalSourceClass(source)]"
+                          v-for="stat in retrievalSourceStats"
+                          :key="stat.id"
+                          :class="['info-chip', stat.className]"
+                          :title="stat.title"
                         >
-                          {{ source }}
+                          {{ stat.label }} {{ stat.count }}
                         </span>
+                      </div>
+                      <div class="source-groups">
+                        <details
+                          v-for="group in retrievalSourceGroups"
+                          :key="group.id"
+                          class="source-group"
+                        >
+                          <summary>
+                            <span>{{ group.label }}</span>
+                            <span
+                              class="source-count"
+                              :title="`${group.label}类证据命中的资产数`"
+                            >
+                              {{ group.items.length }}
+                            </span>
+                          </summary>
+                          <div class="source-group-body">
+                            <div
+                              v-for="item in group.items"
+                              :key="item.assetKey"
+                              class="source-item"
+                            >
+                              <div class="source-item-main">
+                                <span class="source-kind">{{ item.assetTypeLabel }}</span>
+                                <span class="source-asset">{{ item.assetLabel }}</span>
+                              </div>
+                              <div class="source-item-sources">
+                                <span
+                                  v-for="source in item.sources"
+                                  :key="`${item.assetKey}:${source.raw}`"
+                                  :class="['info-chip', source.className]"
+                                  :title="source.raw"
+                                >
+                                  {{ source.label }}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </details>
                       </div>
                     </dd>
                   </div>
@@ -725,21 +974,6 @@ function switchView(view: "chat" | "admin") {
             </div>
           </div>
 
-          <form class="composer" @submit.prevent="submitQuestion">
-            <label for="question">问题</label>
-            <div class="composer-row">
-              <textarea
-                id="question"
-                v-model="question"
-                rows="3"
-                placeholder="输入经营分析问题"
-              />
-              <button type="submit" :disabled="!canSubmit">
-                {{ isSubmitting ? "发送中" : "发送" }}
-              </button>
-            </div>
-            <p class="api-hint">POST {{ apiTarget }}</p>
-          </form>
         </section>
       </section>
       <Admin v-else />

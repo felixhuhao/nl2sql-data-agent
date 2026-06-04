@@ -16,6 +16,8 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "single SELECT statement" in system_prompt
     assert "Analysis Space" in system_prompt
     assert "Qualify every physical column" in system_prompt
+    assert "Alias every computed projection" in system_prompt
+    assert "use the metric name as the SELECT alias" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
     assert "SUM(fact_order_items.item_amount)" in system_prompt

@@ -33,7 +33,7 @@ textarea {
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 16px;
-  max-width: 1280px;
+  max-width: 1600px;
   min-height: calc(100vh - 48px);
   margin: 0 auto;
 }
@@ -50,8 +50,6 @@ textarea {
 .topbar h1,
 .topbar p,
 .empty-state h2,
-.empty-state p,
-.steps-panel h2,
 .answer-section h2,
 .answer-section p,
 .error-message,
@@ -116,86 +114,18 @@ textarea {
 
 .chat-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
 }
 
-.steps-panel,
 .conversation-panel {
   border: 1px solid #d5dce7;
   border-radius: 8px;
+  display: grid;
+  grid-template-rows: auto minmax(260px, 1fr);
   background: #ffffff;
-}
-
-.steps-panel {
-  padding: 16px;
-}
-
-.steps-panel h2 {
-  color: #3d4656;
-  font-size: 15px;
-}
-
-.steps-panel ol {
-  display: grid;
-  gap: 10px;
-  margin: 16px 0 0;
-  padding-left: 0;
-  color: #667085;
-  font-size: 14px;
-  list-style: none;
-}
-
-.workflow-step {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  border-left: 3px solid #d5dce7;
-  padding: 6px 0 6px 10px;
-}
-
-.workflow-step strong {
-  flex: 0 0 auto;
-  color: #7a8494;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.workflow-step.running {
-  border-left-color: #2f75b5;
-  color: #1d4f7a;
-}
-
-.workflow-step.running strong {
-  color: #2f75b5;
-}
-
-.workflow-step.completed {
-  border-left-color: #2e7d5b;
-  color: #265944;
-}
-
-.workflow-step.completed strong {
-  color: #2e7d5b;
-}
-
-.workflow-step.error {
-  border-left-color: #b42318;
-  color: #8f1d1d;
-}
-
-.workflow-step.error strong {
-  color: #b42318;
-}
-
-.conversation-panel {
-  display: grid;
-  grid-template-rows: 1fr auto;
   min-width: 0;
-  min-height: 560px;
+  min-height: 0;
 }
 
 .result-area {
@@ -206,15 +136,14 @@ textarea {
 .empty-state {
   display: grid;
   align-content: start;
-  gap: 8px;
-  min-height: 100%;
-  padding: 120px 32px 32px;
+  min-height: 260px;
+  padding: 32px 28px;
   color: #59667a;
 }
 
 .empty-state h2 {
   color: #1d2433;
-  font-size: 22px;
+  font-size: 16px;
 }
 
 .answer-stack {
@@ -340,7 +269,7 @@ textarea {
   gap: 8px;
 }
 
-.detail-list div {
+.detail-list > div {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 10px;
@@ -374,12 +303,75 @@ textarea {
   font-size: 12px;
 }
 
-.source-list {
+.detail-list dd.source-panel {
   display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.source-summary {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.source-row {
+.source-groups {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.source-group {
+  overflow: hidden;
+  border: 1px solid #d5dce7;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.source-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: #3d4656;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.source-count,
+.source-kind {
+  flex: 0 0 auto;
+  border: 1px solid #cdd8e6;
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: #667085;
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.source-group-body {
+  display: grid;
+  border-top: 1px solid #d5dce7;
+}
+
+.source-item {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  background: #ffffff;
+}
+
+.source-item + .source-item {
+  border-top: 1px solid #edf1f6;
+}
+
+.source-item-main,
+.source-item-sources {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -456,8 +448,8 @@ textarea {
 .composer {
   display: grid;
   gap: 8px;
-  padding: 16px;
-  border-top: 1px solid #d5dce7;
+  padding: 16px 20px;
+  border-bottom: 1px solid #d5dce7;
 }
 
 .composer label {
@@ -475,7 +467,7 @@ textarea {
 
 .composer textarea {
   width: 100%;
-  min-height: 82px;
+  min-height: 64px;
   resize: vertical;
   border: 1px solid #c8d1de;
   border-radius: 8px;
@@ -490,18 +482,12 @@ textarea {
   color: #ffffff;
   background: #235789;
   cursor: pointer;
+  font-weight: 600;
 }
 
 .composer button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.api-hint {
-  margin: 0;
-  overflow-wrap: anywhere;
-  color: #667085;
-  font-size: 12px;
 }
 
 .admin-panel {
@@ -780,19 +766,15 @@ textarea {
     flex-direction: column;
   }
 
-  .conversation-panel {
-    min-height: 480px;
-  }
-
-  .empty-state {
-    padding-top: 48px;
-  }
-
   .space-grid {
     grid-template-columns: 1fr;
   }
 
   .composer-row {
+    grid-template-columns: 1fr;
+  }
+
+  .source-item {
     grid-template-columns: 1fr;
   }
 
