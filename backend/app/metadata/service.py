@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlglot.errors import SqlglotError
 
 from backend.app.config import get_settings
-from backend.app.connectors.registry import get_datasource_manager
+from backend.app.connectors.registry import get_datasource_dialect
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
     DEFAULT_DATASOURCE,
@@ -256,10 +256,15 @@ def create_alias(data: AliasCreate, datasource_name: str = DEFAULT_DATASOURCE) -
         return _alias_payload(row)
 
 
-def delete_alias(alias_id: int) -> None:
+def delete_alias(alias_id: int, datasource_name: str = DEFAULT_DATASOURCE) -> None:
     _ensure_schema()
     with sqlite_session() as session:
-        alias = session.scalar(select(MetaColumnAlias).where(MetaColumnAlias.id == alias_id))
+        alias = session.scalar(
+            select(MetaColumnAlias).where(
+                MetaColumnAlias.id == alias_id,
+                MetaColumnAlias.datasource == datasource_name,
+            )
+        )
         if alias is None:
             raise MetadataAdminError(404, f"Alias not found: {alias_id}")
         session.delete(alias)
@@ -349,10 +354,19 @@ def update_analysis_space(data: AnalysisSpaceUpdate, datasource_name: str = DEFA
         return _analysis_space_payload(analysis_space)
 
 
-def update_relationship(rel_id: int, data: RelationshipUpdate) -> dict:
+def update_relationship(
+    rel_id: int,
+    data: RelationshipUpdate,
+    datasource_name: str = DEFAULT_DATASOURCE,
+) -> dict:
     _ensure_schema()
     with sqlite_session() as session:
-        relationship = session.scalar(select(MetaRelationship).where(MetaRelationship.id == rel_id))
+        relationship = session.scalar(
+            select(MetaRelationship).where(
+                MetaRelationship.id == rel_id,
+                MetaRelationship.datasource == datasource_name,
+            )
+        )
         if relationship is None:
             raise MetadataAdminError(404, f"Relationship not found: {rel_id}")
 
@@ -812,12 +826,7 @@ def _relationship_explainability(relationship: MetaRelationship) -> dict:
 
 
 def _datasource_dialect(datasource_name: str) -> str:
-    try:
-        return get_datasource_manager().get(datasource_name).dialect
-    except (KeyError, LookupError):
-        if datasource_name.startswith("clickhouse"):
-            return "clickhouse"
-        return "duckdb"
+    return get_datasource_dialect(datasource_name)
 
 
 def _active_analysis_space(

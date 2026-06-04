@@ -6,7 +6,7 @@ import pytest
 from backend.app.config import Settings
 from backend.app.connectors.duckdb import DuckDBConnector
 from backend.app.connectors.manager import DataSourceManager
-from backend.app.connectors.registry import create_datasource_manager
+from backend.app.connectors.registry import create_datasource_manager, get_datasource_dialect
 
 
 def test_duckdb_connector_executes_readonly_query(tmp_path: Path):
@@ -86,6 +86,11 @@ def test_create_datasource_manager_registers_duckdb(tmp_path: Path):
 
     assert manager.default_name == "duckdb_ecommerce"
     assert [source.name for source in manager.list_sources()] == ["duckdb_ecommerce"]
+
+
+def test_get_datasource_dialect_falls_back_for_missing_sources():
+    assert get_datasource_dialect("clickhouse_analytics") == "clickhouse"
+    assert get_datasource_dialect("unknown") == "duckdb"
 
 
 def _settings(tmp_path: Path, db_path: Path) -> Settings:

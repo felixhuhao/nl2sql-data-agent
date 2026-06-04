@@ -6,13 +6,12 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
-from backend.app.connectors.registry import get_datasource_manager
+from backend.app.connectors.registry import get_datasource_dialect
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.sql_guard.models import GuardResult
 from backend.app.sql_guard.scope import GuardScope
 
 
-DEFAULT_DIALECT = "duckdb"
 MAX_RESULT_ROWS = 500
 BLOCKED_COMMANDS = {
     "ALTER",
@@ -30,6 +29,7 @@ CLICKHOUSE_BLOCKED_COMMANDS = {"SYSTEM", "KILL", "RENAME", "EXCHANGE"}
 DUCKDB_BLOCKED_FUNCTIONS = {"read_csv", "read_json", "read_parquet"}
 CLICKHOUSE_BLOCKED_FUNCTIONS = {"s3", "url", "hdfs", "remote", "remotesecure"}
 COMMAND_RE = re.compile(r"^\s*([a-zA-Z_]+)\b")
+# sqlglot support for ClickHouse INSERT INTO FUNCTION is limited, so detect it before parsing.
 INSERT_INTO_FUNCTION_RE = re.compile(
     r"\binsert\s+into\s+function\s+([a-zA-Z_][A-Za-z0-9_]*)\s*\(",
     re.IGNORECASE,
@@ -41,7 +41,7 @@ def guard_sql(
     scope: GuardScope | None = None,
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> GuardResult:
-    dialect = _dialect_for_datasource(datasource_name)
+    dialect = get_datasource_dialect(datasource_name)
 
     insert_function_result = _check_insert_into_function(sql, dialect)
     if insert_function_result is not None:
@@ -87,15 +87,6 @@ def guard_sql(
         normalized_sql=expression.sql(dialect=dialect),
         warnings=warnings,
     )
-
-
-def _dialect_for_datasource(datasource_name: str) -> str:
-    try:
-        return get_datasource_manager().get(datasource_name).dialect
-    except (KeyError, LookupError):
-        if datasource_name.startswith("clickhouse"):
-            return "clickhouse"
-        return DEFAULT_DIALECT
 
 
 def _parse_statements(sql: str, dialect: str) -> list[exp.Expression] | GuardResult:

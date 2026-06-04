@@ -10,10 +10,12 @@ import { CanvasRenderer } from "echarts/renderers";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import Admin from "./Admin.vue";
 import { API_BASE_URL } from "./api/config";
+import { listDatasources, type DatasourceInfo } from "./api/datasources";
 
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const workflowSteps = [
+  { id: "datasource_selected", label: "选择数据源" },
   { id: "intent_guard", label: "意图检查" },
   { id: "retrieve_context", label: "检索上下文" },
   { id: "build_context", label: "构建上下文" },
@@ -99,8 +101,19 @@ type HealthPayload = {
   status?: string;
   llm_provider?: string;
 };
+type QueryDatasource = Pick<DatasourceInfo, "name" | "dialect" | "display_name">;
+
+const fallbackDatasource: DatasourceInfo = {
+  name: "duckdb_ecommerce",
+  dialect: "duckdb",
+  display_name: "DuckDB (本地)",
+  status: "available",
+};
 
 const question = ref("查询最近30天每日销售额和订单数");
+const dataSources = ref<DatasourceInfo[]>([fallbackDatasource]);
+const selectedDatasourceName = ref(fallbackDatasource.name);
+const datasourceLoadError = ref("");
 const isSubmitting = ref(false);
 const errorMessage = ref("");
 const errorStep = ref("");
@@ -115,6 +128,9 @@ const retrievalMeta = ref<RetrievalMeta | null>(null);
 const repairHistory = ref<RepairHistoryItem[]>([]);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
+const queryDatasource = ref<QueryDatasource | null>(null);
+const queryElapsedMs = ref<number | null>(null);
+const resultRowCount = ref<number | null>(null);
 const chartContainer = ref<HTMLDivElement | null>(null);
 const activeView = ref<"chat" | "admin">("chat");
 const llmProvider = ref("");
@@ -134,6 +150,19 @@ const providerStatusLabel = computed(() => {
     return "Mock Agent Ready";
   }
   return "Agent Ready";
+});
+const currentDatasource = computed(
+  () => dataSources.value.find((source) => source.name === selectedDatasourceName.value) ?? dataSources.value[0] ?? fallbackDatasource,
+);
+const resultDatasource = computed(() => queryDatasource.value ?? currentDatasource.value);
+const formattedElapsedMs = computed(() => {
+  if (queryElapsedMs.value === null) {
+    return "-";
+  }
+  if (queryElapsedMs.value >= 1000) {
+    return `${(queryElapsedMs.value / 1000).toFixed(2)}s`;
+  }
+  return `${queryElapsedMs.value.toFixed(1)}ms`;
 });
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -227,6 +256,7 @@ let chartInstance: echarts.ECharts | null = null;
 onMounted(() => {
   window.addEventListener("resize", resizeChart);
   void fetchAgentStatus();
+  void fetchDatasources();
 });
 
 onBeforeUnmount(() => {
@@ -244,7 +274,7 @@ async function submitQuestion() {
   errorStep.value = "";
   errorKind.value = "failure";
   stepStates.value = createStepStates();
-  setStepStatus("intent_guard", "running");
+  setStepStatus("datasource_selected", "running");
   sql.value = "";
   summary.value = "";
   rows.value = [];
@@ -254,6 +284,9 @@ async function submitQuestion() {
   repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
+  queryDatasource.value = currentDatasource.value;
+  queryElapsedMs.value = null;
+  resultRowCount.value = null;
   disposeChart();
 
   try {
@@ -262,7 +295,10 @@ async function submitQuestion() {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ question: question.value.trim() }),
+      body: JSON.stringify({
+        question: question.value.trim(),
+        datasource: selectedDatasourceName.value,
+      }),
     });
 
     if (!response.ok || !response.body) {
@@ -276,6 +312,22 @@ async function submitQuestion() {
     errorMessage.value = error instanceof Error ? error.message : "请求失败";
   } finally {
     isSubmitting.value = false;
+  }
+}
+
+async function fetchDatasources() {
+  datasourceLoadError.value = "";
+  try {
+    const payload = await listDatasources();
+    dataSources.value = payload.sources.length ? payload.sources : [fallbackDatasource];
+    selectedDatasourceName.value =
+      payload.default && dataSources.value.some((source) => source.name === payload.default)
+        ? payload.default
+        : dataSources.value[0].name;
+  } catch (error) {
+    dataSources.value = [fallbackDatasource];
+    selectedDatasourceName.value = fallbackDatasource.name;
+    datasourceLoadError.value = error instanceof Error ? error.message : "数据源加载失败";
   }
 }
 
@@ -545,6 +597,13 @@ function handleSseChunk(chunk: string) {
 
   if (event === "step") {
     completeStep(payload.step);
+    if (payload.step === "datasource_selected") {
+      queryDatasource.value = {
+        name: payload.name ?? selectedDatasourceName.value,
+        dialect: payload.dialect ?? currentDatasource.value?.dialect ?? "",
+        display_name: payload.display_name ?? currentDatasource.value?.display_name ?? selectedDatasourceName.value,
+      };
+    }
     if (payload.step === "retrieve_context") {
       retrievalMeta.value = {
         vector_used: Boolean(payload.vector_used),
@@ -560,6 +619,10 @@ function handleSseChunk(chunk: string) {
     if (payload.repair_history) {
       repairHistory.value = payload.repair_history;
     }
+    if (payload.step === "execute") {
+      resultRowCount.value = payload.row_count ?? null;
+      queryElapsedMs.value = payload.elapsed_ms ?? null;
+    }
   }
   if (event === "done") {
     stepStates.value = stepStates.value.map((step) => ({ ...step, status: "completed" }));
@@ -567,6 +630,9 @@ function handleSseChunk(chunk: string) {
     summary.value = payload.summary ?? "";
     columns.value = payload.result?.columns ?? [];
     rows.value = payload.result?.rows ?? [];
+    resultRowCount.value = payload.result?.row_count ?? rows.value.length;
+    queryElapsedMs.value = payload.result?.elapsed_ms ?? queryElapsedMs.value;
+    queryDatasource.value = payload.datasource ?? queryDatasource.value;
     chartRecommendation.value = payload.chart_recommendation ?? null;
     explainability.value = payload.explainability ?? null;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
@@ -582,6 +648,8 @@ function handleSseChunk(chunk: string) {
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     chartRecommendation.value = null;
+    resultRowCount.value = null;
+    queryElapsedMs.value = null;
     disposeChart();
   }
 }
@@ -668,6 +736,18 @@ function switchView(view: "chat" | "admin") {
           <p>NL2SQL Data Agent</p>
         </div>
         <div class="topbar-actions">
+          <div class="datasource-select">
+            <label for="datasource">数据源</label>
+            <select
+              id="datasource"
+              v-model="selectedDatasourceName"
+              :disabled="isSubmitting || dataSources.length <= 1"
+            >
+              <option v-for="source in dataSources" :key="source.name" :value="source.name">
+                {{ source.display_name }}
+              </option>
+            </select>
+          </div>
           <nav class="view-toggle" aria-label="view switcher">
             <button
               type="button"
@@ -711,6 +791,11 @@ function switchView(view: "chat" | "admin") {
             </div>
 
             <div v-else class="answer-stack">
+              <section v-if="datasourceLoadError" class="error-message">
+                <h2>数据源状态异常</h2>
+                <p>{{ datasourceLoadError }}</p>
+              </section>
+
               <section v-if="errorMessage" class="error-message">
                 <h2>{{ errorKind === "blocked" ? "请求被拒绝" : "请求失败" }}</h2>
                 <p>{{ errorMessage }}</p>
@@ -743,6 +828,16 @@ function switchView(view: "chat" | "admin") {
                   >
                     {{ step.label }}
                   </span>
+                </div>
+              </section>
+
+              <section v-if="sql || summary || rows.length" class="answer-section">
+                <h2>查询信息</h2>
+                <div class="result-meta">
+                  <span class="info-chip">{{ resultDatasource.display_name }}</span>
+                  <span class="info-chip">{{ resultDatasource.dialect }}</span>
+                  <span class="info-chip">行数 {{ resultRowCount ?? rows.length }}</span>
+                  <span class="info-chip">耗时 {{ formattedElapsedMs }}</span>
                 </div>
               </section>
 
@@ -976,7 +1071,11 @@ function switchView(view: "chat" | "admin") {
 
         </section>
       </section>
-      <Admin v-else />
+      <Admin
+        v-else
+        :data-sources="dataSources"
+        :default-datasource="selectedDatasourceName"
+      />
     </section>
   </main>
 </template>

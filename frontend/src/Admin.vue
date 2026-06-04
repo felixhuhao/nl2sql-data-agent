@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   createAlias,
   createMetric,
@@ -29,11 +29,13 @@ import {
   type VectorIndexStatus,
   type VerifiedQuery,
 } from "./api/admin";
+import type { DatasourceInfo } from "./api/datasources";
 
-type AdminTab = "metrics" | "aliases" | "verified" | "space" | "relationships" | "vector";
+type AdminTab = "tables" | "metrics" | "aliases" | "verified" | "space" | "relationships" | "vector";
 type Editor = "metric" | "alias" | "verified" | "relationship" | null;
 
 const tabs: { id: AdminTab; label: string }[] = [
+  { id: "tables", label: "表字段" },
   { id: "metrics", label: "指标" },
   { id: "aliases", label: "别名" },
   { id: "verified", label: "验证查询" },
@@ -41,6 +43,11 @@ const tabs: { id: AdminTab; label: string }[] = [
   { id: "relationships", label: "关系" },
   { id: "vector", label: "向量索引" },
 ];
+
+const props = defineProps<{
+  dataSources: DatasourceInfo[];
+  defaultDatasource: string;
+}>();
 
 const activeTab = ref<AdminTab>("metrics");
 const editor = ref<Editor>(null);
@@ -89,6 +96,10 @@ const relationshipForm = ref({
   description: "",
 });
 
+const activeDatasource = computed(() => props.defaultDatasource || props.dataSources[0]?.name || "duckdb_ecommerce");
+const activeDatasourceInfo = computed(
+  () => props.dataSources.find((source) => source.name === activeDatasource.value) ?? props.dataSources[0],
+);
 const selectedTableColumns = computed(() => columnsByTable.value[aliasForm.value.table_name] ?? []);
 const editorTitle = computed(() => {
   if (editor.value === "metric") {
@@ -106,19 +117,23 @@ const editorTitle = computed(() => {
   return "";
 });
 
-onMounted(loadAdminData);
+watch(activeDatasource, () => {
+  closeEditor();
+  void loadAdminData();
+}, { immediate: true });
 
 async function loadAdminData() {
   isLoading.value = true;
   errorMessage.value = "";
   try {
+    const datasource = activeDatasource.value;
     const [tableRows, metricRows, aliasRows, queryRows, space, relationshipRows, indexStatus] = await Promise.all([
-      listTables(),
-      listMetrics(),
-      listAliases(),
-      listVerifiedQueries(),
-      getAnalysisSpace(),
-      listRelationships(),
+      listTables(datasource),
+      listMetrics(datasource),
+      listAliases(undefined, datasource),
+      listVerifiedQueries(datasource),
+      getAnalysisSpace(datasource),
+      listRelationships(datasource),
       getVectorIndexStatus(),
     ]);
     tables.value = tableRows;
@@ -133,7 +148,7 @@ async function loadAdminData() {
       enabled_metrics: [...(space.enabled_metrics ?? [])],
       allowed_operations: space.allowed_operations?.length ? [...space.allowed_operations] : ["select"],
     };
-    await loadTableColumns(tableRows);
+    await loadTableColumns(tableRows, datasource);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "加载失败";
   } finally {
@@ -141,9 +156,9 @@ async function loadAdminData() {
   }
 }
 
-async function loadTableColumns(tableRows: MetadataTable[]) {
+async function loadTableColumns(tableRows: MetadataTable[], datasource: string) {
   const entries = await Promise.all(
-    tableRows.map(async (table) => [table.table_name, await listColumns(table.table_name)] as const),
+    tableRows.map(async (table) => [table.table_name, await listColumns(table.table_name, datasource)] as const),
   );
   columnsByTable.value = Object.fromEntries(entries);
 }
@@ -224,20 +239,23 @@ async function saveMetric() {
       allowed_dimensions: splitList(metricForm.value.allowed_dimensions),
     };
     if (editingMetricName.value) {
-      await updateMetric(editingMetricName.value, payload);
+      await updateMetric(editingMetricName.value, payload, activeDatasource.value);
     } else {
-      await createMetric(payload);
+      await createMetric(payload, activeDatasource.value);
     }
   });
 }
 
 async function saveAlias() {
   await saveAndRefresh(async () => {
-    await createAlias({
-      table_name: aliasForm.value.table_name,
-      column_name: aliasForm.value.column_name,
-      alias: aliasForm.value.alias.trim(),
-    });
+    await createAlias(
+      {
+        table_name: aliasForm.value.table_name,
+        column_name: aliasForm.value.column_name,
+        alias: aliasForm.value.alias.trim(),
+      },
+      activeDatasource.value,
+    );
   });
 }
 
@@ -249,13 +267,16 @@ async function saveVerifiedQuery() {
       tags: splitList(verifiedForm.value.tags),
     };
     if (editingVerifiedId.value) {
-      await updateVerifiedQuery(editingVerifiedId.value, payload);
+      await updateVerifiedQuery(editingVerifiedId.value, payload, activeDatasource.value);
     } else {
-      await createVerifiedQuery({
-        ...payload,
-        query_id: verifiedForm.value.query_id.trim(),
-        verified_by: verifiedForm.value.verified_by.trim() || "user",
-      });
+      await createVerifiedQuery(
+        {
+          ...payload,
+          query_id: verifiedForm.value.query_id.trim(),
+          verified_by: verifiedForm.value.verified_by.trim() || "user",
+        },
+        activeDatasource.value,
+      );
     }
   });
 }
@@ -265,22 +286,29 @@ async function saveRelationship() {
     return;
   }
   await saveAndRefresh(async () => {
-    await updateRelationship(editingRelationshipId.value as number, {
-      confidence: Number(relationshipForm.value.confidence),
-      fanout_risk: relationshipForm.value.fanout_risk,
-      source: relationshipForm.value.source,
-      description: optionalText(relationshipForm.value.description),
-    });
+    await updateRelationship(
+      editingRelationshipId.value as number,
+      {
+        confidence: Number(relationshipForm.value.confidence),
+        fanout_risk: relationshipForm.value.fanout_risk,
+        source: relationshipForm.value.source,
+        description: optionalText(relationshipForm.value.description),
+      },
+      activeDatasource.value,
+    );
   });
 }
 
 async function saveAnalysisSpace() {
   await saveAndRefresh(async () => {
-    await updateAnalysisSpace({
-      tables: analysisForm.value.tables,
-      enabled_metrics: analysisForm.value.enabled_metrics,
-      allowed_operations: ["select"],
-    });
+    await updateAnalysisSpace(
+      {
+        tables: analysisForm.value.tables,
+        enabled_metrics: analysisForm.value.enabled_metrics,
+        allowed_operations: ["select"],
+      },
+      activeDatasource.value,
+    );
   }, false);
 }
 
@@ -304,13 +332,13 @@ async function saveAndRefresh(action: () => Promise<void>, closePanel = true) {
 
 async function toggleMetricEnabled(metric: Metric) {
   await saveAndRefresh(async () => {
-    await toggleMetric(metric.name);
+    await toggleMetric(metric.name, activeDatasource.value);
   }, false);
 }
 
 async function toggleVerifiedEnabled(query: VerifiedQuery) {
   await saveAndRefresh(async () => {
-    await toggleVerifiedQuery(query.id);
+    await toggleVerifiedQuery(query.id, activeDatasource.value);
   }, false);
 }
 
@@ -319,7 +347,7 @@ async function removeAlias(alias: Alias) {
     return;
   }
   await saveAndRefresh(async () => {
-    await deleteAlias(alias.id);
+    await deleteAlias(alias.id, activeDatasource.value);
   }, false);
 }
 
@@ -379,6 +407,26 @@ function formatAssetCounts(counts: Record<string, number> | undefined) {
     .map(([key, value]) => `${key}: ${value}`)
     .join(", ");
 }
+
+function formatTableOlap(table: MetadataTable) {
+  return [
+    table.engine ? `engine ${table.engine}` : "",
+    table.partition_key ? `partition ${table.partition_key}` : "",
+    table.sorting_key ? `sort ${table.sorting_key}` : "",
+  ].filter(Boolean);
+}
+
+function formatColumnFlags(column: MetadataColumn) {
+  return [
+    column.nullable ? "nullable" : "",
+    column.is_dimension ? "dimension" : "",
+    column.is_metric ? "metric" : "",
+    column.is_partition_key ? "partition" : "",
+    column.is_sorting_key ? "sort" : "",
+    column.is_primary_key ? "primary" : "",
+    column.low_cardinality ? "low cardinality" : "",
+  ].filter(Boolean);
+}
 </script>
 
 <template>
@@ -395,13 +443,73 @@ function formatAssetCounts(counts: Record<string, number> | undefined) {
           {{ tab.label }}
         </button>
       </div>
-      <button type="button" class="secondary-button" :disabled="isLoading" @click="loadAdminData">
-        刷新
-      </button>
+      <div class="admin-header-actions">
+        <span class="status-pill">
+          {{ activeDatasourceInfo?.display_name ?? activeDatasource }}
+          <span v-if="activeDatasourceInfo?.dialect">/ {{ activeDatasourceInfo.dialect }}</span>
+        </span>
+        <button type="button" class="secondary-button" :disabled="isLoading" @click="loadAdminData">
+          刷新
+        </button>
+      </div>
     </header>
 
     <div v-if="errorMessage" class="admin-alert error">{{ errorMessage }}</div>
     <div v-if="noticeMessage && !errorMessage" class="admin-alert success">{{ noticeMessage }}</div>
+
+    <section v-if="activeTab === 'tables'" class="admin-section">
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>表</th>
+              <th>行数</th>
+              <th>OLAP</th>
+              <th>字段</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="table in tables" :key="table.table_name">
+              <td>
+                <div class="table-name-cell">
+                  <strong>{{ table.table_name }}</strong>
+                  <span v-if="table.display_name">{{ table.display_name }}</span>
+                  <span v-if="table.description">{{ table.description }}</span>
+                </div>
+              </td>
+              <td>{{ table.row_count ?? 0 }}</td>
+              <td>
+                <div class="chip-list">
+                  <span v-for="part in formatTableOlap(table)" :key="part" class="info-chip">
+                    {{ part }}
+                  </span>
+                  <span v-if="!formatTableOlap(table).length" class="info-chip">-</span>
+                </div>
+              </td>
+              <td>
+                <div class="column-list">
+                  <div
+                    v-for="column in columnsByTable[table.table_name] ?? []"
+                    :key="column.column_name"
+                    class="column-item"
+                  >
+                    <span class="code-cell">{{ column.column_name }}</span>
+                    <span class="source-kind">{{ column.data_type }}</span>
+                    <span
+                      v-for="flag in formatColumnFlags(column)"
+                      :key="`${column.column_name}:${flag}`"
+                      class="info-chip"
+                    >
+                      {{ flag }}
+                    </span>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
     <section v-if="activeTab === 'metrics'" class="admin-section">
       <div class="admin-actions">

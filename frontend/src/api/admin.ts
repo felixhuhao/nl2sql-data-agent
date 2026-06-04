@@ -11,15 +11,23 @@ export type MetadataTable = {
   description?: string | null;
   domain?: string | null;
   row_count?: number;
+  engine?: string;
+  partition_key?: string;
+  sorting_key?: string;
 };
 
 export type MetadataColumn = {
   column_name: string;
   data_type: string;
   description?: string | null;
+  nullable?: boolean;
   is_dimension?: boolean;
   is_metric?: boolean;
   sample_values?: string | null;
+  is_partition_key?: boolean;
+  is_sorting_key?: boolean;
+  is_primary_key?: boolean;
+  low_cardinality?: boolean;
 };
 
 export type Metric = {
@@ -127,89 +135,107 @@ export type RelationshipPayload = {
   description?: string | null;
 };
 
-export async function listTables() {
-  return requestJson<MetadataTable[]>("/api/metadata/tables");
+export async function listTables(datasource?: string) {
+  return requestJson<MetadataTable[]>(withDatasource("/api/metadata/tables", datasource));
 }
 
-export async function listColumns(tableName: string) {
-  return requestJson<MetadataColumn[]>(`/api/metadata/tables/${encodeURIComponent(tableName)}/columns`);
+export async function listColumns(tableName: string, datasource?: string) {
+  return requestJson<MetadataColumn[]>(
+    withDatasource(`/api/metadata/tables/${encodeURIComponent(tableName)}/columns`, datasource),
+  );
 }
 
-export async function listMetrics() {
-  return requestJson<Metric[]>("/api/metadata/metrics");
+export async function listMetrics(datasource?: string) {
+  return requestJson<Metric[]>(withDatasource("/api/metadata/metrics", datasource));
 }
 
-export async function createMetric(payload: MetricPayload) {
-  return requestJson<Metric>("/api/metadata/metrics", { method: "POST", body: payload });
+export async function createMetric(payload: MetricPayload, datasource?: string) {
+  return requestJson<Metric>(withDatasource("/api/metadata/metrics", datasource), { method: "POST", body: payload });
 }
 
-export async function updateMetric(name: string, payload: MetricPayload) {
-  return requestJson<Metric>(`/api/metadata/metrics/${encodeURIComponent(name)}`, {
+export async function updateMetric(name: string, payload: MetricPayload, datasource?: string) {
+  return requestJson<Metric>(withDatasource(`/api/metadata/metrics/${encodeURIComponent(name)}`, datasource), {
     method: "PUT",
     body: payload,
   });
 }
 
-export async function toggleMetric(name: string) {
-  return requestJson<Metric>(`/api/metadata/metrics/${encodeURIComponent(name)}/toggle`, {
-    method: "PATCH",
-  });
+export async function toggleMetric(name: string, datasource?: string) {
+  return requestJson<Metric>(
+    withDatasource(`/api/metadata/metrics/${encodeURIComponent(name)}/toggle`, datasource),
+    {
+      method: "PATCH",
+    },
+  );
 }
 
-export async function listAliases(tableName?: string) {
-  const query = tableName ? `?table_name=${encodeURIComponent(tableName)}` : "";
-  return requestJson<Alias[]>(`/api/metadata/aliases${query}`);
+export async function listAliases(tableName?: string, datasource?: string) {
+  const params = new URLSearchParams();
+  if (tableName) {
+    params.set("table_name", tableName);
+  }
+  if (datasource) {
+    params.set("datasource", datasource);
+  }
+  const query = params.toString();
+  return requestJson<Alias[]>(`/api/metadata/aliases${query ? `?${query}` : ""}`);
 }
 
-export async function createAlias(payload: AliasPayload) {
-  return requestJson<Alias>("/api/metadata/aliases", { method: "POST", body: payload });
+export async function createAlias(payload: AliasPayload, datasource?: string) {
+  return requestJson<Alias>(withDatasource("/api/metadata/aliases", datasource), { method: "POST", body: payload });
 }
 
-export async function deleteAlias(id: number) {
-  await requestJson<void>(`/api/metadata/aliases/${id}`, { method: "DELETE" });
+export async function deleteAlias(id: number, datasource?: string) {
+  await requestJson<void>(withDatasource(`/api/metadata/aliases/${id}`, datasource), { method: "DELETE" });
 }
 
-export async function listVerifiedQueries() {
-  return requestJson<VerifiedQuery[]>("/api/metadata/verified-queries");
+export async function listVerifiedQueries(datasource?: string) {
+  return requestJson<VerifiedQuery[]>(withDatasource("/api/metadata/verified-queries", datasource));
 }
 
-export async function createVerifiedQuery(payload: VerifiedQueryPayload) {
-  return requestJson<VerifiedQuery>("/api/metadata/verified-queries", {
+export async function createVerifiedQuery(payload: VerifiedQueryPayload, datasource?: string) {
+  return requestJson<VerifiedQuery>(withDatasource("/api/metadata/verified-queries", datasource), {
     method: "POST",
     body: payload,
   });
 }
 
-export async function updateVerifiedQuery(id: string, payload: VerifiedQueryPayload) {
-  return requestJson<VerifiedQuery>(`/api/metadata/verified-queries/${encodeURIComponent(id)}`, {
+export async function updateVerifiedQuery(id: string, payload: VerifiedQueryPayload, datasource?: string) {
+  return requestJson<VerifiedQuery>(
+    withDatasource(`/api/metadata/verified-queries/${encodeURIComponent(id)}`, datasource),
+    {
+      method: "PUT",
+      body: payload,
+    },
+  );
+}
+
+export async function toggleVerifiedQuery(id: string, datasource?: string) {
+  return requestJson<VerifiedQuery>(
+    withDatasource(`/api/metadata/verified-queries/${encodeURIComponent(id)}/toggle`, datasource),
+    {
+      method: "PATCH",
+    },
+  );
+}
+
+export async function getAnalysisSpace(datasource?: string) {
+  return requestJson<AnalysisSpace>(withDatasource("/api/metadata/analysis-space", datasource));
+}
+
+export async function updateAnalysisSpace(payload: AnalysisSpacePayload, datasource?: string) {
+  return requestJson<AnalysisSpace>(withDatasource("/api/metadata/analysis-space", datasource), {
     method: "PUT",
     body: payload,
   });
 }
 
-export async function toggleVerifiedQuery(id: string) {
-  return requestJson<VerifiedQuery>(`/api/metadata/verified-queries/${encodeURIComponent(id)}/toggle`, {
-    method: "PATCH",
-  });
+export async function listRelationships(datasource?: string) {
+  return requestJson<Relationship[]>(withDatasource("/api/metadata/relationships", datasource));
 }
 
-export async function getAnalysisSpace() {
-  return requestJson<AnalysisSpace>("/api/metadata/analysis-space");
-}
-
-export async function updateAnalysisSpace(payload: AnalysisSpacePayload) {
-  return requestJson<AnalysisSpace>("/api/metadata/analysis-space", {
-    method: "PUT",
-    body: payload,
-  });
-}
-
-export async function listRelationships() {
-  return requestJson<Relationship[]>("/api/metadata/relationships");
-}
-
-export async function updateRelationship(id: number, payload: RelationshipPayload) {
-  return requestJson<Relationship>(`/api/metadata/relationships/${id}`, {
+export async function updateRelationship(id: number, payload: RelationshipPayload, datasource?: string) {
+  return requestJson<Relationship>(withDatasource(`/api/metadata/relationships/${id}`, datasource), {
     method: "PUT",
     body: payload,
   });
@@ -241,6 +267,14 @@ async function requestJson<T>(path: string, options: RequestOptions = {}): Promi
     return undefined as T;
   }
   return (await response.json()) as T;
+}
+
+function withDatasource(path: string, datasource?: string) {
+  if (!datasource) {
+    return path;
+  }
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}datasource=${encodeURIComponent(datasource)}`;
 }
 
 async function readErrorDetail(response: Response) {

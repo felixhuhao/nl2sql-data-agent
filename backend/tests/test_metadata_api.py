@@ -21,8 +21,9 @@ from backend.app.metadata.models import (
 
 
 def test_retrieve_metadata_endpoint_returns_retrieval_result(monkeypatch):
-    def fake_retrieve(question: str) -> dict:
+    def fake_retrieve(question: str, datasource_name: str = "duckdb_ecommerce") -> dict:
         assert question == "按渠道统计销售额"
+        assert datasource_name == "duckdb_ecommerce"
         return {
             "question": question,
             "normalized_question": "按渠道统计销售额",
@@ -41,6 +42,46 @@ def test_retrieve_metadata_endpoint_returns_retrieval_result(monkeypatch):
     assert response.status_code == 200
     assert response.json()["metrics"] == [{"name": "sales_amount"}]
     assert response.json()["tables"][0]["source"] == "metric_expansion"
+
+
+def test_metadata_endpoints_pass_datasource_parameter(monkeypatch):
+    captured = {}
+
+    def fake_list_tables(datasource_name: str = "duckdb_ecommerce") -> list[dict]:
+        captured["tables"] = datasource_name
+        return [{"table_name": "fact_orders"}]
+
+    def fake_list_metrics(enabled=None, datasource_name: str = "duckdb_ecommerce") -> list[dict]:
+        captured["metrics"] = (enabled, datasource_name)
+        return []
+
+    def fake_retrieve(question: str, datasource_name: str = "duckdb_ecommerce") -> dict:
+        captured["retrieve"] = (question, datasource_name)
+        return {"question": question, "metrics": []}
+
+    monkeypatch.setattr("backend.app.api.metadata.list_tables", fake_list_tables)
+    monkeypatch.setattr("backend.app.api.metadata.list_metrics", fake_list_metrics)
+    monkeypatch.setattr("backend.app.api.metadata.retrieve_metadata_assets", fake_retrieve)
+    client = TestClient(main.app)
+
+    table_response = client.get("/api/metadata/tables", params={"datasource": "clickhouse_ecommerce"})
+    metric_response = client.get(
+        "/api/metadata/metrics",
+        params={"enabled": True, "datasource": "clickhouse_ecommerce"},
+    )
+    retrieve_response = client.get(
+        "/api/metadata/retrieve",
+        params={"question": "销售额", "datasource": "clickhouse_ecommerce"},
+    )
+
+    assert table_response.status_code == 200
+    assert metric_response.status_code == 200
+    assert retrieve_response.status_code == 200
+    assert captured == {
+        "tables": "clickhouse_ecommerce",
+        "metrics": (True, "clickhouse_ecommerce"),
+        "retrieve": ("销售额", "clickhouse_ecommerce"),
+    }
 
 
 def test_retrieve_metadata_endpoint_rejects_blank_question():
@@ -161,6 +202,37 @@ def test_create_alias_endpoint_rejects_duplicate_and_invalid_column(monkeypatch)
     assert first_response.status_code == 200
     assert duplicate_response.status_code == 409
     assert invalid_response.status_code == 422
+
+
+def test_delete_alias_endpoint_is_datasource_scoped(monkeypatch):
+    engine = _patch_metadata_db(monkeypatch)
+    _insert_admin_api_assets(engine)
+    stale_reasons = _capture_vector_stale_reasons(monkeypatch)
+    client = TestClient(main.app)
+
+    create_response = client.post(
+        "/api/metadata/aliases",
+        json={
+            "table_name": "fact_orders",
+            "column_name": "payment_amount",
+            "alias": "成交金额",
+        },
+    )
+    alias_id = create_response.json()["id"]
+    wrong_datasource_response = client.delete(
+        f"/api/metadata/aliases/{alias_id}",
+        params={"datasource": "clickhouse_ecommerce"},
+    )
+    default_aliases_response = client.get("/api/metadata/aliases")
+    delete_response = client.delete(f"/api/metadata/aliases/{alias_id}")
+    empty_aliases_response = client.get("/api/metadata/aliases")
+
+    assert create_response.status_code == 200
+    assert wrong_datasource_response.status_code == 404
+    assert [alias["id"] for alias in default_aliases_response.json()] == [alias_id]
+    assert delete_response.status_code == 204
+    assert empty_aliases_response.json() == []
+    assert stale_reasons == ["Alias changed.", "Alias changed."]
 
 
 def test_metric_endpoints_create_update_toggle_and_filter(monkeypatch):
@@ -325,6 +397,11 @@ def test_relationship_endpoint_updates_metadata_only(monkeypatch):
 
     relationships_response = client.get("/api/metadata/relationships")
     relationship_id = relationships_response.json()[0]["id"]
+    wrong_datasource_response = client.put(
+        f"/api/metadata/relationships/{relationship_id}",
+        params={"datasource": "clickhouse_ecommerce"},
+        json={"confidence": 1.0},
+    )
     update_response = client.put(
         f"/api/metadata/relationships/{relationship_id}",
         json={
@@ -340,6 +417,7 @@ def test_relationship_endpoint_updates_metadata_only(monkeypatch):
     )
 
     assert relationships_response.status_code == 200
+    assert wrong_datasource_response.status_code == 404
     assert update_response.status_code == 200
     assert update_response.json()["confidence"] == 1.0
     assert update_response.json()["fanout_risk"] == "medium"
