@@ -42,9 +42,34 @@ class DataSourceConnector(Protocol):
 
     def get_connection(self, read_only: bool = True) -> Any: ...
     def sync_schema(self) -> SchemaSnapshot: ...
-    def execute(self, sql: str) -> RawResult: ...
+    def execute(self, sql: str, timeout: int | None = None) -> RawResult: ...
     def close(self) -> None: ...
 ```
+
+**ClickHouse 连接级安全设置：** ClickHouseConnector 在 `get_connection()` 时通过连接 settings 注入安全参数：
+
+```python
+# ClickHouseConnector.get_connection()
+import clickhouse_connect
+
+def get_connection(self, read_only: bool = True) -> clickhouse_connect.Client:
+    settings = {}
+    if read_only:
+        settings["readonly"] = 1                # 连接级只读，DDL/DML 全部拒绝
+    settings["max_execution_time"] = self.max_execution_time  # 查询超时
+    settings["max_result_rows"] = self.max_result_rows        # 返回行数上限
+
+    return clickhouse_connect.get_client(
+        host=self.host,
+        port=self.port,
+        username=self.user,
+        password=self.password,
+        database=self.database,
+        settings=settings,
+    )
+```
+
+这确保即使 SQL Guard 漏拦截，数据库层面也有只读 + 超时 + 行数限制三重防线。DuckDB 已有 `read_only=True` 参数，行为一致。
 
 ### 数据源管理器
 
@@ -90,6 +115,9 @@ clickhouse_user: str = "default"
 clickhouse_password: str = ""
 clickhouse_database: str = "ecommerce"
 clickhouse_enabled: bool = False    # 默认关闭，不影响现有行为
+clickhouse_readonly: bool = True    # 连接级只读模式
+clickhouse_max_execution_time: int = 30   # 查询超时（秒）
+clickhouse_max_result_rows: int = 10000   # 最大返回行数（驱动层防线）
 default_datasource: str = "duckdb_ecommerce"
 ```
 
@@ -234,41 +262,87 @@ class SchemaSnapshot:
 
 ### ClickHouse 同步
 
-通过 ClickHouse 系统表获取元数据：
+通过 ClickHouse 系统表获取元数据。注意以下实现细节：
 
 ```sql
--- 表列表
-SELECT name, engine, total_rows, partition_key, sorting_key, primary_key
+-- 表列表：使用参数化查询防止 SQL 注入
+-- ClickHouse HTTP 接口支持 params
+SELECT name, engine, total_rows,
+       partition_key, sorting_key, primary_key
 FROM system.tables
-WHERE database = '{database}' AND engine NOT IN ('View', 'MaterializedView')
+WHERE database = {database:String}
+  AND engine NOT IN ('View', 'MaterializedView', 'SystemView')
 
--- 字段信息
-SELECT name, type, nullable,
+-- 字段信息：ClickHouse 的 system.columns 没有 nullable 列
+-- nullable 信息需要从 type 字符串解析：Nullable(X) 表示可空
+SELECT name, type,
        is_in_partition_key, is_in_sorting_key, is_in_primary_key
 FROM system.columns
-WHERE database = '{database}'
+WHERE database = {database:String}
 
--- 采样值
-SELECT DISTINCT {col} FROM {table} LIMIT 10
+-- LowCardinality 也从 type 字符串解析：LowCardinality(X)
+-- 解析逻辑：
+--   nullable = type.startswith("Nullable(")
+--   low_cardinality = "LowCardinality(" in type
+--   base_type = 去掉 Nullable() 和 LowCardinality() 包装后的类型
 ```
+
+**采样值查询：**
+
+```sql
+-- 使用 backtick quoting 处理保留字和特殊字段名
+-- 使用 database-qualified 表名避免歧义
+SELECT DISTINCT `{col}` FROM `{database}`.`{table}` LIMIT 10
+```
+
+`{col}` 和 `{table}` 在 Python 侧做白名单校验（只允许字母、数字、下划线），防止 SQL 注入。不直接拼接到 SQL 字符串中。
 
 OLAP 特有元数据：engine、partition_key、sorting_key、low_cardinality。存入元数据库，检索和 schema context 构建时可用。
 
-### 元数据存储扩展
+### 元数据存储扩展：datasource 命名空间
+
+当前元数据模型中，只有 `MetaAnalysisSpace` 有 `datasource` 列，其余表（`MetaTable`、`MetaColumn`、`MetaMetric`、`MetaVerifiedQuery`、`MetaRelationship`）都没有。这会导致 ClickHouse 同名表覆盖 DuckDB 元数据。必须给所有元数据表加 `datasource` 列。
 
 ```sql
--- meta_tables 新增列
+-- 所有元数据表新增 datasource 列（迁移时用现有数据填充 'duckdb_ecommerce'）
+ALTER TABLE meta_tables ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duckdb_ecommerce';
+ALTER TABLE meta_columns ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duckdb_ecommerce';
+ALTER TABLE meta_metrics ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duckdb_ecommerce';
+ALTER TABLE meta_verified_queries ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duckdb_ecommerce';
+ALTER TABLE meta_relationships ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duckdb_ecommerce';
+ALTER TABLE meta_column_aliases ADD COLUMN datasource TEXT NOT NULL DEFAULT 'duckdb_ecommerce';
+
+-- 唯一约束改为 (datasource, ...) 复合键
+-- meta_tables: UNIQUE(datasource, table_name) 替代 UNIQUE(table_name)
+-- meta_metrics: UNIQUE(datasource, name) 替代 UNIQUE(name)
+-- meta_verified_queries: UNIQUE(datasource, query_id) 替代 UNIQUE(query_id)
+-- meta_columns: 外键 table_id 对应的 meta_tables 行已含 datasource
+
+-- OLAP 特有字段
 ALTER TABLE meta_tables ADD COLUMN engine TEXT DEFAULT '';
 ALTER TABLE meta_tables ADD COLUMN partition_key TEXT DEFAULT '';
 ALTER TABLE meta_tables ADD COLUMN sorting_key TEXT DEFAULT '';
 
--- meta_columns 新增列
 ALTER TABLE meta_columns ADD COLUMN is_partition_key BOOLEAN DEFAULT FALSE;
 ALTER TABLE meta_columns ADD COLUMN is_sorting_key BOOLEAN DEFAULT FALSE;
 ALTER TABLE meta_columns ADD COLUMN low_cardinality BOOLEAN DEFAULT FALSE;
 ```
 
-迁移策略：用简单的版本检查 + `ALTER TABLE` 即可，不引入 Alembic。
+**检索适配：** 所有查询元数据的函数（`retrieve_metadata_assets`、`build_default_guard_scope`、`build_focused_context`）都需要增加 `datasource` 过滤条件。现有函数在无 `datasource` 参数时默认使用 `"duckdb_ecommerce"`，保持向后兼容。
+
+**向量存储适配：** 向量索引的 `asset_id` 需要加 datasource 前缀，避免跨数据源碰撞：
+
+```python
+# Before: asset_id = table.table_name
+# After:  asset_id = f"{table.datasource}:{table.table_name}"
+
+# Before: asset_id = f"{table_name}.{column.column_name}"
+# After:  asset_id = f"{table.datasource}:{table_name}.{column.column_name}"
+```
+
+向量检索时增加 `metadata.datasource` 过滤条件，只返回当前数据源的向量结果。
+
+迁移策略：用简单的版本检查 + `ALTER TABLE` 即可，不引入 Alembic。迁移脚本需在加列后更新现有数据的 `datasource` 值。
 
 ### 关系推断
 
@@ -321,27 +395,101 @@ services:
 
 ### 表引擎设计
 
+**关键约束：ClickHouse 表的字段名必须与 DuckDB 电商数仓完全一致**，确保现有语义层（metrics、aliases、relationships、verified queries、向量索引）无需修改即可复用。现有字段命名使用 `_key` 后缀（`date_key`、`region_key`、`channel_key`、`user_key`、`product_key`）。
+
 ```sql
+-- fact_orders: 字段名与 DuckDB 电商数仓完全一致
 CREATE TABLE ecommerce.fact_orders (
     order_id       UInt64,
-    user_id        UInt64,
-    order_date     Date,
-    channel_id     UInt8,
-    region_id      UInt16,
+    total_amount   Decimal(12,2),
+    discount_amount Decimal(12,2),
     payment_amount Decimal(12,2),
     order_status   LowCardinality(String),
+    user_key       UInt64,
+    region_key     UInt32,
+    channel_key    UInt32,
+    date_key       UInt32,
     created_at     DateTime
 )
 ENGINE = MergeTree()
-PARTITION BY toYYYYMM(order_date)
-ORDER BY (order_date, region_id, channel_id)
-PRIMARY KEY (order_date, region_id, channel_id);
+PARTITION BY toYYYYMM(toDate(date_key))    -- date_key 是整数，需转换
+ORDER BY (date_key, region_key, channel_key)
+PRIMARY KEY (date_key, region_key, channel_key);
+
+-- fact_order_items
+CREATE TABLE ecommerce.fact_order_items (
+    item_id     UInt64,
+    order_id    UInt64,
+    product_key UInt32,
+    quantity    UInt32,
+    unit_price  Decimal(12,2),
+    item_amount Decimal(12,2),
+    date_key    UInt32
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(toDate(date_key))
+ORDER BY (date_key, product_key)
+PRIMARY KEY (date_key, product_key);
+
+-- 维表用简单 MergeTree，按主键排序
+CREATE TABLE ecommerce.dim_date (
+    date_key    UInt32,
+    date_value  Date,
+    year        UInt16,
+    quarter     UInt8,
+    month       UInt8,
+    week        UInt8,
+    day_of_week UInt8
+)
+ENGINE = MergeTree()
+ORDER BY date_key;
+
+CREATE TABLE ecommerce.dim_regions (
+    region_key   UInt32,
+    region_group LowCardinality(String),
+    province     LowCardinality(String),
+    city         LowCardinality(String)
+)
+ENGINE = MergeTree()
+ORDER BY region_key;
+
+CREATE TABLE ecommerce.dim_channels (
+    channel_key  UInt32,
+    channel_name LowCardinality(String),
+    channel_type LowCardinality(String)
+)
+ENGINE = MergeTree()
+ORDER BY channel_key;
+
+CREATE TABLE ecommerce.dim_products (
+    product_key   UInt32,
+    product_id    UInt64,
+    category      LowCardinality(String),
+    sub_category  LowCardinality(String),
+    brand         LowCardinality(String),
+    price         Decimal(12,2)
+)
+ENGINE = MergeTree()
+ORDER BY product_key;
+
+CREATE TABLE ecommerce.dim_users (
+    user_key      UInt64,
+    user_id       UInt64,
+    name          String,
+    gender        LowCardinality(String),
+    age_group     LowCardinality(String),
+    register_date Date,
+    city          LowCardinality(String)
+)
+ENGINE = MergeTree()
+ORDER BY user_key;
 ```
 
 设计要点：
-- `PARTITION BY toYYYYMM` 按月分区，典型 OLAP 做法
+- 所有字段名与 DuckDB 电商数仓完全一致，共享语义层零修改
+- `PARTITION BY toYYYYMM(toDate(date_key))` 按月分区，典型 OLAP 做法
 - `ORDER BY` 按常见查询维度排列
-- `LowCardinality` 用于低基数字段（订单状态、品类等）
+- `LowCardinality` 用于低基数字段（订单状态、品类、渠道类型等）
 - 维表用简单 MergeTree，按主键排序
 
 ### 数据导入
@@ -383,18 +531,23 @@ DIALECT_CONTEXT_HINTS = {
   - 类型转换使用 toFloat64(), toString(), toInt32() 等函数
   - 条件聚合可使用 countIf(), sumIf() 等函数
   - LIMIT BY 可用于去重限流
-  - 大表查询必须带时间过滤条件
+  - 如果用户问题未指定时间范围，不要自行添加时间过滤条件，保持用户意图
 """,
     "duckdb": "...",
 }
 ```
+
+**关于时间过滤的设计决策：** 不在 prompt 中强制"大表必须带时间过滤"。原因是"华东销售额"这类无时间限定的问题应当返回全量结果，如果 prompt 隐式要求 LLM 补时间条件，会静默改变查询语义。时间过滤的正确处理方式：
+
+1. **LLM 生成 SQL 时尊重用户意图**——用户没说时间就不加
+2. **如果后续需要性能治理**——在 Guard 层增加"大表缺时间过滤"的 warning（非阻断），或返回提示让用户缩小范围。这属于 Phase 6.5 范围
 
 ### Layer 2: SQL Generation Prompt 分方言
 
 ```python
 DIALECT_INSTRUCTIONS = {
     "duckdb": "生成 DuckDB SQL。约束：标准 SQL 语法，日期函数 DATE_TRUNC/DATE_DIFF，类型转换 col::TYPE",
-    "clickhouse": "生成 ClickHouse SQL。约束：使用 ClickHouse 函数 toStartOfMonth()/dateDiff()/toFloat64()，条件聚合 countIf()/sumIf()，必须带时间过滤",
+    "clickhouse": "生成 ClickHouse SQL。约束：使用 ClickHouse 函数 toStartOfMonth()/dateDiff()/toFloat64()，条件聚合 countIf()/sumIf()。不要自行添加用户未提到的时间过滤条件",
 }
 ```
 
@@ -416,6 +569,52 @@ class AgentState(TypedDict):
     datasource_name: str              # 当前查询使用的数据源
     datasource_dialect: str           # "duckdb" / "clickhouse"
 ```
+
+### datasource 参数完整贯穿清单
+
+`datasource_name` 从 API 请求进入后，必须贯穿以下所有环节。任何一环遗漏都会导致前端选择 ClickHouse 后仍用 DuckDB 执行或校验：
+
+```text
+API 请求 (datasource 参数)
+  → run_query_workflow(datasource_name)
+    → retrieve_context_node
+        → retrieve_metadata_assets(question, datasource=datasource_name)  # 按数据源检索
+    → build_context_node
+        → build_focused_context(retrieval_result, datasource=datasource_name)  # 按数据源构建
+    → generate_sql_node
+        → prompt 选择方言 (duckdb/clickhouse)
+    → sql_guard_node
+        → guard_sql(sql, datasource_name=datasource_name)  # 动态方言 + 对应 scope
+        → build_default_guard_scope(datasource_name)  # 按数据源的 Analysis Space
+    → execute_node
+        → execute_guarded_sql(guard_result, datasource_name=datasource_name)  # 对应 Connector
+    → repair_sql_node
+        → repair_sql(sql, error, datasource_name=datasource_name)  # 方言感知修复
+```
+
+**具体函数签名变更：**
+
+```python
+# Before:
+def guard_sql(sql: str, scope: GuardScope | None = None) -> GuardResult
+def execute_guarded_sql(guard_result: GuardResult) -> QueryResult
+def retrieve_metadata_assets(question: str) -> RetrievalResult
+def build_focused_context(retrieval: RetrievalResult) -> str
+def build_default_guard_scope(datasource_name: str) -> GuardScope
+
+# After (全部增加 datasource_name 参数):
+def guard_sql(sql: str, scope: GuardScope | None = None,
+              datasource_name: str = "duckdb_ecommerce") -> GuardResult
+def execute_guarded_sql(guard_result: GuardResult,
+                        datasource_name: str = "duckdb_ecommerce") -> QueryResult
+def retrieve_metadata_assets(question: str,
+                             datasource_name: str = "duckdb_ecommerce") -> RetrievalResult
+def build_focused_context(retrieval: RetrievalResult,
+                          datasource_name: str = "duckdb_ecommerce") -> str
+def build_default_guard_scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope
+```
+
+所有函数默认值保持 `"duckdb_ecommerce"`，确保不改调用方时行为不变。
 
 ### SSE 步骤流增强
 
