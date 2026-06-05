@@ -11,5 +11,10 @@ Recommended filenames:
 - `admin_verified_queries.png` — verified queries in Admin UI.
 - `admin_relationships.png` — semantic relationships and fanout risk.
 - `query_channel_sales_clickhouse.png` — ClickHouse query result with chart and performance hints.
+- `query_followup_step1_recent30_sales.png` — multi-turn demo step 1: recent 30-day sales.
+- `query_followup_step2_region_breakdown.png` — multi-turn demo step 2: break down by region.
+- `query_followup_step3_filter_east.png` — multi-turn demo step 3: keep only East China.
+- `query_followup_step4_metric_order_count.png` — multi-turn demo step 4: switch metric to order count.
+- `query_followup_step5_time_90d.png` — multi-turn demo step 5: change the time window to recent 90 days.
 
 Keep images cropped to the useful area and prefer compressed PNG/WebP files.

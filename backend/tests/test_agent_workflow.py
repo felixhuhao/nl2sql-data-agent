@@ -89,6 +89,17 @@ def test_intent_guard_node_rejects_blocked_questions(question: str, expected_err
     assert state.completed_steps == ["intent_guard"]
 
 
+@pytest.mark.parametrize("question", ["改成最近90天", "改为订单数", "换成最近90天"])
+def test_intent_guard_node_allows_followup_rewording(question: str):
+    state = AgentState(question=question)
+
+    intent_guard_node(state)
+
+    assert state.stopped_at is None
+    assert state.error is None
+    assert state.completed_steps == ["intent_guard"]
+
+
 def test_build_context_node_sets_context_and_step():
     state = AgentState(question="test")
 

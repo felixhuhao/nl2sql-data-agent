@@ -112,6 +112,8 @@ def recommend_chart(
 
     category_column = _find_category_column(result, exclude=y_columns)
     if category_column is not None and y_columns and 0 < result.row_count <= MAX_BAR_CATEGORIES:
+        if result.row_count == 1:
+            return _table("Single category row is clearer as a table.")
         if primary_intent == "topn":
             y_columns = _avoid_mixed_scale_metrics(result, y_columns)
             return ChartRecommendation(

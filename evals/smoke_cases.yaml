@@ -158,7 +158,7 @@ cases:
       should_execute: true
       result_columns: [region_group, order_count]
       min_row_count: 1
-      chart_type: bar
+      chart_type: table
       required_tables: [fact_orders, dim_date, dim_regions]
       required_columns:
         - fact_orders.order_id

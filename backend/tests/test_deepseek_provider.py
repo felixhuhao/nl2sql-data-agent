@@ -107,13 +107,31 @@ def test_deepseek_provider_parses_followup_json():
     assert result.change_kind == "metric"
 
 
-def test_deepseek_provider_salvages_followup_sql_to_fresh_when_json_parse_fails():
+def test_deepseek_provider_infers_followup_when_structured_response_is_bare_sql():
     client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
     provider = DeepSeekProvider(api_key="test-key", http_client=client)
 
     result = provider.generate_sql(
         SQLGenerationRequest(
             question="换成订单数",
+            schema_context="# Schema Context",
+            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+            prior_summary="Previous query",
+        )
+    )
+
+    assert result.sql == "SELECT order_id FROM fact_orders"
+    assert result.is_follow_up is True
+    assert result.change_kind == "metric"
+
+
+def test_deepseek_provider_salvages_unrelated_bare_sql_to_fresh_with_prior_context():
+    client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
+    provider = DeepSeekProvider(api_key="test-key", http_client=client)
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="列出订单",
             schema_context="# Schema Context",
             prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
             prior_summary="Previous query",

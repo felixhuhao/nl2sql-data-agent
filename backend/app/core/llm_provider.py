@@ -133,7 +133,13 @@ CHANGE_KINDS = {"dimension", "filter", "metric", "time", "none"}
 SQL_START_RE = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
 
 
-def parse_sql_generation_content(content: str, *, expect_structured: bool) -> tuple[str, bool, str]:
+def parse_sql_generation_content(
+    content: str,
+    *,
+    expect_structured: bool,
+    fallback_is_follow_up: bool = False,
+    fallback_change_kind: str = "none",
+) -> tuple[str, bool, str]:
     stripped = strip_code_fence(content)
     if not expect_structured:
         return stripped, False, "none"
@@ -142,7 +148,7 @@ def parse_sql_generation_content(content: str, *, expect_structured: bool) -> tu
         payload = json.loads(stripped)
     except json.JSONDecodeError:
         if SQL_START_RE.match(stripped):
-            return stripped, False, "none"
+            return stripped, fallback_is_follow_up, _valid_change_kind(fallback_change_kind)
         raise ValueError("SQL generation response did not include extractable SQL.") from None
 
     if not isinstance(payload, dict):
@@ -150,10 +156,33 @@ def parse_sql_generation_content(content: str, *, expect_structured: bool) -> tu
     sql = payload.get("sql")
     if not isinstance(sql, str) or not sql.strip():
         raise ValueError("SQL generation response JSON must include sql.")
-    change_kind = payload.get("change_kind", "none")
-    if change_kind not in CHANGE_KINDS:
-        change_kind = "none"
-    return strip_code_fence(sql), bool(payload.get("is_follow_up", False)), change_kind
+    return (
+        strip_code_fence(sql),
+        bool(payload.get("is_follow_up", False)),
+        _valid_change_kind(payload.get("change_kind", "none")),
+    )
+
+
+def infer_followup_change_kind(question: str) -> tuple[bool, str]:
+    normalized_question = _normalize_text(question)
+    if any(token in normalized_question for token in ("只看", "筛选", "过滤", "限定", "仅看")):
+        return True, "filter"
+    if any(token in normalized_question for token in ("换成", "改成订单数", "订单数", "改为订单数")):
+        return True, "metric"
+    if any(
+        token in normalized_question for token in ("最近", "近", "本月", "上月", "今年", "去年", "时间", "日期")
+    ) and any(
+        token in normalized_question
+        for token in ("改成", "改为", "换成", "调整", "最近", "近")
+    ):
+        return True, "time"
+    if any(token in normalized_question for token in ("拆分", "分组", "按地区", "按区域", "按渠道", "按类目", "按品类")):
+        return True, "dimension"
+    return False, "none"
+
+
+def _valid_change_kind(change_kind: object) -> str:
+    return change_kind if isinstance(change_kind, str) and change_kind in CHANGE_KINDS else "none"
 
 
 def strip_code_fence(content: str) -> str:

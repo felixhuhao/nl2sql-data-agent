@@ -123,14 +123,27 @@ def test_recommend_chart_returns_bar_for_category_metric_rows():
     recommendation = recommend_chart(
         QueryResult(
             columns=["channel_name", "sales_amount"],
-            rows=[["官网", 100]],
-            row_count=1,
+            rows=[["官网", 100], ["天猫", 90]],
+            row_count=2,
         )
     )
 
     assert recommendation.chart_type == "bar"
     assert recommendation.x_column == "channel_name"
     assert recommendation.y_columns == ["sales_amount"]
+
+
+def test_recommend_chart_returns_table_for_single_category_metric_row():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["region_group", "order_count"],
+            rows=[["华东", 1932]],
+            row_count=1,
+        )
+    )
+
+    assert recommendation.chart_type == "table"
+    assert recommendation.reason == "Single category row is clearer as a table."
 
 
 def test_recommend_chart_prefers_bar_for_topn_intent():

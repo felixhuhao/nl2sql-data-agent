@@ -32,7 +32,7 @@ SQLExecutor = Callable[..., QueryResult]
 
 _BLOCKED_INTENT_KEYWORDS = (
     ("DELETE", ("delete", "删除", "删掉", "清空", "清除")),
-    ("UPDATE", ("update", "修改", "更新", "改为", "改成")),
+    ("UPDATE", ("update", "修改", "更新")),
     ("INSERT", ("insert", "新增", "插入", "写入")),
     ("CREATE", ("create", "建表", "创建表", "创建一张表")),
     ("DROP", ("drop", "删表")),
