@@ -179,6 +179,24 @@ def test_recommend_chart_uses_period_axis_for_yoy_comparison():
     assert recommendation.y_columns == ["sales_amount", "yoy_pct"]
 
 
+def test_recommend_chart_keeps_dual_axis_when_yoy_pct_is_all_null():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["month", "sales_amount", "prev_year_sales", "yoy_pct"],
+            rows=[
+                ["2025-01", 100000, None, None],
+                ["2025-02", 120000, None, None],
+            ],
+            row_count=2,
+        ),
+        olap_intents=["yoy_mom"],
+    )
+
+    assert recommendation.chart_type == "dual_axis"
+    assert recommendation.x_column == "month"
+    assert recommendation.y_columns == ["sales_amount", "yoy_pct"]
+
+
 def test_recommend_chart_keeps_same_scale_yoy_metrics_on_line():
     recommendation = recommend_chart(
         QueryResult(

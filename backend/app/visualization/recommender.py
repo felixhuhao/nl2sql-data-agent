@@ -176,7 +176,7 @@ def _select_dual_axis_columns(result: QueryResult, y_columns: list[str]) -> list
         return []
 
     selected_columns = [primary_columns[0], _preferred_comparison_column(comparison_columns)]
-    if not _has_mixed_scale(result, selected_columns):
+    if not _has_mixed_scale(result, selected_columns) and not _has_scale_comparison_column(selected_columns):
         return []
     return selected_columns
 
@@ -199,6 +199,10 @@ def _preferred_comparison_column(columns: list[str]) -> str:
         if _has_any_token(column, (*COMPARISON_SCALE_TOKENS, *COMPARISON_DELTA_TOKENS))
     ]
     return (scale_columns or columns)[0]
+
+
+def _has_scale_comparison_column(columns: list[str]) -> bool:
+    return any(_has_any_token(column, COMPARISON_SCALE_TOKENS) for column in columns)
 
 
 def _find_distribution_metric_column(y_columns: list[str]) -> str | None:
