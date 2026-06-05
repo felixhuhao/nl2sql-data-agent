@@ -1011,7 +1011,7 @@ I7.4 文档 + 冒烟
 - 采用 in-process 复用而非 HTTP 反代：实现简单、天然继承 Guard 与 metadata，但 MCP 进程需与后端共享文件系统（同一 SQLite / DuckDB）。HTTP-backed MCP 变体后移。
 - 项目当前没有集中式审计模块，Phase 7 通过既有日志记录工具调用；完整“审计接口”后移到 Phase 8 / 治理阶段。
 - lean core 仅 5 工具；`profile_table` / `data_quality_check` 进入 backlog（见上）。
-- DuckDB 暂无专属 EXPLAIN 性能提示，`explain_query` 在 DuckDB 上降级；与 Phase 6.5 backlog 一致。
+- DuckDB 已返回 EXPLAIN plan，但性能提示仍是最小降级；ClickHouse 提示更丰富。
 - 不暴露任何写/CRUD MCP 工具，语义资产维护仍只走 HTTP Admin。
 
 ### 建议用时

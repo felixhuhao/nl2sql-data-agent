@@ -63,6 +63,7 @@ dim_date
 - 表格和图表展示。
 - Eval Runner。
 - Qdrant 向量召回、Value Recall 和向量/规则对比评测。
+- MCP 只读工具化：schema、Guarded SQL、EXPLAIN 和指标检索。
 
 ## 快速启动
 
@@ -205,12 +206,75 @@ python scripts/run_smoke_eval.py --provider mock --vector-compare --report-path 
 
 `--vector-compare` 会分别执行 rule-only 和 rule+vector 两组。真正验证向量效果需要 Qdrant 已启动、`VECTOR_ENABLED=true` 且已重建索引。
 
+## MCP Tools
+
+Phase 7 提供两个 stdio MCP server，复用后端同一套 metadata service、SQL Guard、只读执行器和 datasource manager。MCP 进程不持有独立数据库凭据，也不暴露任何写工具。
+
+安装 MCP extra：
+
+```bash
+python -m pip install -e "backend[mcp]"
+```
+
+可用工具：
+
+```text
+mcp_servers.db_tools
+  list_tables
+  get_table_schema
+  query_readonly
+
+mcp_servers.olap_tools
+  explain_query
+  metric_catalog_search
+```
+
+本地冒烟：
+
+```bash
+python scripts/run_mcp_smoke.py
+```
+
+示例 Claude Desktop / MCP client 配置（把 `command`、`cwd` 和 `PYTHONPATH` 改成你本机的虚拟环境与仓库路径）：
+
+```json
+{
+  "mcpServers": {
+    "nl2sql-db-tools": {
+      "command": "/home/hao/.venvs/nl2sql-pro/bin/python",
+      "args": ["-m", "mcp_servers.db_tools"],
+      "cwd": "/home/hao/workspace/nl2sql_pro",
+      "env": {
+        "PYTHONPATH": "/home/hao/workspace/nl2sql_pro"
+      }
+    },
+    "nl2sql-olap-tools": {
+      "command": "/home/hao/.venvs/nl2sql-pro/bin/python",
+      "args": ["-m", "mcp_servers.olap_tools"],
+      "cwd": "/home/hao/workspace/nl2sql_pro",
+      "env": {
+        "PYTHONPATH": "/home/hao/workspace/nl2sql_pro"
+      }
+    }
+  }
+}
+```
+
+安全演示：
+
+```text
+query_readonly("DELETE FROM fact_orders WHERE order_id = 'O00000001'")
+```
+
+返回 `ok=true` 且 `data.allowed=false`、`stage=operation_guard`，并且不会调用执行器。
+
 ## 当前限制
 
 - Mock provider 只覆盖少量 verified/demo 问题，不是完整自然语言泛化能力。
 - DeepSeek provider 已接入，real eval 会保存 generated SQL 和 normalized SQL；业务语义等价性仍需要人工审阅报告。
 - SQL 高亮目前是基础代码块展示，未接入完整语法高亮。
 - ECharts 当前覆盖 line、bar、pie、dual-axis 等常见 OLAP 推荐图表，更复杂的多维可视化仍使用表格 fallback。
+- MCP 当前只暴露只读工具；语义资产 CRUD、profile_table、data_quality_check 和审计接口留作后续治理阶段。
 
 ## 暂不纳入 Scope
 
@@ -219,7 +283,7 @@ python scripts/run_smoke_eval.py --provider mock --vector-compare --report-path 
 - 多租户权限系统。
 - 企业 SSO。
 - 复杂 BI Dashboard 编辑器。
-- 完整 MCP 工具生态。
+- MCP 写工具和完整治理工具生态。
 - Elasticsearch 值召回。
 
 这些能力可以后续扩展，但不进入第一版目标。

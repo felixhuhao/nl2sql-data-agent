@@ -23,6 +23,9 @@ vector = [
 test = [
     "pytest>=8.0.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
