@@ -106,6 +106,7 @@ def iter_sql_repair_events(
 
         state.missing_carried_filters = missing_carried_filters(state)
         if state.is_follow_up and state.conversation_context is not None and state.conversation_context.active_filters:
+            state.completed_steps.append("conversation_filter_verify")
             yield RepairEvent(step="conversation_filter_verify", state=state)
         if state.missing_carried_filters:
             if repair_count >= max_repairs:

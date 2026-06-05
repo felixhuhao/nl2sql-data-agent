@@ -410,6 +410,35 @@ def test_build_conversation_context_captures_filter_followup_from_sql_diff_witho
     assert context.join_paths == [{"source_table": "fact_orders", "target_table": "dim_regions"}]
 
 
+def test_build_conversation_context_captures_filters_from_first_successful_turn():
+    state = AgentState(
+        question="查询华东销售额",
+        datasource_dialect="duckdb",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders "
+                "JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华东'"
+            ),
+        ),
+        query_result=QueryResult(columns=["sales_amount"], rows=[[100]], row_count=1),
+        explainability={
+            "matched_tables": ["fact_orders", "dim_regions"],
+            "matched_columns": ["fact_orders.payment_amount", "dim_regions.region_group"],
+        },
+    )
+
+    context = build_conversation_context(state)
+
+    assert context is not None
+    assert context.active_filters == [
+        FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+    ]
+
+
 def test_build_conversation_context_drops_prior_filters_for_non_followup_turn():
     state = AgentState(
         question="查询所有渠道销售额",
@@ -820,6 +849,115 @@ def test_run_query_workflow_repairs_sql_then_finalizes():
     ]
 
 
+def test_run_query_workflow_repairs_missing_carried_filter_before_execute():
+    class RepairingProvider:
+        name = "repairing"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            if request.repair is None:
+                return SQLGenerationResult(
+                    sql="SELECT COUNT(*) AS order_count FROM fact_orders",
+                    provider=self.name,
+                    is_follow_up=True,
+                    change_kind="metric",
+                )
+            assert request.repair.error_kind == "missing_carried_filter"
+            return SQLGenerationResult(
+                sql=(
+                    "SELECT COUNT(*) AS order_count "
+                    "FROM fact_orders "
+                    "JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                    "WHERE dim_regions.region_group = '华东'"
+                ),
+                provider=self.name,
+                is_follow_up=True,
+                change_kind="metric",
+            )
+
+    executed_sql = []
+
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        assert datasource_name == "duckdb_ecommerce"
+        executed_sql.append(guard_result.normalized_sql)
+        assert "dim_regions.region_group = '华东'" in guard_result.normalized_sql
+        return QueryResult(columns=["order_count"], rows=[[10]], row_count=1)
+
+    state = run_query_workflow(
+        "换成订单数",
+        provider=RepairingProvider(),
+        schema_context_builder=lambda: "# Schema Context",
+        scope_builder=_region_scope,
+        executor=executor,
+        conversation_context=ConversationContext(
+            question="查询华东销售额",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华东'"
+            ),
+            datasource_name="duckdb_ecommerce",
+            active_filters=[
+                FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+            ],
+        ),
+    )
+
+    assert state.stopped_at is None
+    assert state.error is None
+    assert len(executed_sql) == 1
+    assert state.repair_history[0]["error_kind"] == "missing_carried_filter"
+    assert "conversation_filter_verify" in state.completed_steps
+    assert state.query_result is not None
+    assert state.query_result.columns == ["order_count"]
+
+
+def test_run_query_workflow_non_followup_ignores_prior_filters():
+    class FreshProvider:
+        name = "fresh"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            assert request.prior_sql is not None
+            return SQLGenerationResult(
+                sql="SELECT fact_orders.order_id FROM fact_orders ORDER BY fact_orders.order_id LIMIT 20",
+                provider=self.name,
+                is_follow_up=False,
+                change_kind="none",
+            )
+
+    executed_sql = []
+
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        executed_sql.append(guard_result.normalized_sql)
+        assert "region_group" not in guard_result.normalized_sql
+        return QueryResult(columns=["order_id"], rows=[["O1"]], row_count=1)
+
+    state = run_query_workflow(
+        "列出订单",
+        provider=FreshProvider(),
+        schema_context_builder=lambda: "# Schema Context",
+        scope_builder=_region_scope,
+        executor=executor,
+        conversation_context=ConversationContext(
+            question="查询华东销售额",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华东'"
+            ),
+            datasource_name="duckdb_ecommerce",
+            active_filters=[
+                FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+            ],
+        ),
+    )
+
+    assert state.stopped_at is None
+    assert executed_sql
+    assert state.is_follow_up is False
+    assert "conversation_filter_verify" not in state.completed_steps
+    assert state.query_result is not None
+
+
 def test_run_query_workflow_stops_when_intent_guard_rejects_question():
     class FailingProvider:
         name = "failing"
@@ -950,5 +1088,16 @@ def _scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:
         table_columns={
             "fact_orders": frozenset({"order_id", "date_key", "payment_amount"}),
             "dim_date": frozenset({"date_key", "date_value"}),
+        },
+    )
+
+
+def _region_scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:
+    del datasource_name
+    return GuardScope(
+        allowed_tables=frozenset({"fact_orders", "dim_regions"}),
+        table_columns={
+            "fact_orders": frozenset({"order_id", "region_key", "payment_amount"}),
+            "dim_regions": frozenset({"region_key", "region_group"}),
         },
     )

@@ -193,20 +193,19 @@ genuinely missing SQL is a generation error, not a Guard input.
 
 ## 7. Filter-persistence backstop
 
-`active_filters` accumulates **only the predicates introduced by filter follow-ups**, not
-parsed from arbitrary SQL.
+`active_filters` is rebuilt from the **final Guard-approved SQL of each successful turn**.
+The session snapshot stores the filters that actually executed now, not a historical append-only
+list. This also covers a first turn that already contains a value filter (for example
+`查询华东销售额`) before any follow-up exists.
 
 ### Capture rule (Guard-normalized SQL is the source of truth)
 
-"Via Value Recall" alone is ambiguous — a question can produce several value hits, and the
-recalled column may not be the one the SQL actually filtered on. So a predicate is captured
-into `active_filters` only when **both** hold:
-
-1. it corresponds to a value hit for the current question, **and**
-2. it actually appears as a `column op value` predicate in the **Guard-normalized SQL's
-   WHERE** (verified by walking the WHERE clause with sqlglot, already a dependency).
-
-This guarantees `active_filters` reflects what executed, not what was merely recalled.
+Value Recall is useful evidence, but it is not required for persistence. In the default Docker
+configuration vector/value recall may be disabled, so capture walks the Guard-normalized `WHERE`
+clause with sqlglot and records supported literal predicates (`=` and `IN`). This guarantees
+`active_filters` reflects what executed, not what was merely recalled or guessed. If the model
+classifies the turn as `is_follow_up=false`, prior filters are not carried into verification; the
+new standalone SQL becomes the replacement session context after it executes successfully.
 
 ### Verify stage (post-guard, pre-execute)
 
@@ -278,9 +277,9 @@ silently lost.
 ### Unit tests
 - `SessionStore`: per-session turn cap, TTL expiry, **`MAX_SESSIONS` LRU eviction**,
   reset-by-new-id, missing key.
-- `build_conversation_context(state)`: correct snapshot fields; **filter capture only when the
-  value hit appears in the Guard-normalized WHERE** (capture rule, §7) — incl. a negative case
-  where a recalled value is *not* in the WHERE and must not be captured.
+- `build_conversation_context(state)`: correct snapshot fields; **filter capture from the final
+  Guard-normalized WHERE** (capture rule, §7), including first-turn filters, filter-value changes,
+  and a non-follow-up mid-session turn that replaces rather than inherits prior filters.
 - `build_context` **prior-assets union**: an elliptical follow-up (改成最近90天) whose current
   retrieval is near-empty still yields a focused context containing the prior tables/columns.
 - Prompt builder: 对话上下文 section present only with prior context; SQL-only vs JSON contract;

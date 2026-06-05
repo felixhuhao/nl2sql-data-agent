@@ -40,8 +40,10 @@ def build_conversation_context(state: AgentState) -> ConversationContext | None:
     if state.query_result is None:
         return None
 
-    prior_filters = _preserved_prior_filters(state)
-    active_filters = _dedupe_filters([*prior_filters, *_captured_filter_followups(state)])
+    active_filters = _where_filter_predicates(
+        state.guard_result.normalized_sql,
+        dialect=state.datasource_dialect,
+    )
     explainability = state.explainability or {}
     return ConversationContext(
         question=state.question,
@@ -143,49 +145,6 @@ def missing_carried_filters(state: AgentState) -> list[FilterPredicate]:
         predicate
         for predicate in state.conversation_context.active_filters
         if not _contains_filter(sql_filters, predicate)
-    ]
-
-
-def _captured_filter_followups(state: AgentState) -> list[FilterPredicate]:
-    if not state.is_follow_up or state.conversation_context is None:
-        return []
-    if state.change_kind != "filter":
-        return []
-    if state.guard_result is None or not state.guard_result.normalized_sql:
-        return []
-
-    current_filters = _where_filter_predicates(
-        state.guard_result.normalized_sql,
-        dialect=state.datasource_dialect,
-    )
-    prior_filters = _where_filter_predicates(
-        state.conversation_context.normalized_sql,
-        dialect=state.datasource_dialect,
-    )
-    return [
-        predicate
-        for predicate in current_filters
-        if not _contains_filter(prior_filters, predicate)
-    ]
-
-
-def _preserved_prior_filters(state: AgentState) -> list[FilterPredicate]:
-    if not state.is_follow_up or state.conversation_context is None:
-        return []
-    prior_filters = list(state.conversation_context.active_filters)
-    if state.change_kind != "filter":
-        return prior_filters
-    if state.guard_result is None or not state.guard_result.normalized_sql:
-        return []
-
-    current_filters = _where_filter_predicates(
-        state.guard_result.normalized_sql,
-        dialect=state.datasource_dialect,
-    )
-    return [
-        predicate
-        for predicate in prior_filters
-        if _contains_filter(current_filters, predicate)
     ]
 
 

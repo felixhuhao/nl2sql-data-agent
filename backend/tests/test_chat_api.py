@@ -6,9 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.agent.conversation import FilterPredicate
 import backend.app.agent.nodes as nodes_module
 from backend.app.agent.state import AgentState
 from backend.app.api.chat import WorkflowPayloadError, _workflow_step_payload, iter_chat_events
+from backend.app.api.session_store import SessionStore
 from backend.app.connectors.schema import DataSourceInfo
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationResult
 from backend.app.execution.runner import QueryResult
@@ -334,6 +336,48 @@ def test_iter_chat_events_returns_error_for_unknown_datasource():
     assert "Unknown datasource" in events[0]["data"]["reason"]
 
 
+def test_iter_chat_events_emits_session_event_and_stores_successful_context():
+    class RegionProvider:
+        name = "region-provider"
+
+        def generate_sql(self, request):
+            return SQLGenerationResult(
+                sql=(
+                    "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                    "FROM fact_orders "
+                    "JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                    "WHERE dim_regions.region_group = '华东'"
+                ),
+                provider=self.name,
+            )
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        assert "dim_regions.region_group = '华东'" in guard_result.normalized_sql
+        return QueryResult(columns=["sales_amount"], rows=[[100]], row_count=1)
+
+    store = SessionStore()
+    events = _parse_events(
+        iter_chat_events(
+            "查询华东销售额",
+            provider=RegionProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_region_scope,
+            executor=fake_executor,
+            store=store,
+            emit_session_event=True,
+        )
+    )
+
+    assert events[0]["event"] == "session"
+    session_id = events[0]["data"]["session_id"]
+    assert events[-1]["data"]["session_id"] == session_id
+    context = store.get(session_id)
+    assert context is not None
+    assert context.active_filters == [
+        FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+    ]
+
+
 def test_iter_chat_events_returns_error_event_for_guard_rejection():
     class DeleteProvider:
         name = "delete-provider"
@@ -557,6 +601,26 @@ def test_chat_query_endpoint_passes_requested_datasource(monkeypatch):
     assert "event: done" in response.text
 
 
+def test_chat_query_endpoint_passes_session_id(monkeypatch):
+    def fake_iter_chat_events(question, datasource_name, **kwargs):
+        assert question == "hello"
+        assert datasource_name == "duckdb_ecommerce"
+        assert kwargs["session_id"] == "client-session"
+        assert kwargs["emit_session_event"] is True
+        yield "event: done\ndata: {\"ok\": true}\n\n"
+
+    monkeypatch.setattr("backend.app.api.chat.iter_chat_events", fake_iter_chat_events)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/chat/query",
+        json={"question": "hello", "session_id": "client-session"},
+    )
+
+    assert response.status_code == 200
+    assert "event: done" in response.text
+
+
 def test_datasources_endpoint_lists_available_sources(monkeypatch):
     class FakeManager:
         default_name = "duckdb_ecommerce"
@@ -683,5 +747,16 @@ def _scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:
         table_columns={
             "fact_orders": frozenset({"order_id", "date_key", "payment_amount"}),
             "dim_date": frozenset({"date_key", "date_value"}),
+        },
+    )
+
+
+def _region_scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:
+    del datasource_name
+    return GuardScope(
+        allowed_tables=frozenset({"fact_orders", "dim_regions"}),
+        table_columns={
+            "fact_orders": frozenset({"region_key", "payment_amount"}),
+            "dim_regions": frozenset({"region_key", "region_group"}),
         },
     )
