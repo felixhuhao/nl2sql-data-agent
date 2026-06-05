@@ -1464,7 +1464,7 @@ cases:
         - fact_order_items.quantity
       result_columns: [product_name, quantity_sold]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
         - fact_order_items.date_key -> dim_date.date_key
@@ -1494,7 +1494,7 @@ cases:
         - fact_order_items.item_amount
       result_columns: [category, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
         - fact_order_items.date_key -> dim_date.date_key
@@ -1586,7 +1586,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [payment_bucket, order_count]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
 
   - id: phase65_clickhouse_top_channels_bar
     type: normal
