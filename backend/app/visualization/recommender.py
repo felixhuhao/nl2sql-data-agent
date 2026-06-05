@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from backend.app.execution.runner import QueryResult
 
 
-DATE_COLUMN_HINTS = ("date", "day", "week", "month", "year")
+DATE_COLUMN_HINTS = ("date", "day", "week", "month", "year", "period")
 METRIC_COLUMN_HINTS = (
     "amount",
     "count",
@@ -53,6 +53,7 @@ DISTRIBUTION_COLUMN_HINTS = (
     "proportion",
     "ratio",
     "percent",
+    "percentage",
     "pct",
 )
 DETAIL_ROW_ID_COLUMNS = ("order_id", "item_id")
@@ -152,6 +153,8 @@ def _find_time_column(columns: list[str]) -> str | None:
     for column in columns:
         lower_column = column.lower()
         if lower_column.endswith("_key"):
+            continue
+        if _is_comparison_column(column):
             continue
         if _has_any_token(column, DATE_COLUMN_HINTS):
             return column

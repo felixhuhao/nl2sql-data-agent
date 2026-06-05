@@ -146,6 +146,41 @@ def test_cte_inner_non_whitelist_column_is_rejected():
     assert result.reason == "Column secret_note is not allowed."
 
 
+def test_derived_table_projection_columns_pass_scope_guard():
+    result = guard_sql(
+        """
+        SELECT channel_name, sales_amount, sales_amount / SUM(sales_amount) OVER () AS sales_proportion
+        FROM (
+            SELECT dim_channels.channel_name, SUM(fact_orders.payment_amount) AS sales_amount
+            FROM fact_orders
+            JOIN dim_channels ON fact_orders.channel_key = dim_channels.channel_key
+            GROUP BY dim_channels.channel_name
+        )
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is True
+    assert result.stage == "passed"
+
+
+def test_derived_table_inner_non_whitelist_column_is_rejected():
+    result = guard_sql(
+        """
+        SELECT secret_note
+        FROM (
+            SELECT secret_note
+            FROM fact_orders
+        )
+        """,
+        scope=_scope(),
+    )
+
+    assert result.allowed is False
+    assert result.stage == "scope_guard"
+    assert result.reason == "Column secret_note is not allowed."
+
+
 def test_order_level_amount_after_item_join_is_rejected():
     result = guard_sql(
         """
@@ -222,19 +257,23 @@ def test_build_default_guard_scope_handles_empty_analysis_space(monkeypatch):
 
 def _scope() -> GuardScope:
     return GuardScope(
-        allowed_tables=frozenset({"fact_orders", "fact_order_items", "dim_date", "dim_regions", "dim_products"}),
+        allowed_tables=frozenset(
+            {"fact_orders", "fact_order_items", "dim_date", "dim_regions", "dim_channels", "dim_products"}
+        ),
         table_columns={
             "fact_orders": frozenset(
                 {
                     "order_id",
                     "order_date_key",
                     "region_key",
+                    "channel_key",
                     "payment_amount",
                 }
             ),
             "fact_order_items": frozenset({"order_id", "product_key", "item_amount"}),
             "dim_date": frozenset({"date_key", "date_value"}),
             "dim_regions": frozenset({"region_key", "region_name"}),
+            "dim_channels": frozenset({"channel_key", "channel_name"}),
             "dim_products": frozenset({"product_key", "category"}),
         },
     )

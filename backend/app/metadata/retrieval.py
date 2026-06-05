@@ -70,6 +70,17 @@ TIME_INTENT_TERMS = (
     "同比",
     "环比",
 )
+SALES_SHARE_INTENT_TERMS = (
+    "占比",
+    "比例",
+    "比重",
+    "贡献",
+    "share",
+    "ratio",
+    "proportion",
+    "percent",
+    "pct",
+)
 
 
 def retrieve_metadata_assets(
@@ -243,6 +254,10 @@ def _match_metric(
         if _contains(normalized_question, value):
             _add_metric_match(metric_matches, metric, score, reason)
             matched = True
+
+    if not matched and _matches_sales_share_intent(normalized_question, metric):
+        _add_metric_match(metric_matches, metric, 12, "metric_sales_share_intent")
+        matched = True
 
     if not matched:
         return
@@ -597,6 +612,13 @@ def _has_time_intent(normalized_text: str) -> bool:
     if any(term in normalized_text for term in TIME_INTENT_TERMS):
         return True
     return any(pattern.search(normalized_text) for pattern in TIME_INTENT_PATTERNS)
+
+
+def _matches_sales_share_intent(normalized_text: str, metric: MetaMetric) -> bool:
+    if metric.name != "sales_amount":
+        return False
+    has_sales_term = "销售" in normalized_text or "sales" in normalized_text or "sale" in normalized_text
+    return has_sales_term and any(term in normalized_text for term in SALES_SHARE_INTENT_TERMS)
 
 
 def _normalize_text(text: str) -> str:

@@ -174,6 +174,7 @@ def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult |
 
     for select in selects:
         physical_aliases, cte_aliases = _select_table_context(select, cte_names)
+        derived_sources = _derived_source_columns(select)
         referenced_tables = set(physical_aliases.values())
         projection_aliases = _projection_aliases(select)
 
@@ -188,6 +189,7 @@ def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult |
                 column,
                 physical_aliases,
                 cte_aliases,
+                derived_sources,
                 referenced_tables,
                 projection_aliases,
                 scope,
@@ -320,10 +322,41 @@ def _projection_aliases(select: exp.Select) -> set[str]:
     return aliases
 
 
+def _derived_source_columns(select: exp.Select) -> dict[str, set[str]]:
+    sources: dict[str, set[str]] = {}
+    for subquery in select.find_all(exp.Subquery):
+        if _nearest_select(subquery) is not select:
+            continue
+        if not isinstance(subquery.parent, exp.From | exp.Join):
+            continue
+        if not isinstance(subquery.this, exp.Select):
+            continue
+        columns = _select_output_columns(subquery.this)
+        if not columns:
+            continue
+        sources[""] = sources.get("", set()) | columns
+        alias = subquery.alias_or_name
+        if alias:
+            sources[alias] = columns
+    return sources
+
+
+def _select_output_columns(select: exp.Select) -> set[str]:
+    columns: set[str] = set()
+    for projection in select.expressions:
+        alias = projection.alias
+        if alias:
+            columns.add(alias)
+        elif isinstance(projection, exp.Column):
+            columns.add(projection.name)
+    return columns
+
+
 def _check_column_scope(
     column: exp.Column,
     physical_aliases: dict[str, str],
     cte_aliases: dict[str, str],
+    derived_sources: dict[str, set[str]],
     referenced_tables: set[str],
     projection_aliases: set[str],
     scope: GuardScope,
@@ -341,10 +374,16 @@ def _check_column_scope(
             return None
         if qualifier in cte_aliases:
             return None
+        if qualifier in derived_sources:
+            if column_name in derived_sources[qualifier]:
+                return None
+            return _reject("scope_guard", f"Column {qualifier}.{column_name} is not allowed.")
         if qualifier not in physical_aliases:
             return _reject("scope_guard", f"Unknown table qualifier {qualifier}.")
 
     if column_name in projection_aliases:
+        return None
+    if column_name in derived_sources.get("", set()):
         return None
 
     matching_tables = [

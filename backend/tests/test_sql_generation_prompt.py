@@ -18,6 +18,9 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Qualify every physical column" in system_prompt
     assert "Alias every computed projection" in system_prompt
     assert "use the metric name as the SELECT alias" in system_prompt
+    assert "do not substitute surrogate *_key columns" in system_prompt
+    assert "dim_products.name AS product_name" in system_prompt
+    assert "do not invent dim_products.product_name" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
     assert "SUM(fact_order_items.item_amount)" in system_prompt
@@ -98,7 +101,32 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
     assert "Generate SQL valid for the datasource dialect above." in repair_message
     assert "Normalized SQL:" in repair_message
     assert "fact_order_items.item_amount" in repair_message
+    assert "semantically closest allowed column" in repair_message
+    assert "avoid replacing names with *_key columns" in repair_message
     assert "Return corrected SQL only." in repair_message
+
+
+def test_sql_generation_repair_prompt_guides_product_name_repair():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="Show top products by sales in the last 30 days",
+            schema_context="# Schema Context\n- dim_products.name (VARCHAR): 商品名称",
+            repair=SQLRepairContext(
+                attempt=1,
+                original_sql="SELECT p.product_name FROM dim_products p",
+                error_stage="sql_guard",
+                error_kind="scope_guard",
+                error_reason="Column dim_products.product_name is not allowed.",
+            ),
+            olap_intents=["topn"],
+            olap_hint="TopN / ranking SQL guidance",
+        )
+    )
+
+    repair_message = messages[3]["content"]
+    assert "dim_products.product_name" in repair_message
+    assert "dim_products.name AS product_name" in repair_message
+    assert "avoid replacing names with *_key columns" in repair_message
 
 
 def test_sql_generation_repair_prompt_preserves_olap_hint():

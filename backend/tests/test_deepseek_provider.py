@@ -48,6 +48,11 @@ def test_deepseek_provider_posts_chat_completion_request():
     assert client.requests[0]["json"]["stream"] is False
     assert client.requests[0]["json"]["messages"][0]["role"] == "system"
     assert client.requests[0]["json"]["messages"][1]["role"] == "user"
+    timeout = client.requests[0]["timeout"]
+    assert timeout.connect == 10.0
+    assert timeout.read == 30.0
+    assert timeout.write == 10.0
+    assert timeout.pool == 5.0
 
 
 def test_deepseek_provider_posts_olap_guidance_in_messages():

@@ -164,6 +164,21 @@ def test_recommend_chart_returns_dual_axis_for_yoy_comparison():
     assert recommendation.y_columns == ["sales_amount", "yoy_pct"]
 
 
+def test_recommend_chart_uses_period_axis_for_yoy_comparison():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["period", "sales_amount", "prev_year_sales", "yoy_pct"],
+            rows=[["2025-12-01", 100000, 80000, 25.0]],
+            row_count=1,
+        ),
+        olap_intents=["yoy_mom"],
+    )
+
+    assert recommendation.chart_type == "dual_axis"
+    assert recommendation.x_column == "period"
+    assert recommendation.y_columns == ["sales_amount", "yoy_pct"]
+
+
 def test_recommend_chart_keeps_same_scale_yoy_metrics_on_line():
     recommendation = recommend_chart(
         QueryResult(
@@ -236,6 +251,20 @@ def test_recommend_chart_returns_pie_for_distribution_share():
     assert recommendation.chart_type == "pie"
     assert recommendation.x_column == "channel_name"
     assert recommendation.y_columns == ["channel_share"]
+
+
+def test_recommend_chart_prefers_percentage_column_for_distribution_pie():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["channel_name", "sales_amount", "sales_percentage"],
+            rows=[["官网", 100, 40.0], ["天猫", 90, 35.0], ["京东", 80, 25.0]],
+            row_count=3,
+        )
+    )
+
+    assert recommendation.chart_type == "pie"
+    assert recommendation.x_column == "channel_name"
+    assert recommendation.y_columns == ["sales_percentage"]
 
 
 def test_recommend_chart_does_not_treat_yoy_pct_as_distribution_pie():

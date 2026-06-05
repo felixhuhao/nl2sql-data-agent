@@ -19,14 +19,14 @@ class DeepSeekProvider:
         base_url: str | None = None,
         model: str | None = None,
         http_client: httpx.Client | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
     ) -> None:
         settings = get_settings()
         self.api_key = api_key if api_key is not None else settings.deepseek_api_key
         self.base_url = (base_url or settings.deepseek_base_url).rstrip("/")
         self.model = model or settings.deepseek_model
         self._http_client = http_client
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else settings.deepseek_timeout
 
     def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
         if not self.api_key:
@@ -53,9 +53,10 @@ class DeepSeekProvider:
         }
         url = f"{self.base_url}/chat/completions"
 
+        timeout = _timeout_config(self._timeout)
         if self._http_client is not None:
-            return self._http_client.post(url, json=payload, headers=headers, timeout=self._timeout)
-        with httpx.Client(timeout=self._timeout) as client:
+            return self._http_client.post(url, json=payload, headers=headers, timeout=timeout)
+        with httpx.Client(timeout=timeout) as client:
             return client.post(url, json=payload, headers=headers)
 
 
@@ -68,6 +69,16 @@ def _extract_message_content(payload: dict[str, Any]) -> str:
     if not content or not isinstance(content, str):
         raise ValueError("DeepSeek response does not include message content.")
     return content.strip()
+
+
+def _timeout_config(timeout: float) -> httpx.Timeout:
+    return httpx.Timeout(
+        timeout=timeout,
+        connect=min(10.0, timeout),
+        read=timeout,
+        write=min(10.0, timeout),
+        pool=min(5.0, timeout),
+    )
 
 
 def _strip_sql_fence(content: str) -> str:

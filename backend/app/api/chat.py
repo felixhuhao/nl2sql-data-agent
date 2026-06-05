@@ -132,7 +132,7 @@ def iter_chat_events(
                 "runtime_stats": state.runtime_stats,
             },
         )
-    except httpx.ReadTimeout:
+    except httpx.TimeoutException:
         logger.exception("Chat query timed out during SQL generation")
         yield _sse_event(
             "error",

@@ -39,7 +39,7 @@ def test_clickhouse_connector_execute_returns_raw_result(monkeypatch, tmp_path: 
     assert client.closed is True
 
 
-def test_clickhouse_connector_explain_returns_pipeline_plan(monkeypatch, tmp_path: Path):
+def test_clickhouse_connector_explain_returns_index_plan(monkeypatch, tmp_path: Path):
     client = FakeClient()
     fake_module = FakeClickHouseModule(client)
     client.results.append(
@@ -55,10 +55,10 @@ def test_clickhouse_connector_explain_returns_pipeline_plan(monkeypatch, tmp_pat
 
     result = ClickHouseConnector(_settings(tmp_path)).explain("SELECT * FROM fact_orders")
 
-    assert client.queries[0]["sql"] == "EXPLAIN PIPELINE TREE SELECT * FROM fact_orders"
+    assert client.queries[0]["sql"] == "EXPLAIN indexes=1 SELECT * FROM fact_orders"
     assert fake_module.get_client_calls == 1
     assert result == {
-        "format": "PIPELINE TREE",
+        "format": "PLAN indexes=1",
         "lines": ["ReadFromMergeTree (Parts: 3/24)", "JoiningTransform"],
         "text": "ReadFromMergeTree (Parts: 3/24)\nJoiningTransform",
     }
@@ -81,13 +81,13 @@ def test_clickhouse_connector_execute_with_explain_reuses_client(monkeypatch, tm
     assert fake_module.get_client_calls == 1
     assert [query["sql"] for query in client.queries] == [
         "SELECT 1",
-        "EXPLAIN PIPELINE TREE SELECT 1",
+        "EXPLAIN indexes=1 SELECT 1",
     ]
     assert client.queries[0]["settings"] == {"max_execution_time": 3}
     assert client.queries[1]["settings"] is None
     assert raw_result.columns == ["region_group", "sales_amount"]
     assert explain_result == {
-        "format": "PIPELINE TREE",
+        "format": "PLAN indexes=1",
         "lines": ["HashJoin", "ReadFromMergeTree Parts: 1/12"],
         "text": "HashJoin\nReadFromMergeTree Parts: 1/12",
     }

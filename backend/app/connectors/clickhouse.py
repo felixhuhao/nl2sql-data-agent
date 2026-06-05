@@ -8,6 +8,8 @@ from backend.app.connectors.schema import ColumnMeta, RawResult, SchemaSnapshot,
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 logger = logging.getLogger(__name__)
+EXPLAIN_SQL_PREFIX = "EXPLAIN indexes=1"
+EXPLAIN_FORMAT = "PLAN indexes=1"
 
 
 class ClickHouseConnector:
@@ -119,7 +121,7 @@ class ClickHouseConnector:
         try:
             result = _query_raw(client, sql, timeout=timeout)
             try:
-                explain_result = _query_raw(client, f"EXPLAIN PIPELINE TREE {sql}")
+                explain_result = _query_raw(client, _explain_sql(sql))
             except Exception as exc:
                 logger.warning("ClickHouse EXPLAIN failed: %s", exc)
                 explain_result = None
@@ -130,7 +132,7 @@ class ClickHouseConnector:
     def explain(self, sql: str) -> dict | None:
         client = self.get_connection(read_only=True)
         try:
-            result = _query_raw(client, f"EXPLAIN PIPELINE TREE {sql}")
+            result = _query_raw(client, _explain_sql(sql))
             return _parse_explain_result(result)
         finally:
             _close_client(client)
@@ -175,6 +177,10 @@ def _query_raw(client: Any, sql: str, timeout: int | None = None) -> RawResult:
     return RawResult(columns=columns, rows=rows, row_count=len(rows))
 
 
+def _explain_sql(sql: str) -> str:
+    return f"{EXPLAIN_SQL_PREFIX} {sql}"
+
+
 def _parse_explain_result(result: RawResult) -> dict | None:
     lines = [
         " ".join(str(cell) for cell in row if cell is not None).strip()
@@ -184,7 +190,7 @@ def _parse_explain_result(result: RawResult) -> dict | None:
     if not lines:
         return None
     return {
-        "format": "PIPELINE TREE",
+        "format": EXPLAIN_FORMAT,
         "lines": lines,
         "text": "\n".join(lines),
     }

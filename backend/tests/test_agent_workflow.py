@@ -281,6 +281,45 @@ def test_repair_sql_node_records_repair_history():
     ]
 
 
+def test_repair_sql_node_deterministically_repairs_product_name_alias():
+    class ShouldNotCallProvider:
+        name = "unused"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            raise AssertionError("deterministic repair should not call provider")
+
+    original_sql = """
+SELECT p.product_name, SUM(fi.item_amount) AS sales_amount
+FROM fact_order_items fi
+JOIN dim_products p ON fi.product_key = p.product_key
+GROUP BY p.product_name
+ORDER BY sales_amount DESC
+LIMIT 10
+"""
+    repair_context = SQLRepairContext(
+        attempt=1,
+        original_sql=original_sql,
+        error_stage="sql_guard",
+        error_kind="scope_guard",
+        error_reason="Column dim_products.product_name is not allowed.",
+    )
+    state = AgentState(
+        question="Show top products by sales",
+        schema_context="# Schema Context",
+        sql=original_sql,
+    )
+
+    repair_sql_node(state, provider=ShouldNotCallProvider(), repair_context=repair_context)
+
+    assert "p.name AS product_name" in state.sql
+    assert "GROUP BY p.name" in state.sql
+    assert "p.product_name" not in state.sql
+    assert "SELECT p.product_key" not in state.sql
+    assert "GROUP BY p.product_key" not in state.sql
+    assert state.provider == "deterministic-repair"
+    assert state.repair_history[0]["repaired_sql"] == state.sql
+
+
 def test_sql_guard_node_requires_sql():
     state = AgentState(question="test")
 

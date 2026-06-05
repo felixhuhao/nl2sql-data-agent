@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator
 
 from backend.app.agent.explainability import build_query_explainability
@@ -207,25 +208,33 @@ def repair_sql_node(
     if state.schema_context is None:
         raise ValueError("schema_context is required before SQL repair.")
 
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question=state.question,
-            schema_context=state.schema_context,
-            repair=repair_context,
-            datasource_name=state.datasource_name,
-            datasource_dialect=state.datasource_dialect,
-            olap_intents=state.olap_intents,
-            olap_hint=state.olap_hint,
+    deterministic_sql = _deterministic_scope_repair(repair_context)
+    if deterministic_sql is None:
+        result = provider.generate_sql(
+            SQLGenerationRequest(
+                question=state.question,
+                schema_context=state.schema_context,
+                repair=repair_context,
+                datasource_name=state.datasource_name,
+                datasource_dialect=state.datasource_dialect,
+                olap_intents=state.olap_intents,
+                olap_hint=state.olap_hint,
+            )
         )
-    )
-    state.sql = normalize_generated_sql(result.sql)
-    state.provider = result.provider
-    state.matched_query_id = result.matched_query_id
+        repaired_sql = result.sql
+        state.provider = result.provider
+        state.matched_query_id = result.matched_query_id
+    else:
+        repaired_sql = deterministic_sql
+        state.provider = "deterministic-repair"
+        state.matched_query_id = None
+    state.sql = normalize_generated_sql(repaired_sql)
+    history_sql = state.sql if deterministic_sql is not None else repaired_sql
     state.repair_history.append(
         {
             "attempt": repair_context.attempt,
             "original_sql": repair_context.original_sql,
-            "repaired_sql": result.sql,
+            "repaired_sql": history_sql,
             "error_stage": repair_context.error_stage,
             "error_kind": repair_context.error_kind,
             "error_reason": repair_context.error_reason,
@@ -236,6 +245,53 @@ def repair_sql_node(
     )
     state.completed_steps.append("repair_sql")
     return state
+
+
+def _deterministic_scope_repair(repair_context: SQLRepairContext) -> str | None:
+    if repair_context.error_kind != "scope_guard":
+        return None
+    if "dim_products.product_name" not in repair_context.error_reason:
+        return None
+    return _repair_product_name_alias(repair_context.original_sql)
+
+
+def _repair_product_name_alias(sql: str) -> str | None:
+    aliases = _table_aliases(sql, "dim_products")
+    if not aliases:
+        return None
+
+    repaired_sql = sql
+    for alias in aliases:
+        escaped_alias = re.escape(alias)
+        repaired_sql = re.sub(
+            rf"(?is)(\bselect\b(?:(?!\bfrom\b).)*?)\b{escaped_alias}\.product_name\b(?!\s+as\b)",
+            rf"\1{alias}.name AS product_name",
+            repaired_sql,
+            count=1,
+        )
+        repaired_sql = re.sub(
+            rf"\b{escaped_alias}\.product_name\b",
+            f"{alias}.name",
+            repaired_sql,
+            flags=re.IGNORECASE,
+        )
+
+    if repaired_sql == sql:
+        return None
+    return repaired_sql
+
+
+def _table_aliases(sql: str, table_name: str) -> list[str]:
+    aliases = [table_name]
+    for match in re.finditer(
+        rf"\b{re.escape(table_name)}\b\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b",
+        sql,
+        flags=re.IGNORECASE,
+    ):
+        alias = match.group(1)
+        if alias.upper() not in {"ON", "WHERE", "JOIN", "GROUP", "ORDER", "LIMIT"}:
+            aliases.append(alias)
+    return aliases
 
 
 def sql_guard_node(

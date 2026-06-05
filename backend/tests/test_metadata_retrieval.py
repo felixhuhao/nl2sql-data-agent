@@ -42,6 +42,19 @@ def test_retrieve_assets_matches_channel_aliases(monkeypatch):
     assert ("dim_date", "date_value") in _column_keys(result)
 
 
+def test_retrieve_assets_matches_sales_share_intent(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+
+    result = retrieval.retrieve_metadata_assets("各渠道销售占比", use_vector=False)
+
+    assert "sales_amount" in _names(result["metrics"], "name")
+    assert "dim_channels" in _names(result["tables"], "table_name")
+    assert "fact_orders" in _names(result["tables"], "table_name")
+    assert ("dim_channels", "channel_name") in _column_keys(result)
+    assert ("fact_orders", "payment_amount") in _column_keys(result)
+
+
 def test_retrieve_assets_matches_metric_label(monkeypatch):
     engine = _patch_retrieval_db(monkeypatch)
     _insert_demo_physical_metadata(engine)
