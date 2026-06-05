@@ -1,7 +1,12 @@
 import pytest
 
 import backend.app.agent.nodes as nodes_module
-from backend.app.agent.conversation import ConversationContext, FilterPredicate, build_conversation_context
+from backend.app.agent.conversation import (
+    ConversationContext,
+    FilterPredicate,
+    build_conversation_context,
+    missing_carried_filters,
+)
 from backend.app.agent.nodes import (
     build_context_node,
     datasource_selected_node,
@@ -505,6 +510,43 @@ def test_build_conversation_context_replaces_prior_filter_when_filter_followup_c
     assert context.active_filters == [
         FilterPredicate(column="dim_regions.region_group", op="=", value="华北")
     ]
+
+
+def test_missing_carried_filters_allows_time_filters_to_change_on_time_followup():
+    state = AgentState(
+        question="改成2024年",
+        datasource_dialect="duckdb",
+        conversation_context=ConversationContext(
+            question="查询2025年华东销售额",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders "
+                "JOIN dim_date ON fact_orders.date_key = dim_date.date_key "
+                "JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_date.year = 2025 AND dim_regions.region_group = '华东'"
+            ),
+            datasource_name="duckdb_ecommerce",
+            active_filters=[
+                FilterPredicate(column="dim_date.year", op="=", value="2025"),
+                FilterPredicate(column="dim_regions.region_group", op="=", value="华东"),
+            ],
+        ),
+        is_follow_up=True,
+        change_kind="time",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders "
+                "JOIN dim_date ON fact_orders.date_key = dim_date.date_key "
+                "JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_date.year = 2024 AND dim_regions.region_group = '华东'"
+            ),
+        ),
+    )
+
+    assert missing_carried_filters(state) == []
 
 
 def test_repair_sql_node_deterministically_repairs_product_name_alias():

@@ -141,11 +141,13 @@ def missing_carried_filters(state: AgentState) -> list[FilterPredicate]:
         state.guard_result.normalized_sql,
         dialect=state.datasource_dialect,
     )
-    return [
-        predicate
-        for predicate in state.conversation_context.active_filters
-        if not _contains_filter(sql_filters, predicate)
-    ]
+    missing = []
+    for predicate in state.conversation_context.active_filters:
+        if state.change_kind == "time" and _is_time_filter(predicate):
+            continue
+        if not _contains_filter(sql_filters, predicate):
+            missing.append(predicate)
+    return missing
 
 
 def _where_filter_predicates(sql: str, dialect: str) -> list[FilterPredicate]:
@@ -220,6 +222,11 @@ def _contains_filter(filters: list[FilterPredicate], predicate: FilterPredicate)
         and (item.op == predicate.op or {item.op, predicate.op} <= {"=", "in"})
         for item in filters
     )
+
+
+def _is_time_filter(predicate: FilterPredicate) -> bool:
+    column = predicate.column.casefold()
+    return any(token in column for token in ("date", "time", "year", "month", "quarter", "week", "day"))
 
 
 def _dedupe_filters(predicates: list[FilterPredicate]) -> list[FilterPredicate]:

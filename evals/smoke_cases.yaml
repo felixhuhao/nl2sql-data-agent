@@ -131,6 +131,16 @@ cases:
           JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
           WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
             AND dim_regions.region_group = '华东'
+      - question: 改成最近90天
+        is_follow_up: true
+        change_kind: time
+        mock_sql: >-
+          SELECT COUNT(DISTINCT fact_orders.order_id) AS order_count
+          FROM fact_orders
+          JOIN dim_date ON fact_orders.date_key = dim_date.date_key
+          JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
+          WHERE dim_date.date_value BETWEEN DATE '2025-10-03' AND DATE '2025-12-31'
+            AND dim_regions.region_group = '华东'
     expected:
       should_execute: true
       result_columns: [order_count]
@@ -144,10 +154,11 @@ cases:
         - fact_orders.date_key -> dim_date.date_key
         - fact_orders.region_key -> dim_regions.region_key
       is_follow_up: true
-      change_kind: metric
+      change_kind: time
       active_filters:
         - dim_regions.region_group = 华东
       normalized_sql_contains:
+        - "2025-10-03"
         - region_group
         - 华东
 

@@ -223,6 +223,9 @@ generate_sql -> sql_guard (allowed) -> conversation_filter_verify -> execute
 - If a predicate is missing **and** `change_kind != filter` (the user did not change filters):
   fire **one** targeted repair ("preserve filter X"), which re-enters `sql_guard` and then
   `conversation_filter_verify` again.
+- If `change_kind == time`, date/time predicates (`date`, `time`, `year`, `month`, `quarter`,
+  `week`, `day`) may change freely, but non-time filters such as region/channel/category are
+  still preserved.
 - These filter repairs **share the global max-2 repair budget** with guard/execution repairs,
   so triggers cannot amplify. If still unsatisfied after the budget is spent, **stop before
   execution** and emit an error event with `step = conversation_filter_verify`, the missing
@@ -288,9 +291,9 @@ silently lost.
   stripping; salvage-to-fresh on metadata-only failure; **`generate_sql` error when no SQL
   extractable**.
 - `conversation_filter_verify`: missing carried filter triggers one targeted repair and
-  re-guard; budget shared with guard/exec repair (no amplification); never executes the
-  unverified SQL.
-- Workflow integration: 2–3 turn run asserts dimension add, filter persist, metric swap, time
+  re-guard; budget shared with guard/exec repair (no amplification); time-change turns can
+  replace date/time predicates while preserving non-time filters; never executes unverified SQL.
+- Workflow integration: 2–4 turn run asserts dimension add, filter persist, metric swap, time
   change; and a non-follow-up mid-session question returns a standalone query (fresh).
 
 ## 12. Rollout / gating
