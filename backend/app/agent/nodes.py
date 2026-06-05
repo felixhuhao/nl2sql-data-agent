@@ -250,9 +250,17 @@ def repair_sql_node(
 def _deterministic_scope_repair(repair_context: SQLRepairContext) -> str | None:
     if repair_context.error_kind != "scope_guard":
         return None
-    if "dim_products.product_name" not in repair_context.error_reason:
+    if not _references_product_name_alias(repair_context.original_sql):
         return None
     return _repair_product_name_alias(repair_context.original_sql)
+
+
+def _references_product_name_alias(sql: str) -> bool:
+    aliases = _table_aliases(sql, "dim_products")
+    return any(
+        re.search(rf"\b{re.escape(alias)}\.product_name\b", sql, flags=re.IGNORECASE)
+        for alias in aliases
+    )
 
 
 def _repair_product_name_alias(sql: str) -> str | None:
