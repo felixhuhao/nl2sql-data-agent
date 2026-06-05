@@ -5,18 +5,15 @@ from collections.abc import Callable, Iterator
 
 from backend.app.agent.explainability import build_query_explainability
 from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
-from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
 from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.llm_provider import (
     LLMProvider,
-    MockLLMProvider,
     SQLGenerationRequest,
     SQLRepairContext,
 )
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
-from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context, build_focused_context_from_retrieval
 from backend.app.sql_guard.guard import guard_sql
@@ -48,34 +45,6 @@ _EXTERNAL_FILE_KEYWORDS = (
     "外部json",
     "外部文件",
 )
-
-
-def run_query_workflow(
-    question: str,
-    provider: LLMProvider | None = None,
-    schema_context_builder: SchemaContextBuilder | None = None,
-    retriever: Retriever = retrieve_metadata_assets,
-    scope_builder: ScopeBuilder = build_default_guard_scope,
-    executor: SQLExecutor = execute_guarded_sql,
-    datasource_name: str = DEFAULT_DATASOURCE,
-) -> AgentState:
-    state = AgentState(question=question, datasource_name=datasource_name)
-    active_provider = provider or MockLLMProvider()
-    for _step in iter_pre_repair_workflow(
-        state,
-        provider=active_provider,
-        schema_context_builder=schema_context_builder,
-        retriever=retriever,
-    ):
-        if state.stopped_at is not None:
-            return state
-    sql_guard_node(state, scope_builder=scope_builder)
-    if state.stopped_at is not None:
-        return state
-    execute_node(state, executor=executor)
-    explain_performance_node(state)
-    summarize_node(state)
-    return state
 
 
 def iter_pre_repair_workflow(

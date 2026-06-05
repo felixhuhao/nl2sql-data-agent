@@ -5,17 +5,17 @@ from backend.app.agent.nodes import (
     build_context_node,
     datasource_selected_node,
     execute_node,
-    explain_performance_node,
     generate_sql_node,
     intent_guard_node,
     iter_pre_repair_workflow,
     olap_intent_detect_node,
     repair_sql_node,
     retrieve_context_node,
-    run_query_workflow,
     sql_guard_node,
 )
+from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.state import AgentState
+from backend.app.agent.workflow import run_query_workflow
 from backend.app.core.llm_provider import (
     MockLLMProvider,
     SQLGenerationRequest,
@@ -500,6 +500,7 @@ def test_run_query_workflow_executes_demo_question():
         "sql_guard",
         "execute",
         "summarize",
+        "recommend_chart",
     ]
     assert executed_sql
     assert "LIMIT 500" in executed_sql[0]
@@ -556,6 +557,69 @@ def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypat
         "sql_guard",
         "execute",
         "summarize",
+        "recommend_chart",
+    ]
+
+
+def test_run_query_workflow_repairs_sql_then_finalizes():
+    class RepairingProvider:
+        name = "repairing"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            if request.repair is not None:
+                return SQLGenerationResult(
+                    sql="SELECT payment_amount FROM fact_orders",
+                    provider=self.name,
+                )
+            return SQLGenerationResult(
+                sql="SELECT missing_column FROM fact_orders",
+                provider=self.name,
+            )
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        assert datasource_name == "duckdb_ecommerce"
+        assert guard_result.normalized_sql is not None
+        assert "payment_amount" in guard_result.normalized_sql
+        return QueryResult(columns=["payment_amount"], rows=[[100]], row_count=1)
+
+    state = run_query_workflow(
+        "查询订单金额",
+        provider=RepairingProvider(),
+        schema_context_builder=lambda: "# Schema Context",
+        scope_builder=_scope,
+        executor=fake_executor,
+    )
+
+    assert state.stopped_at is None
+    assert state.error is None
+    assert state.query_result is not None
+    assert state.summary == "查询返回 1 行，字段：payment_amount。"
+    assert state.chart_recommendation is not None
+    assert state.repair_history == [
+        {
+            "attempt": 1,
+            "error_stage": "sql_guard",
+            "error_kind": "scope_guard",
+            "error_reason": "Column missing_column is not allowed.",
+            "original_sql": "SELECT missing_column FROM fact_orders",
+            "normalized_sql": None,
+            "repaired_sql": "SELECT payment_amount FROM fact_orders",
+            "succeeded": True,
+            "final_stage": "execute",
+        }
+    ]
+    assert state.completed_steps == [
+        "datasource_selected",
+        "intent_guard",
+        "build_context",
+        "olap_detected",
+        "generate_sql",
+        "sql_guard",
+        "repair_sql",
+        "sql_guard",
+        "execute",
+        "summarize",
+        "recommend_chart",
     ]
 
 

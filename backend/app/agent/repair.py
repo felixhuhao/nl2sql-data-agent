@@ -108,6 +108,8 @@ def iter_sql_repair_events(
         except Exception as exc:
             state.execution_error = str(exc)
             if not is_execution_repairable(exc) or repair_count >= max_repairs:
+                state.stopped_at = "execute"
+                state.error = str(exc)
                 _mark_latest_repair(state, succeeded=False, final_stage="execute")
                 yield RepairEvent(
                     step="error",

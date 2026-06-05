@@ -8,22 +8,18 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from backend.app.agent.nodes import (
-    explain_performance_node,
-    iter_pre_repair_workflow,
-    summarize_node,
-)
+from backend.app.agent.nodes import iter_pre_repair_workflow
 from backend.app.agent.olap_intent import describe_olap_intents
 from backend.app.agent.repair import RepairEvent, iter_sql_repair_events
 from backend.app.agent.state import AgentState
+from backend.app.agent.workflow import finalize_workflow
 from backend.app.config import get_settings
 from backend.app.core.deepseek_provider import DeepSeekProvider
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
-from backend.app.execution.runner import QueryResult, execute_guarded_sql
+from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
-from backend.app.visualization.recommender import recommend_chart
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -87,11 +83,10 @@ def iter_chat_events(
                 return
             yield _sse_event("step", _repair_step_payload(repair_event))
 
-        explain_performance_node(state)
+        finalize_workflow(state)
         if state.datasource_dialect == "clickhouse":
             yield _sse_event("step", _explain_plan_step_payload(state))
 
-        summarize_node(state)
         yield _sse_event(
             "step",
             {
@@ -101,10 +96,7 @@ def iter_chat_events(
             },
         )
 
-        chart_recommendation = recommend_chart(
-            state.query_result or QueryResult(columns=[], rows=[], row_count=0),
-            olap_intents=state.olap_intents,
-        )
+        chart_recommendation = state.chart_recommendation
         yield _sse_event(
             "step",
             {

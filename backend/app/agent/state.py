@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from backend.app.execution.runner import QueryResult
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.sql_guard.models import GuardResult
+from backend.app.visualization.recommender import ChartRecommendation
 
 
 @dataclass
@@ -25,6 +26,7 @@ class AgentState:
     olap_hint: str = ""
     plan_hints: list[str] = field(default_factory=list)
     runtime_stats: dict | None = None
+    chart_recommendation: ChartRecommendation | None = None
     error: str | None = None
     stopped_at: str | None = None
     repair_history: list[dict] = field(default_factory=list)

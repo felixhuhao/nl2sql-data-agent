@@ -149,6 +149,36 @@ def test_iter_sql_repair_events_repairs_execution_failure_and_backfills_history(
     assert state.repair_history[0]["final_stage"] == "execute"
 
 
+def test_iter_sql_repair_events_marks_unrepairable_execution_failure_terminal():
+    state = AgentState(
+        question="查询订单金额",
+        schema_context="# Schema Context",
+        sql="SELECT payment_amount FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(["SELECT order_id FROM fact_orders"])
+
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        raise TimeoutError("read operation timed out")
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=executor,
+        )
+    )
+
+    assert [event.step for event in events] == ["sql_guard", "error"]
+    assert events[-1].error_stage == "execute"
+    assert events[-1].error_reason == "read operation timed out"
+    assert state.stopped_at == "execute"
+    assert state.error == "read operation timed out"
+    assert state.execution_error == "read operation timed out"
+    assert state.query_result is None
+    assert provider.repair_requests == []
+
+
 def test_iter_sql_repair_events_does_not_repair_operation_guard():
     state = AgentState(
         question="查询订单",

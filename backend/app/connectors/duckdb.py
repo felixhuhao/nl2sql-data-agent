@@ -71,7 +71,24 @@ class DuckDBConnector:
             connection.close()
 
     def explain(self, sql: str) -> dict | None:
-        return None
+        connection = self.get_connection(read_only=True)
+        try:
+            cursor = connection.execute(f"EXPLAIN {sql}")
+            rows = cursor.fetchall()
+        finally:
+            connection.close()
+
+        lines: list[str] = []
+        for row in rows:
+            if len(row) >= 2 and str(row[1]).strip():
+                lines.extend(str(row[1]).splitlines())
+            elif row and str(row[0]).strip():
+                lines.append(str(row[0]))
+        return {
+            "dialect": self.dialect,
+            "format": "text",
+            "lines": [line for line in lines if line.strip()],
+        }
 
     def close(self) -> None:
         return None

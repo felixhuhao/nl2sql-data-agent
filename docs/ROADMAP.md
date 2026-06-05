@@ -929,40 +929,94 @@ Agent 需要理解数据源方言差异：
 
 ## 12. Phase 7：MCP 工具化
 
+> 设计基线（brainstorming 已确认）：**in-process 复用 + lean-core 5 工具 + stdio**，real & runnable 而非脚手架。`profile_table` / `data_quality_check` 移入后续 backlog；不新增审计模块。
+
 ### 目标
 
-把核心能力以 MCP server 方式暴露，体现现代 Agent 工具生态能力。
+把已经建好的核心能力（SQL Guard、只读执行、metadata service、retrieval、DuckDB/ClickHouse EXPLAIN、性能提示）以 MCP server 方式暴露，体现现代 Agent 工具生态能力。Phase 7 的重点不是新增数据能力，而是把后端服务层封装成一组安全、只读、结构化的 MCP 工具，让外部 Agent（如 Claude Desktop / `mcp` CLI）可以复用本项目的语义层和安全边界。
 
-### MCP Server
+定位为求职演示交付，但要求 **真实可运行**（带冒烟测试与真实 client 演示），而不是只能截图的脚手架。可行性来自“每个工具都只是对既有后端函数的薄封装”，因此 real 相比 demo-only 的边际成本很小。最具说服力的演示瞬间：用户向真实 MCP client 提出“删除 2024 年订单数据”，外部 Agent 调用 `query_readonly` 时传入 `DELETE FROM fact_orders ...`，并被与 HTTP 链路同一套 SQL Guard 当场拦截。
+
+### 范围与关键原则
+
+- **复用后端，不新建链路。** MCP server 以 in-process 方式 `import backend.app.*`，直接调用现有 service 函数，而不是另起一套 DB 连接或重写 SQL 执行逻辑。这样 SQL Guard、scope、metadata、连接器管理天然继承，不会出现第二条未经校验的执行路径。
+- **`query_readonly` 必须走 SQL Guard。** 任何经 MCP 执行的 SQL 都先经过 `guard_sql(sql, build_default_guard_scope(ds), ds)`，再交给 `execute_guarded_sql`。Guard 拒绝时返回结构化拒绝结果（`allowed=false` + `stage` + `reason`），绝不执行。
+- **MCP 不能绕过后端审计直连数据库。** MCP 进程不持有独立 DB 凭据，统一通过 `get_datasource_manager()` 拿只读连接，沿用 `clickhouse_readonly`、超时和行数限制等既有约束。
+- **只读、无写工具。** Phase 7 只暴露读能力；metric / alias / verified query / analysis space 的 CRUD 仍只走 HTTP Admin，不进 MCP，缩小攻击面。
+- **结构化返回 + 统一错误信封。** 所有工具返回可序列化 dict；不可用数据源、表不存在、Guard 拒绝等都返回结构化错误，而不是抛栈崩溃。
+- **datasource 作为统一参数。** 每个工具都接受 `datasource`，默认 `settings.default_datasource`；ClickHouse 未启用时相关工具优雅降级。
+
+### MCP Server 与后端能力映射（lean core，5 工具）
+
+每个工具都是对既有后端函数的薄封装，本阶段不新增后端数据逻辑：
 
 ```text
-mcp_servers/db_tools
-  list_tables
-  get_table_schema
-  query_readonly
+mcp_servers/db_tools                  复用的后端能力
+  list_tables          ->  metadata.service.list_tables
+  get_table_schema     ->  service.list_columns + list_relationships + 表级 row_count/描述
+  query_readonly       ->  build_default_guard_scope + sql_guard.guard_sql + execution.execute_guarded_sql
 
 mcp_servers/olap_tools
-  profile_table
-  explain_query
-  metric_catalog_search
-  data_quality_check
+  explain_query        ->  guard_sql(必须通过) + connector.explain(DuckDB 与 ClickHouse 均已实现) + performance.parse_plan_hints
+  metric_catalog_search->  metadata.retrieval.retrieve_metadata_assets（已含 metric/table/verified query 排序与 analysis space 白名单）
 ```
 
-### 关键原则
+### 后续 Backlog（本阶段不做）
 
-- MCP 的 `query_readonly` 也必须走 SQL Guard。
-- MCP 不能直接连接数据库绕过后端审计。
-- MCP 工具应返回结构化结果。
+- `profile_table`：新增 `metadata/profiling.py`（row_count、各列 null_rate、distinct_count、数值列 min/max、sample values），用 guarded 确定性 SELECT 实现。
+- `data_quality_check`：新增 `metadata/quality.py`（非空率、join key 唯一性、row_count>0、时间列新鲜度等最小规则集），兑现 Phase 6.5 backlog 的“数据质量检查”。
+- 这两个工具需要新后端模块，故移出 lean core；落地时核心逻辑放后端模块而非 MCP server 文件，以便单测与 HTTP 复用，且统计/校验 SQL 同样经过 Guard。
+
+### Iteration 拆分
+
+```text
+I7.1 MCP 脚手架 + 复用契约
+  -> 新增 mcp 可选依赖（官方 Python MCP SDK / FastMCP），作为 pyproject optional extra，不污染核心运行时依赖
+  -> mcp_servers/ 包：_common.py（加载 settings、确保 metadata schema、datasource 解析、统一错误信封、JSON 安全序列化）
+  -> stdio 入口：python -m mcp_servers.db_tools / python -m mcp_servers.olap_tools
+  -> 冒烟：MCP client 能列出工具清单
+
+I7.2 db_tools server
+  -> list_tables / get_table_schema / query_readonly
+  -> query_readonly 严格经 build_default_guard_scope + guard_sql；拒绝即返回结构化 GuardResult，不执行
+  -> 单测：合法 SELECT、越权表/字段、危险操作（DELETE/DDL）、datasource fallback
+
+I7.3 olap_tools server
+  -> explain_query：Guard 必须通过；DuckDB 与 ClickHouse 均调用 connector.explain；
+     ClickHouse 走 parse_plan_hints 输出更丰富提示，DuckDB 返回 plan、提示最小（沿用 6.5 backlog）
+  -> metric_catalog_search：复用 retrieve_metadata_assets，聚焦 metric/table/verified query 命中并带分数
+  -> 单测：命中指标、EXPLAIN 解析、ClickHouse 未启用时降级
+
+I7.4 文档 + 冒烟
+  -> README 新增 MCP 章节：5 工具清单、运行方式、示例 client 配置（mcp config json）
+  -> scripts/run_mcp_smoke.py：进程内拉起两个 server，断言每个工具返回结构化结果，
+     并验证 query_readonly 对 `DELETE FROM fact_orders WHERE order_date >= '2024-01-01'`
+     等危险 SQL 返回 allowed=false、stage=operation_guard 且不执行
+  -> 记录已知短板与 backlog（profile_table / data_quality_check、DuckDB explain 提示最小、无写工具）
+```
+
+拆分依据：先把“脚手架 + 复用契约”定死（确保所有工具共享同一条 Guard/连接器路径），再按“纯读 schema -> 读+执行 -> 解释/检索 -> 固化文档与冒烟”推进，避免 MCP 传输、安全边界互相干扰。
 
 ### 验收标准
 
-- 可以用 MCP client 调用数据库 schema 工具。
-- 可以用 MCP client 调用 OLAP profile、EXPLAIN 和指标检索工具。
-- README 中说明 MCP 工具列表。
+- 可以用 MCP client 调用数据库 schema 工具（`list_tables` / `get_table_schema`），返回结构化表与字段。
+- 可以用 MCP client 调用 OLAP 工具：`explain_query`、`metric_catalog_search`。
+- 通过 MCP 的 `query_readonly` 对非 SELECT、越权表字段、危险操作的拦截行为，与 HTTP 链路完全一致（同一套 `guard_sql`）；危险 SQL 返回 `allowed=false` 且不执行。
+- MCP 进程不持有独立 DB 凭据，统一复用后端连接器管理与只读约束。
+- README 说明 MCP 5 工具清单和运行方式；可在真实 MCP client（如 Claude Desktop）注册并完成一次端到端演示。
+- MCP 工具单测与 `scripts/run_mcp_smoke.py` 全绿；全量 pytest 与既有 smoke eval 无回归。
+
+### 已知取舍
+
+- 采用 in-process 复用而非 HTTP 反代：实现简单、天然继承 Guard 与 metadata，但 MCP 进程需与后端共享文件系统（同一 SQLite / DuckDB）。HTTP-backed MCP 变体后移。
+- 项目当前没有集中式审计模块，Phase 7 通过既有日志记录工具调用；完整“审计接口”后移到 Phase 8 / 治理阶段。
+- lean core 仅 5 工具；`profile_table` / `data_quality_check` 进入 backlog（见上）。
+- DuckDB 暂无专属 EXPLAIN 性能提示，`explain_query` 在 DuckDB 上降级；与 Phase 6.5 backlog 一致。
+- 不暴露任何写/CRUD MCP 工具，语义资产维护仍只走 HTTP Admin。
 
 ### 建议用时
 
-4 到 6 天。
+3 到 4 天（lean core；profile/quality backlog 另计）。
 
 ## 13. Phase 8：产品化与求职包装
 

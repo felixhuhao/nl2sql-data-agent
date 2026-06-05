@@ -21,10 +21,18 @@ def test_duckdb_connector_executes_readonly_query(tmp_path: Path):
     assert result.row_count == 2
 
 
-def test_duckdb_connector_explain_is_not_supported(tmp_path: Path):
-    connector = DuckDBConnector(_settings(tmp_path, tmp_path / "ecommerce.duckdb"))
+def test_duckdb_connector_explain_returns_text_plan(tmp_path: Path):
+    db_path = tmp_path / "ecommerce.duckdb"
+    _create_orders_db(db_path)
+    connector = DuckDBConnector(_settings(tmp_path, db_path))
 
-    assert connector.explain("SELECT 1") is None
+    explain = connector.explain("SELECT id, amount FROM orders WHERE amount > 10")
+
+    assert explain is not None
+    assert explain["dialect"] == "duckdb"
+    assert explain["format"] == "text"
+    assert any("SEQ_SCAN" in line or "Sequential Scan" in line for line in explain["lines"])
+    assert any("orders" in line for line in explain["lines"])
 
 
 def test_duckdb_connector_sync_schema_returns_snapshot(tmp_path: Path):
