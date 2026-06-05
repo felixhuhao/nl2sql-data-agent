@@ -36,6 +36,7 @@ def test_deepseek_provider_posts_chat_completion_request():
         base_url="https://api.deepseek.com",
         model="deepseek-v4-pro",
         http_client=client,
+        timeout=30,
     )
 
     result = provider.generate_sql(_request())

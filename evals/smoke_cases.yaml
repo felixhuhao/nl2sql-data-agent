@@ -334,7 +334,7 @@ cases:
 
   - id: region_channel_cross
     type: normal
-    question: 按地区和渠道交叉统计销售额
+    question: 按地区和渠道交叉统计最近30天销售额
     tags: [sales, region, channel]
     mock_sql: >-
       SELECT r.region_group, c.channel_name, SUM(o.payment_amount) AS sales_amount

@@ -5,6 +5,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +101,7 @@ class SmokeResult:
     sql_pattern_match: bool | None = None
     chart_match: bool | None = None
     plan_hint_match: bool | None = None
+    reference_result_match: bool | None = None
 
     def fail(self, message: str, error_category: str | None = None) -> None:
         self.passed = False
@@ -431,6 +433,15 @@ def _run_case(
         explain_performance_node(state)
         _record_state_result(result, state)
 
+        reference_result_match = _validate_reference_result(
+            result=result,
+            reference_sql=case.get("mock_sql"),
+            query_result=state.query_result,
+            scope=resources.scope,
+            datasource_name=datasource.name,
+            provider_name=provider_name,
+        )
+
         chart_recommendation = recommend_chart(state.query_result, olap_intents=state.olap_intents)
         result.chart_type = chart_recommendation.chart_type
 
@@ -442,6 +453,7 @@ def _run_case(
             explainability=state.explainability or {},
             chart_type=chart_recommendation.chart_type,
             provider_name=provider_name,
+            reference_result_match=reference_result_match,
         )
         return result
     finally:
@@ -682,6 +694,7 @@ def _validate_normal_case(
     explainability: dict[str, Any],
     chart_type: str,
     provider_name: str,
+    reference_result_match: bool | None = None,
 ) -> None:
     if provider_name == "mock" and matched_query_id != expected.get("matched_query_id"):
         result.fail(
@@ -706,7 +719,7 @@ def _validate_normal_case(
             )
 
     expected_columns = expected.get("result_columns") or []
-    if query_result.columns != expected_columns:
+    if reference_result_match is not True and query_result.columns != expected_columns:
         result.fail(
             f"expected result columns {expected_columns}, got {query_result.columns}",
             "result_mismatch",
@@ -730,27 +743,163 @@ def _validate_normal_case(
 
     _validate_plan_hint_expectation(result, expected)
 
-    _validate_subset(
-        result,
-        label="tables",
-        expected=expected.get("required_tables") or [],
-        actual=explainability.get("matched_tables") or [],
-        error_category="explainability_mismatch",
+    if reference_result_match is not True:
+        _validate_subset(
+            result,
+            label="tables",
+            expected=expected.get("required_tables") or [],
+            actual=explainability.get("matched_tables") or [],
+            error_category="explainability_mismatch",
+        )
+        _validate_subset(
+            result,
+            label="columns",
+            expected=expected.get("required_columns") or [],
+            actual=explainability.get("matched_columns") or [],
+            error_category="explainability_mismatch",
+        )
+        _validate_subset(
+            result,
+            label="join paths",
+            expected=expected.get("join_paths") or [],
+            actual=[_format_join_path(path) for path in explainability.get("join_paths") or []],
+            error_category="explainability_mismatch",
+        )
+
+
+def _validate_reference_result(
+    *,
+    result: SmokeResult,
+    reference_sql: str | None,
+    query_result,
+    scope,
+    datasource_name: str,
+    provider_name: str,
+) -> bool | None:
+    if provider_name == "mock" or not reference_sql:
+        return None
+
+    try:
+        guard_result = guard_sql(reference_sql, scope=scope, datasource_name=datasource_name)
+        if not guard_result.allowed:
+            result.fail(
+                f"reference SQL rejected by {guard_result.stage}: {guard_result.reason}",
+                "result_mismatch",
+            )
+            result.reference_result_match = False
+            return False
+        reference_result = execute_guarded_sql(guard_result, datasource_name=datasource_name)
+    except Exception as exc:
+        result.fail(f"reference SQL execution failed: {exc}", "result_mismatch")
+        result.reference_result_match = False
+        return False
+
+    comparison = _compare_query_results(query_result, reference_result)
+    result.reference_result_match = comparison["match"]
+    if not comparison["match"]:
+        result.fail(comparison["reason"], "result_mismatch")
+    return comparison["match"]
+
+
+def _compare_query_results(actual, expected) -> dict[str, Any]:
+    actual, expected = _align_named_column_subset(actual, expected)
+    if len(actual.columns) != len(expected.columns):
+        return {
+            "match": False,
+            "reason": f"reference result column count {len(expected.columns)} != actual {len(actual.columns)}",
+        }
+    if actual.row_count != expected.row_count:
+        return {
+            "match": False,
+            "reason": f"reference result row_count {expected.row_count} != actual {actual.row_count}",
+        }
+
+    actual_rows = sorted((_normalize_row(row) for row in actual.rows), key=repr)
+    expected_rows = sorted((_normalize_row(row) for row in expected.rows), key=repr)
+    for index, (actual_row, expected_row) in enumerate(zip(actual_rows, expected_rows, strict=True)):
+        if not _rows_equal(actual_row, expected_row):
+            return {
+                "match": False,
+                "reason": f"reference result row {index} differs: expected={expected_row}, actual={actual_row}",
+            }
+    return {"match": True, "reason": ""}
+
+
+def _align_named_column_subset(actual, expected):
+    if len(actual.columns) == len(expected.columns):
+        return actual, expected
+    if len(actual.columns) > len(expected.columns):
+        return _project_named_columns(actual, expected.columns), expected
+    missing_expected_columns = [
+        column for column in expected.columns if column not in actual.columns
+    ]
+    if (
+        all(column in expected.columns for column in actual.columns)
+        and all(_is_optional_identifier_column(column) for column in missing_expected_columns)
+    ):
+        return actual, _project_named_columns(expected, actual.columns)
+    return actual, expected
+
+
+def _is_optional_identifier_column(column: str) -> bool:
+    normalized = column.lower()
+    return normalized.endswith("_id") or normalized.endswith("_key")
+
+
+def _project_named_columns(query_result, columns: list[str]):
+    if not all(column in query_result.columns for column in columns):
+        return query_result
+
+    indexes = [query_result.columns.index(column) for column in columns]
+    return type(
+        "ProjectedQueryResult",
+        (),
+        {
+            "columns": list(columns),
+            "rows": [[row[index] for index in indexes] for row in query_result.rows],
+            "row_count": query_result.row_count,
+        },
+    )()
+
+
+def _normalize_row(row: list[Any]) -> tuple[Any, ...]:
+    return tuple(_normalize_value(value) for value in row)
+
+
+def _normalize_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return _decimal_value(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _decimal_value(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return Decimal("NaN")
+
+
+def _rows_equal(actual_row: tuple[Any, ...], expected_row: tuple[Any, ...]) -> bool:
+    if len(actual_row) != len(expected_row):
+        return False
+    return all(
+        _values_equal(actual, expected)
+        for actual, expected in zip(actual_row, expected_row, strict=True)
     )
-    _validate_subset(
-        result,
-        label="columns",
-        expected=expected.get("required_columns") or [],
-        actual=explainability.get("matched_columns") or [],
-        error_category="explainability_mismatch",
-    )
-    _validate_subset(
-        result,
-        label="join paths",
-        expected=expected.get("join_paths") or [],
-        actual=[_format_join_path(path) for path in explainability.get("join_paths") or []],
-        error_category="explainability_mismatch",
-    )
+
+
+def _values_equal(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, Decimal) and isinstance(expected, Decimal):
+        if actual.is_nan() or expected.is_nan():
+            return False
+        return abs(actual - expected) <= Decimal("0.0001")
+    return actual == expected
 
 
 def _validate_olap_expectations(result: SmokeResult, expected: dict[str, Any]) -> None:
@@ -1097,6 +1246,7 @@ def _render_report(
     error_distribution = _error_distribution(results)
     chart_distribution = _chart_distribution(results)
     phase65_stats = _phase65_stats(results)
+    reference_stats = _reference_result_stats(results)
     datasource_groups = _group_results_by_datasource(results)
     lines = [
         "# Smoke Eval Report",
@@ -1109,6 +1259,7 @@ def _render_report(
         f"- Safety cases: {summary['safety_cases']}",
         f"- Provider: {provider_name}",
         f"- Skipped cases: {len(skipped_case_ids)}",
+        f"- Reference result matches: {reference_stats['matches']}/{reference_stats['checked']} checked",
         f"- Fallback used: {summary['fallback_cases']}/{summary['total_cases']}",
         f"- Repair cases: {summary['repair_cases']}/{summary['total_cases']}",
         f"- Total repair attempts: {summary['total_repair_attempts']}",
@@ -1226,8 +1377,8 @@ def _render_report(
             [
                 f"### {_datasource_section_title(group)}",
                 "",
-                "| Case | Status | Type | Category | Fallback | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
-                "|------|--------|------|----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
+                "| Case | Status | Type | Category | Reference | Fallback | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
+                "|------|--------|------|----------|-----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
             ]
         )
         for result in group:
@@ -1239,6 +1390,7 @@ def _render_report(
                         "PASS" if result.passed else "FAIL",
                         _md_cell(result.case_type or "-"),
                         _md_cell(result.error_category or "-"),
+                        _reference_result_label(result.reference_result_match),
                         str(result.retrieval_fallback_used),
                         str(result.repair_count),
                         _format_elapsed(result.elapsed_ms),
@@ -1269,6 +1421,7 @@ def _render_report(
                     f"- Guard: {result.guard_stage or '-'}",
                     f"- Guard reason: {result.guard_reason or '-'}",
                     f"- Repair count: {result.repair_count}",
+                    f"- Reference result match: {_reference_result_label(result.reference_result_match)}",
                     f"- Chart: {result.chart_type or '-'}",
                     f"- Retrieved tables: {', '.join(result.retrieval_tables) or '-'}",
                     f"- Retrieved metrics: {', '.join(result.retrieval_metrics) or '-'}",
@@ -1339,6 +1492,22 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
             [result.elapsed_ms for result in results if result.elapsed_ms is not None]
         ),
     }
+
+
+def _reference_result_stats(results: list[SmokeResult]) -> dict[str, int]:
+    checked = [result for result in results if result.reference_result_match is not None]
+    return {
+        "checked": len(checked),
+        "matches": sum(1 for result in checked if result.reference_result_match is True),
+    }
+
+
+def _reference_result_label(value: bool | None) -> str:
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "n/a"
 
 
 def _group_results_by_datasource(results: list[SmokeResult]) -> list[tuple[str, list[SmokeResult]]]:

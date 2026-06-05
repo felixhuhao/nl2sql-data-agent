@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 RUNNER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_smoke_eval.py"
@@ -157,3 +158,85 @@ def test_render_report_includes_phase65_stats_by_datasource():
 
     assert "## Phase 6.5 OLAP Analytics" in report
     assert "| DuckDB (本地) | 1 | 1/1 (100.0%) | n/a | 1/1 (100.0%) | n/a | 1/1 (100.0%) | n/a |" in report
+
+
+def test_compare_query_results_ignores_aliases_and_row_order():
+    actual = SimpleNamespace(
+        columns=["channel_name", "active_users"],
+        rows=[["官网", 2], ["抖音", 1]],
+        row_count=2,
+    )
+    expected = SimpleNamespace(
+        columns=["channel_name", "user_count"],
+        rows=[["抖音", 1], ["官网", 2]],
+        row_count=2,
+    )
+
+    assert runner._compare_query_results(actual, expected) == {"match": True, "reason": ""}
+
+
+def test_compare_query_results_detects_different_values():
+    actual = SimpleNamespace(columns=["aov"], rows=[[12.34567]], row_count=1)
+    expected = SimpleNamespace(columns=["aov"], rows=[[99.99]], row_count=1)
+
+    comparison = runner._compare_query_results(actual, expected)
+
+    assert comparison["match"] is False
+    assert "row 0 differs" in comparison["reason"]
+
+
+def test_compare_query_results_allows_extra_actual_columns_by_name():
+    actual = SimpleNamespace(
+        columns=["order_id", "date_key", "payment_amount"],
+        rows=[["O-001", 20251231, 18.5], ["O-002", 20251230, 21.0]],
+        row_count=2,
+    )
+    expected = SimpleNamespace(
+        columns=["order_id", "payment_amount"],
+        rows=[["O-002", 21.0], ["O-001", 18.5]],
+        row_count=2,
+    )
+
+    assert runner._compare_query_results(actual, expected) == {"match": True, "reason": ""}
+
+
+def test_compare_query_results_allows_missing_reference_identifier_columns():
+    actual = SimpleNamespace(
+        columns=["user_name", "order_count"],
+        rows=[["张三", 5], ["李四", 4]],
+        row_count=2,
+    )
+    expected = SimpleNamespace(
+        columns=["user_id", "user_name", "order_count"],
+        rows=[["U001", "李四", 4], ["U002", "张三", 5]],
+        row_count=2,
+    )
+
+    assert runner._compare_query_results(actual, expected) == {"match": True, "reason": ""}
+
+
+def test_real_provider_reference_match_skips_sql_shape_checks():
+    result = runner.SmokeResult(
+        case_id="real_case",
+        case_type="normal",
+        question="客单价",
+    )
+    query_result = SimpleNamespace(columns=["avg"], rows=[[10]], row_count=1)
+
+    runner._validate_normal_case(
+        result=result,
+        expected={
+            "result_columns": ["aov"],
+            "required_tables": ["dim_date"],
+            "required_columns": ["dim_date.date_value"],
+            "join_paths": ["fact_orders.date_key -> dim_date.date_key"],
+        },
+        matched_query_id=None,
+        query_result=query_result,
+        explainability={"matched_tables": ["fact_orders"], "matched_columns": ["payment_amount"], "join_paths": []},
+        chart_type="table",
+        provider_name="deepseek",
+        reference_result_match=True,
+    )
+
+    assert result.passed is True
