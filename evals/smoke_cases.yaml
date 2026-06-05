@@ -111,41 +111,54 @@ cases:
           FROM fact_orders
           JOIN dim_date ON fact_orders.date_key = dim_date.date_key
           WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      - question: 按地区拆分
+        is_follow_up: true
+        change_kind: dimension
+        mock_sql: >-
+          SELECT dim_regions.region_group, SUM(fact_orders.payment_amount) AS sales_amount
+          FROM fact_orders
+          JOIN dim_date ON fact_orders.date_key = dim_date.date_key
+          JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
+          WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+          GROUP BY dim_regions.region_group
       - question: 只看华东
         is_follow_up: true
         change_kind: filter
         mock_sql: >-
-          SELECT SUM(fact_orders.payment_amount) AS sales_amount
+          SELECT dim_regions.region_group, SUM(fact_orders.payment_amount) AS sales_amount
           FROM fact_orders
           JOIN dim_date ON fact_orders.date_key = dim_date.date_key
           JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
           WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
             AND dim_regions.region_group = '华东'
+          GROUP BY dim_regions.region_group
       - question: 换成订单数
         is_follow_up: true
         change_kind: metric
         mock_sql: >-
-          SELECT COUNT(DISTINCT fact_orders.order_id) AS order_count
+          SELECT dim_regions.region_group, COUNT(DISTINCT fact_orders.order_id) AS order_count
           FROM fact_orders
           JOIN dim_date ON fact_orders.date_key = dim_date.date_key
           JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
           WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
             AND dim_regions.region_group = '华东'
+          GROUP BY dim_regions.region_group
       - question: 改成最近90天
         is_follow_up: true
         change_kind: time
         mock_sql: >-
-          SELECT COUNT(DISTINCT fact_orders.order_id) AS order_count
+          SELECT dim_regions.region_group, COUNT(DISTINCT fact_orders.order_id) AS order_count
           FROM fact_orders
           JOIN dim_date ON fact_orders.date_key = dim_date.date_key
           JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
           WHERE dim_date.date_value BETWEEN DATE '2025-10-03' AND DATE '2025-12-31'
             AND dim_regions.region_group = '华东'
+          GROUP BY dim_regions.region_group
     expected:
       should_execute: true
-      result_columns: [order_count]
+      result_columns: [region_group, order_count]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       required_tables: [fact_orders, dim_date, dim_regions]
       required_columns:
         - fact_orders.order_id
