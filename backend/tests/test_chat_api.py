@@ -523,9 +523,10 @@ def test_workflow_step_payload_raises_for_unknown_step():
 
 
 def test_chat_query_endpoint_is_registered(monkeypatch):
-    def fake_iter_chat_events(question, datasource_name):
+    def fake_iter_chat_events(question, datasource_name, **kwargs):
         assert question == "hello"
         assert datasource_name == "duckdb_ecommerce"
+        assert kwargs["emit_session_event"] is True
         yield "event: done\ndata: {\"ok\": true}\n\n"
 
     monkeypatch.setattr("backend.app.api.chat.iter_chat_events", fake_iter_chat_events)
@@ -538,9 +539,10 @@ def test_chat_query_endpoint_is_registered(monkeypatch):
 
 
 def test_chat_query_endpoint_passes_requested_datasource(monkeypatch):
-    def fake_iter_chat_events(question, datasource_name):
+    def fake_iter_chat_events(question, datasource_name, **kwargs):
         assert question == "hello"
         assert datasource_name == "clickhouse_ecommerce"
+        assert kwargs["emit_session_event"] is True
         yield "event: done\ndata: {\"ok\": true}\n\n"
 
     monkeypatch.setattr("backend.app.api.chat.iter_chat_events", fake_iter_chat_events)

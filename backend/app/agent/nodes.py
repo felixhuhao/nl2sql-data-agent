@@ -3,6 +3,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterator
 
+from backend.app.agent.conversation import (
+    conversation_context_prompt,
+    merge_prior_assets_into_retrieval,
+)
 from backend.app.agent.explainability import build_query_explainability
 from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
 from backend.app.agent.state import AgentState
@@ -121,8 +125,12 @@ def build_context_node(
     if schema_context_builder is not None:
         state.schema_context = schema_context_builder()
     elif state.retrieval_result is not None:
-        state.schema_context = build_focused_context_from_retrieval(
+        retrieval_result = merge_prior_assets_into_retrieval(
             state.retrieval_result,
+            state.conversation_context,
+        )
+        state.schema_context = build_focused_context_from_retrieval(
+            retrieval_result,
             datasource_name=state.datasource_name,
         )
     else:
@@ -160,11 +168,16 @@ def generate_sql_node(
             datasource_dialect=state.datasource_dialect,
             olap_intents=state.olap_intents,
             olap_hint=state.olap_hint,
+            prior_sql=state.conversation_context.normalized_sql if state.conversation_context else None,
+            prior_summary=conversation_context_prompt(state.conversation_context) if state.conversation_context else None,
+            carried_filters=list(state.conversation_context.active_filters) if state.conversation_context else [],
         )
     )
     state.sql = normalize_generated_sql(result.sql)
     state.provider = result.provider
     state.matched_query_id = result.matched_query_id
+    state.is_follow_up = result.is_follow_up
+    state.change_kind = result.change_kind
     state.completed_steps.append("generate_sql")
     return state
 
@@ -188,11 +201,18 @@ def repair_sql_node(
                 datasource_dialect=state.datasource_dialect,
                 olap_intents=state.olap_intents,
                 olap_hint=state.olap_hint,
+                prior_sql=state.conversation_context.normalized_sql if state.conversation_context else None,
+                prior_summary=conversation_context_prompt(state.conversation_context) if state.conversation_context else None,
+                carried_filters=list(state.conversation_context.active_filters) if state.conversation_context else [],
             )
         )
         repaired_sql = result.sql
         state.provider = result.provider
         state.matched_query_id = result.matched_query_id
+        if result.is_follow_up:
+            state.is_follow_up = result.is_follow_up
+        if result.change_kind != "none":
+            state.change_kind = result.change_kind
     else:
         repaired_sql = deterministic_sql
         state.provider = "deterministic-repair"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from backend.app.agent.conversation import missing_carried_filters
 from backend.app.agent.nodes import ScopeBuilder, SQLExecutor, execute_node, repair_sql_node, sql_guard_node
 from backend.app.agent.state import AgentState
 from backend.app.core.llm_provider import LLMProvider, SQLRepairContext
@@ -103,6 +104,29 @@ def iter_sql_repair_events(
             yield RepairEvent(step="repair_sql", state=state, attempt=repair_count)
             continue
 
+        state.missing_carried_filters = missing_carried_filters(state)
+        if state.is_follow_up and state.conversation_context is not None and state.conversation_context.active_filters:
+            yield RepairEvent(step="conversation_filter_verify", state=state)
+        if state.missing_carried_filters:
+            if repair_count >= max_repairs:
+                state.stopped_at = "conversation_filter_verify"
+                state.error = _missing_filter_reason(state)
+                _mark_latest_repair(state, succeeded=False, final_stage="conversation_filter_verify")
+                yield RepairEvent(
+                    step="error",
+                    state=state,
+                    error_stage="conversation_filter_verify",
+                    error_kind="missing_carried_filter",
+                    error_reason=state.error,
+                )
+                return
+            _mark_latest_repair(state, succeeded=False, final_stage="conversation_filter_verify")
+            repair_count += 1
+            repair_context = _repair_context_from_missing_filter(state, attempt=repair_count)
+            repair_sql_node(state, provider=provider, repair_context=repair_context)
+            yield RepairEvent(step="repair_sql", state=state, attempt=repair_count)
+            continue
+
         try:
             execute_node(state, executor=executor)
         except Exception as exc:
@@ -163,6 +187,25 @@ def _repair_context_from_execution(
         error_reason=str(error),
         normalized_sql=normalized_sql,
     )
+
+
+def _repair_context_from_missing_filter(state: AgentState, attempt: int) -> SQLRepairContext:
+    if state.sql is None:
+        raise ValueError("sql is required for SQL repair.")
+    normalized_sql = state.guard_result.normalized_sql if state.guard_result else None
+    return SQLRepairContext(
+        attempt=attempt,
+        original_sql=state.sql,
+        error_stage="conversation_filter_verify",
+        error_kind="missing_carried_filter",
+        error_reason=_missing_filter_reason(state),
+        normalized_sql=normalized_sql,
+    )
+
+
+def _missing_filter_reason(state: AgentState) -> str:
+    filters = ", ".join(predicate.label() for predicate in state.missing_carried_filters)
+    return f"Follow-up SQL dropped carried filter(s): {filters}"
 
 
 def _error_event_from_guard(state: AgentState) -> RepairEvent:

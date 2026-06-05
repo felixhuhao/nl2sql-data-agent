@@ -15,7 +15,8 @@ import yaml
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.app.agent.nodes import generate_sql_node, olap_intent_detect_node
+from backend.app.agent.conversation import build_conversation_context
+from backend.app.agent.nodes import build_context_node, generate_sql_node, olap_intent_detect_node
 from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
@@ -102,6 +103,9 @@ class SmokeResult:
     chart_match: bool | None = None
     plan_hint_match: bool | None = None
     reference_result_match: bool | None = None
+    is_follow_up: bool | None = None
+    change_kind: str | None = None
+    active_filters: list[str] = field(default_factory=list)
 
     def fail(self, message: str, error_category: str | None = None) -> None:
         self.passed = False
@@ -123,6 +127,40 @@ class ScriptedRepairProvider:
         if self._repair_sqls:
             return SQLGenerationResult(sql=self._repair_sqls.pop(0), provider=self.name)
         return SQLGenerationResult(sql=self._initial_sql, provider=self.name)
+
+
+class ScriptedConversationProvider:
+    name = "mock"
+
+    def __init__(self, turns: list[dict[str, Any]]):
+        self._turns = turns
+        self._turn_index = -1
+        self._repair_sqls: list[str] = []
+
+    def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+        if request.repair is None:
+            self._turn_index += 1
+            turn = self._turns[self._turn_index]
+            self._repair_sqls = list(turn.get("mock_repair_sqls") or [])
+            return SQLGenerationResult(
+                sql=turn["mock_sql"],
+                provider=self.name,
+                is_follow_up=bool(turn.get("is_follow_up", False)),
+                change_kind=turn.get("change_kind", "none"),
+            )
+        if self._repair_sqls:
+            return SQLGenerationResult(
+                sql=self._repair_sqls.pop(0),
+                provider=self.name,
+                is_follow_up=True,
+                change_kind="filter",
+            )
+        return SQLGenerationResult(
+            sql=self._turns[self._turn_index]["mock_sql"],
+            provider=self.name,
+            is_follow_up=bool(self._turns[self._turn_index].get("is_follow_up", False)),
+            change_kind=self._turns[self._turn_index].get("change_kind", "none"),
+        )
 
 
 def main() -> int:
@@ -318,6 +356,14 @@ def _run_case(
     use_vector: bool | None = None,
     validate_vector_expectations: bool = False,
 ) -> SmokeResult:
+    if case.get("type") == "conversation":
+        return _run_conversation_case(
+            case,
+            resources,
+            provider_name=provider_name,
+            use_vector=use_vector,
+        )
+
     datasource = resources.datasource
     result = SmokeResult(
         case_id=case["id"],
@@ -460,6 +506,117 @@ def _run_case(
         result.elapsed_ms = round((time.perf_counter() - started_at) * 1000)
 
 
+def _run_conversation_case(
+    case: dict[str, Any],
+    resources: CaseResources,
+    *,
+    provider_name: str,
+    use_vector: bool | None = None,
+) -> SmokeResult:
+    datasource = resources.datasource
+    turns = list(case.get("turns") or [])
+    result = SmokeResult(
+        case_id=case["id"],
+        case_type=case.get("type", ""),
+        question=" -> ".join(turn.get("question", "") for turn in turns),
+        tags=list(case.get("tags") or []),
+        datasource_name=datasource.name,
+        datasource_dialect=datasource.dialect,
+        datasource_display_name=datasource.display_name,
+    )
+    started_at = time.perf_counter()
+    provider = ScriptedConversationProvider(turns)
+    conversation_context = None
+    final_state = None
+    try:
+        for turn in turns:
+            state = AgentState(
+                question=turn["question"],
+                datasource_name=datasource.name,
+                datasource_dialect=datasource.dialect,
+                datasource_display_name=datasource.display_name,
+                conversation_context=conversation_context,
+            )
+            try:
+                state.retrieval_result = retrieve_metadata_assets(
+                    turn["question"],
+                    use_vector=use_vector,
+                    datasource_name=datasource.name,
+                )
+                build_context_node(state)
+                result.focused_context_chars = len(state.schema_context or "")
+                result.full_context_chars = len(resources.full_schema_context)
+                result.context_reduction_ratio = _context_reduction_ratio(
+                    focused_chars=result.focused_context_chars,
+                    full_chars=result.full_context_chars,
+                )
+            except Exception as exc:
+                result.fail(f"conversation retrieval/context failed: {exc}", "retrieval_miss")
+                return result
+
+            olap_intent_detect_node(state)
+            try:
+                generate_sql_node(state, provider=provider)
+            except Exception as exc:
+                result.fail(f"conversation SQL generation failed: {exc}", "sql_generation_error")
+                return result
+
+            try:
+                repair_events = list(
+                    iter_sql_repair_events(
+                        state,
+                        provider=provider,
+                        scope_builder=lambda datasource_name=datasource.name: resources.scope,
+                        executor=execute_guarded_sql,
+                    )
+                )
+            except Exception as exc:
+                result.fail(f"conversation repair workflow failed: {exc}", "repair_error")
+                return result
+
+            final_event = repair_events[-1] if repair_events else None
+            if final_event and final_event.step == "error":
+                _record_state_result(result, state)
+                result.fail(
+                    f"conversation turn failed: {final_event.error_reason}",
+                    "execution_error",
+                )
+                return result
+            if state.query_result is None:
+                result.fail("conversation turn finished without query result.", "execution_error")
+                return result
+
+            explain_performance_node(state)
+            conversation_context = build_conversation_context(state)
+            final_state = state
+
+        if final_state is None:
+            result.fail("conversation case has no turns.", "sql_generation_error")
+            return result
+
+        _record_state_result(result, final_state)
+        result.repair_count = len(final_state.repair_history)
+        if conversation_context is not None:
+            result.active_filters = [predicate.label() for predicate in conversation_context.active_filters]
+
+        chart_recommendation = recommend_chart(final_state.query_result, olap_intents=final_state.olap_intents)
+        result.chart_type = chart_recommendation.chart_type
+        expected = case.get("expected", {})
+        _validate_normal_case(
+            result=result,
+            expected=expected,
+            matched_query_id=final_state.matched_query_id,
+            query_result=final_state.query_result,
+            explainability=final_state.explainability or {},
+            chart_type=chart_recommendation.chart_type,
+            provider_name=provider_name,
+        )
+        _validate_conversation_expectations(result, expected)
+        return result
+    finally:
+        result.elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+
+
 def _record_retrieval_result(result: SmokeResult, retrieval_result: dict[str, Any]) -> None:
     retrieval_meta = retrieval_result.get("retrieval_meta") or {}
     result.retrieval_fallback_used = bool(retrieval_result.get("fallback_used"))
@@ -535,12 +692,45 @@ def _record_state_result(result: SmokeResult, state: AgentState) -> None:
     result.olap_intents = list(state.olap_intents)
     result.plan_hints = list(state.plan_hints)
     result.runtime_stats = state.runtime_stats
+    result.is_follow_up = state.is_follow_up
+    result.change_kind = state.change_kind
     if state.guard_result is not None:
         result.guard_stage = state.guard_result.stage
         result.guard_reason = state.guard_result.reason
         result.normalized_sql = state.guard_result.normalized_sql
     if state.query_result is not None:
         result.row_count = state.query_result.row_count
+
+
+def _validate_conversation_expectations(result: SmokeResult, expected: dict[str, Any]) -> None:
+    expected_follow_up = expected.get("is_follow_up")
+    if expected_follow_up is not None and result.is_follow_up != expected_follow_up:
+        result.fail(
+            f"expected is_follow_up {expected_follow_up}, got {result.is_follow_up}",
+            "conversation_mismatch",
+        )
+
+    expected_change_kind = expected.get("change_kind")
+    if expected_change_kind and result.change_kind != expected_change_kind:
+        result.fail(
+            f"expected change_kind {expected_change_kind}, got {result.change_kind}",
+            "conversation_mismatch",
+        )
+
+    for expected_filter in expected.get("active_filters") or []:
+        if expected_filter not in result.active_filters:
+            result.fail(
+                f"expected active filter {expected_filter!r}, got {result.active_filters}",
+                "conversation_mismatch",
+            )
+
+    normalized_sql = result.normalized_sql or result.generated_sql or ""
+    for keyword in expected.get("normalized_sql_contains") or []:
+        if keyword not in normalized_sql:
+            result.fail(
+                f"expected normalized SQL to contain {keyword!r}, got {normalized_sql!r}",
+                "conversation_mismatch",
+            )
 
 
 def _validate_repair_expectations(result: SmokeResult, expected: dict[str, Any]) -> None:

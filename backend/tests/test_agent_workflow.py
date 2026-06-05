@@ -1,6 +1,7 @@
 import pytest
 
 import backend.app.agent.nodes as nodes_module
+from backend.app.agent.conversation import ConversationContext, FilterPredicate, build_conversation_context
 from backend.app.agent.nodes import (
     build_context_node,
     datasource_selected_node,
@@ -14,6 +15,7 @@ from backend.app.agent.nodes import (
     sql_guard_node,
 )
 from backend.app.agent.performance import explain_performance_node
+from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.agent.workflow import run_query_workflow
 from backend.app.core.llm_provider import (
@@ -103,6 +105,43 @@ def test_build_context_node_uses_retrieval_result(monkeypatch):
 
     assert state.schema_context == "# Focused duckdb_ecommerce False"
     assert state.completed_steps == ["build_context"]
+
+
+def test_build_context_node_unions_prior_assets(monkeypatch):
+    captured = {}
+
+    def fake_build_focused_context_from_retrieval(retrieval_result, datasource_name):
+        captured["retrieval_result"] = retrieval_result
+        captured["datasource_name"] = datasource_name
+        return "# Focused Context"
+
+    monkeypatch.setattr(nodes_module, "build_focused_context_from_retrieval", fake_build_focused_context_from_retrieval)
+    state = AgentState(
+        question="改成最近90天",
+        retrieval_result={"fallback_used": False, "tables": [], "columns": []},
+        conversation_context=ConversationContext(
+            question="查询最近30天销售额",
+            normalized_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+            datasource_name="duckdb_ecommerce",
+            matched_tables=["fact_orders"],
+            matched_columns=["fact_orders.payment_amount"],
+        ),
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Focused Context"
+    assert captured["datasource_name"] == "duckdb_ecommerce"
+    assert captured["retrieval_result"]["tables"] == [
+        {"table_name": "fact_orders", "source": "conversation_context"}
+    ]
+    assert captured["retrieval_result"]["columns"] == [
+        {
+            "table_name": "fact_orders",
+            "column_name": "payment_amount",
+            "source": "conversation_context",
+        }
+    ]
 
 
 def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch):
@@ -278,6 +317,164 @@ def test_repair_sql_node_records_repair_history():
             "succeeded": None,
             "final_stage": None,
         }
+    ]
+
+
+def test_conversation_filter_verify_stops_before_execute_when_filter_missing():
+    class Provider:
+        name = "provider"
+
+        def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
+            raise AssertionError("repair should not run when max_repairs=0")
+
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        raise AssertionError("unverified SQL must not execute")
+
+    state = AgentState(
+        question="换成订单数",
+        schema_context="# Schema Context",
+        sql="SELECT COUNT(*) AS order_count FROM fact_orders",
+        conversation_context=ConversationContext(
+            question="只看华东",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华东'"
+            ),
+            datasource_name="duckdb_ecommerce",
+            active_filters=[
+                FilterPredicate(column="dim_regions.region_group", op="=", value="华东"),
+            ],
+        ),
+        is_follow_up=True,
+        change_kind="metric",
+    )
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=Provider(),
+            scope_builder=lambda datasource_name: GuardScope(
+                allowed_tables=frozenset({"fact_orders", "dim_regions"}),
+                table_columns={
+                    "fact_orders": frozenset({"payment_amount", "region_key"}),
+                    "dim_regions": frozenset({"region_key", "region_group"}),
+                },
+            ),
+            executor=executor,
+            max_repairs=0,
+        )
+    )
+
+    assert [event.step for event in events] == ["sql_guard", "conversation_filter_verify", "error"]
+    assert state.stopped_at == "conversation_filter_verify"
+    assert "dim_regions.region_group = 华东" in state.error
+
+
+def test_build_conversation_context_captures_filter_followup_from_sql_diff_without_value_hits():
+    state = AgentState(
+        question="只看华东",
+        datasource_dialect="duckdb",
+        conversation_context=ConversationContext(
+            question="查询最近30天销售额",
+            normalized_sql="SELECT SUM(fact_orders.payment_amount) AS sales_amount FROM fact_orders",
+            datasource_name="duckdb_ecommerce",
+        ),
+        is_follow_up=True,
+        change_kind="filter",
+        retrieval_result={"retrieval_meta": {"value_hits": []}},
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders "
+                "JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华东'"
+            ),
+        ),
+        query_result=QueryResult(columns=["sales_amount"], rows=[[100]], row_count=1),
+        explainability={
+            "matched_tables": ["fact_orders", "dim_regions"],
+            "matched_columns": ["fact_orders.payment_amount", "dim_regions.region_group"],
+            "join_paths": [{"source_table": "fact_orders", "target_table": "dim_regions"}],
+        },
+    )
+
+    context = build_conversation_context(state)
+
+    assert context is not None
+    assert context.active_filters == [
+        FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+    ]
+    assert context.join_paths == [{"source_table": "fact_orders", "target_table": "dim_regions"}]
+
+
+def test_build_conversation_context_drops_prior_filters_for_non_followup_turn():
+    state = AgentState(
+        question="查询所有渠道销售额",
+        datasource_dialect="duckdb",
+        conversation_context=ConversationContext(
+            question="只看华东",
+            normalized_sql="SELECT 1",
+            datasource_name="duckdb_ecommerce",
+            active_filters=[
+                FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+            ],
+        ),
+        is_follow_up=False,
+        change_kind="none",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql="SELECT dim_channels.channel_name FROM dim_channels",
+        ),
+        query_result=QueryResult(columns=["channel_name"], rows=[["官网"]], row_count=1),
+        explainability={"matched_tables": ["dim_channels"], "matched_columns": ["dim_channels.channel_name"]},
+    )
+
+    context = build_conversation_context(state)
+
+    assert context is not None
+    assert context.active_filters == []
+
+
+def test_build_conversation_context_replaces_prior_filter_when_filter_followup_changes_value():
+    state = AgentState(
+        question="改看华北",
+        datasource_dialect="duckdb",
+        conversation_context=ConversationContext(
+            question="只看华东",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华东'"
+            ),
+            datasource_name="duckdb_ecommerce",
+            active_filters=[
+                FilterPredicate(column="dim_regions.region_group", op="=", value="华东")
+            ],
+        ),
+        is_follow_up=True,
+        change_kind="filter",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql=(
+                "SELECT SUM(fact_orders.payment_amount) AS sales_amount "
+                "FROM fact_orders JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key "
+                "WHERE dim_regions.region_group = '华北'"
+            ),
+        ),
+        query_result=QueryResult(columns=["sales_amount"], rows=[[100]], row_count=1),
+        explainability={"matched_tables": ["fact_orders", "dim_regions"]},
+    )
+
+    context = build_conversation_context(state)
+
+    assert context is not None
+    assert context.active_filters == [
+        FilterPredicate(column="dim_regions.region_group", op="=", value="华北")
     ]
 
 

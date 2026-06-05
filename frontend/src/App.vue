@@ -22,6 +22,7 @@ const allWorkflowSteps = [
   { id: "olap_detected", label: "分析意图" },
   { id: "generate_sql", label: "生成 SQL" },
   { id: "sql_guard", label: "SQL Guard" },
+  { id: "conversation_filter_verify", label: "保留过滤" },
   { id: "repair_sql", label: "SQL 修复" },
   { id: "execute", label: "执行查询" },
   { id: "explain_plan", label: "性能解释" },
@@ -145,6 +146,9 @@ const chartRecommendation = ref<ChartRecommendation | null>(null);
 const queryDatasource = ref<QueryDatasource | null>(null);
 const queryElapsedMs = ref<number | null>(null);
 const resultRowCount = ref<number | null>(null);
+const sessionId = ref(createSessionId());
+const isFollowUp = ref(false);
+const changeKind = ref("none");
 const chartContainer = ref<HTMLDivElement | null>(null);
 const activeView = ref<"chat" | "admin">("chat");
 const llmProvider = ref("");
@@ -183,6 +187,16 @@ const formattedElapsedMs = computed(() => {
     return "-";
   }
   return formatDuration(queryElapsedMs.value);
+});
+const followUpLabel = computed(() => {
+  const labels: Record<string, string> = {
+    dimension: "维度下钻",
+    filter: "值过滤",
+    metric: "指标切换",
+    time: "时间范围",
+    none: "追问",
+  };
+  return labels[changeKind.value] ?? "追问";
 });
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -322,6 +336,7 @@ async function submitQuestion() {
       body: JSON.stringify({
         question: question.value.trim(),
         datasource: selectedDatasourceName.value,
+        session_id: sessionId.value,
       }),
     });
 
@@ -337,6 +352,35 @@ async function submitQuestion() {
   } finally {
     isSubmitting.value = false;
   }
+}
+
+function startNewConversation() {
+  sessionId.value = createSessionId();
+  isFollowUp.value = false;
+  changeKind.value = "none";
+  errorMessage.value = "";
+  errorStep.value = "";
+  question.value = "";
+  sql.value = "";
+  summary.value = "";
+  rows.value = [];
+  columns.value = [];
+  explainability.value = null;
+  retrievalMeta.value = null;
+  planHints.value = [];
+  runtimeStats.value = null;
+  repairHistory.value = [];
+  guardResult.value = null;
+  chartRecommendation.value = null;
+  queryDatasource.value = currentDatasource.value;
+  queryElapsedMs.value = null;
+  resultRowCount.value = null;
+  stepStates.value = createStepStates();
+  disposeChart();
+}
+
+function createSessionId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 async function fetchDatasources() {
@@ -398,6 +442,12 @@ function completeStep(stepId: WorkflowStepId) {
     return;
   }
 
+  stepStates.value = stepStates.value.map((step, stepIndex) => {
+    if (stepIndex < index && step.status === "pending") {
+      return { ...step, status: "completed" };
+    }
+    return step;
+  });
   stepStates.value[index].status = "completed";
   const nextStep = stepStates.value[index + 1];
   if (nextStep && nextStep.status === "pending") {
@@ -664,10 +714,17 @@ function handleSseChunk(chunk: string) {
       resultRowCount.value = payload.row_count ?? null;
       queryElapsedMs.value = payload.elapsed_ms ?? null;
     }
+    if (payload.step === "generate_sql") {
+      isFollowUp.value = Boolean(payload.is_follow_up);
+      changeKind.value = payload.change_kind ?? "none";
+    }
     if (payload.step === "explain_plan") {
       planHints.value = payload.plan_hints ?? [];
       runtimeStats.value = payload.runtime_stats ?? null;
     }
+  }
+  if (event === "session") {
+    sessionId.value = payload.session_id ?? sessionId.value;
   }
   if (event === "done") {
     stepStates.value = stepStates.value.map((step) => ({ ...step, status: "completed" }));
@@ -684,6 +741,9 @@ function handleSseChunk(chunk: string) {
     runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
+    sessionId.value = payload.session_id ?? sessionId.value;
+    isFollowUp.value = Boolean(payload.is_follow_up);
+    changeKind.value = payload.change_kind ?? "none";
     void nextTick(renderChart);
   }
   if (event === "error") {
@@ -981,7 +1041,17 @@ function switchView(view: "chat" | "admin") {
       <section v-if="activeView === 'chat'" class="chat-layout" aria-label="chat workspace">
         <section class="conversation-panel">
           <form class="composer" @submit.prevent="submitQuestion">
-            <label for="question">问题</label>
+            <div class="composer-heading">
+              <label for="question">问题</label>
+              <button
+                type="button"
+                class="datasource-refresh"
+                :disabled="isSubmitting"
+                @click="startNewConversation"
+              >
+                新对话
+              </button>
+            </div>
             <div class="composer-row">
               <textarea
                 id="question"
@@ -1044,6 +1114,9 @@ function switchView(view: "chat" | "admin") {
               <section v-if="sql || summary || rows.length" class="answer-section">
                 <h2>查询信息</h2>
                 <div class="result-meta">
+                  <span v-if="isFollowUp" class="info-chip source-vector">
+                    追问 {{ followUpLabel }}
+                  </span>
                   <span class="info-chip">数据源 {{ resultDatasource.display_name }}</span>
                   <span class="info-chip">方言 {{ resultDatasource.dialect }}</span>
                   <span class="info-chip">行数 {{ resultRowCount ?? rows.length }}</span>

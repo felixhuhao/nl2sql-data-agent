@@ -11,6 +11,7 @@ from backend.app.agent.nodes import (
 from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
+from backend.app.agent.conversation import ConversationContext
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
@@ -46,6 +47,7 @@ def run_query_workflow(
     scope_builder: ScopeBuilder = build_default_guard_scope,
     executor: SQLExecutor = execute_guarded_sql,
     datasource_name: str = DEFAULT_DATASOURCE,
+    conversation_context: ConversationContext | None = None,
 ) -> AgentState:
     """Synchronous workflow driver.
 
@@ -53,7 +55,13 @@ def run_query_workflow(
     the SQL-Guard/repair loop, then ``finalize_workflow``) so unit tests and
     production exercise one pipeline.
     """
-    state = AgentState(question=question, datasource_name=datasource_name)
+    state = AgentState(
+        question=question,
+        datasource_name=datasource_name,
+        conversation_context=conversation_context
+        if conversation_context is None or conversation_context.datasource_name == datasource_name
+        else None,
+    )
     active_provider = provider or MockLLMProvider()
 
     for _step in iter_pre_repair_workflow(

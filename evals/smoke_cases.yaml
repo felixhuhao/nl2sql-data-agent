@@ -99,6 +99,58 @@ cases:
         - fact_order_items.product_key -> dim_products.product_key
         - fact_order_items.date_key -> dim_date.date_key
 
+  - id: phase8_conversation_filter_persistence
+    type: conversation
+    provider: mock
+    datasource: duckdb_ecommerce
+    tags: [phase8, conversation, filter_persistence]
+    turns:
+      - question: 查询最近30天销售额
+        mock_sql: >-
+          SELECT SUM(fact_orders.payment_amount) AS sales_amount
+          FROM fact_orders
+          JOIN dim_date ON fact_orders.date_key = dim_date.date_key
+          WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      - question: 只看华东
+        is_follow_up: true
+        change_kind: filter
+        mock_sql: >-
+          SELECT SUM(fact_orders.payment_amount) AS sales_amount
+          FROM fact_orders
+          JOIN dim_date ON fact_orders.date_key = dim_date.date_key
+          JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
+          WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+            AND dim_regions.region_group = '华东'
+      - question: 换成订单数
+        is_follow_up: true
+        change_kind: metric
+        mock_sql: >-
+          SELECT COUNT(DISTINCT fact_orders.order_id) AS order_count
+          FROM fact_orders
+          JOIN dim_date ON fact_orders.date_key = dim_date.date_key
+          JOIN dim_regions ON fact_orders.region_key = dim_regions.region_key
+          WHERE dim_date.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+            AND dim_regions.region_group = '华东'
+    expected:
+      should_execute: true
+      result_columns: [order_count]
+      min_row_count: 1
+      chart_type: table
+      required_tables: [fact_orders, dim_date, dim_regions]
+      required_columns:
+        - fact_orders.order_id
+        - dim_regions.region_group
+      join_paths:
+        - fact_orders.date_key -> dim_date.date_key
+        - fact_orders.region_key -> dim_regions.region_key
+      is_follow_up: true
+      change_kind: metric
+      active_filters:
+        - dim_regions.region_group = 华东
+      normalized_sql_contains:
+        - region_group
+        - 华东
+
   - id: phase2_aov_metric
     type: normal
     question: 客单价

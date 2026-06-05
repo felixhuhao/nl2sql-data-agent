@@ -22,8 +22,12 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
         f"Schema context:\n{request.schema_context}\n\n"
         f"Question:\n{request.question}"
     )
+    if request.prior_sql:
+        user_content = f"{user_content}\n\nConversation context:\n{request.prior_summary or ''}"
     if request.olap_hint:
         user_content = f"{user_content}\n\nOLAP SQL guidance:\n{request.olap_hint}"
+    if request.prior_sql:
+        user_content = f"{user_content}\n\n{_conversation_output_contract()}"
 
     user_message = {
         "role": "user",
@@ -71,12 +75,22 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
         lines.extend(["", "Normalized SQL:", request.repair.normalized_sql])
     if request.olap_hint:
         lines.extend(["", "OLAP SQL guidance:", request.olap_hint])
+    if request.prior_sql:
+        lines.extend(["", "Conversation context:", request.prior_summary or ""])
     if request.repair.error_kind == "fanout_guard":
         lines.extend(
             [
                 "",
                 "If the error is fanout_guard, do not aggregate fact_orders.payment_amount after joining fact_order_items.",
                 "For product/category sales, use fact_order_items.item_amount.",
+            ]
+        )
+    if request.repair.error_kind == "missing_carried_filter":
+        lines.extend(
+            [
+                "",
+                "The SQL is syntactically valid but dropped a carried conversation filter.",
+                "Add the missing filter from the error reason to the WHERE clause while preserving the user's requested follow-up change.",
             ]
         )
     lines.extend(
@@ -86,10 +100,33 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
             "Fix the SQL using only the provided schema context.",
             "If a column is not allowed or missing, replace it with the semantically closest allowed column from the schema context; keep user-facing dimensions readable and avoid replacing names with *_key columns.",
             "If the failed SQL used dim_products.product_name, use dim_products.name AS product_name instead.",
-            "Return corrected SQL only.",
+            _repair_return_instruction(request),
         ]
     )
     return "\n".join(lines)
+
+
+def _conversation_output_contract() -> str:
+    return "\n".join(
+        [
+            "Conversation follow-up output contract:",
+            "First decide whether the new question refines the previous query.",
+            "If it is not a follow-up, ignore the previous query and answer standalone.",
+            "If it is a follow-up, return a full standalone SQL preserving prior dimensions, filters, metric, and time window unless the user changes them.",
+            "Return a single JSON object and nothing else:",
+            '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }',
+            "change_kind must be one of: dimension, filter, metric, time, none.",
+        ]
+    )
+
+
+def _repair_return_instruction(request: SQLGenerationRequest) -> str:
+    if request.prior_sql:
+        return (
+            "Return a single JSON object and nothing else, preserving the original "
+            "is_follow_up/change_kind semantics when applicable."
+        )
+    return "Return corrected SQL only."
 
 
 def _system_prompt(dialect: str = "duckdb") -> str:
@@ -97,7 +134,7 @@ def _system_prompt(dialect: str = "duckdb") -> str:
     return "\n".join(
         [
             "You generate SQL for a governed NL2SQL data agent.",
-            "Return SQL only. Do not include markdown, comments, prose, or explanation.",
+            "Return SQL only unless the user prompt explicitly asks for the conversation follow-up JSON object. Do not include markdown, comments, prose, or explanation.",
             *dialect_lines,
             "Only generate a single SELECT statement.",
             "Use only tables and columns present in the provided schema context.",

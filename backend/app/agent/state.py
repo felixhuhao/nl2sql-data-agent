@@ -1,9 +1,13 @@
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from backend.app.execution.runner import QueryResult
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.sql_guard.models import GuardResult
 from backend.app.visualization.recommender import ChartRecommendation
+
+if TYPE_CHECKING:
+    from backend.app.agent.conversation import ConversationContext, FilterPredicate
 
 
 @dataclass
@@ -24,6 +28,10 @@ class AgentState:
     execution_error: str | None = None
     olap_intents: list[str] = field(default_factory=list)
     olap_hint: str = ""
+    conversation_context: "ConversationContext | None" = None
+    is_follow_up: bool = False
+    change_kind: str = "none"
+    missing_carried_filters: list["FilterPredicate"] = field(default_factory=list)
     plan_hints: list[str] = field(default_factory=list)
     runtime_stats: dict | None = None
     chart_recommendation: ChartRecommendation | None = None

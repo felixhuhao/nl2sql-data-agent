@@ -513,6 +513,22 @@ textarea {
   font-weight: 600;
 }
 
+.composer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.composer-heading .datasource-refresh {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #c8d1de;
+  border-radius: 8px;
+  color: #235789;
+  background: #f8fbff;
+}
+
 .composer-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 96px;

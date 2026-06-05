@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import httpx
 
 from backend.app.agent.prompts.sql_generation import build_sql_generation_messages
 from backend.app.config import get_settings
-from backend.app.core.llm_provider import SQLGenerationRequest, SQLGenerationResult
+from backend.app.core.llm_provider import (
+    SQLGenerationRequest,
+    SQLGenerationResult,
+    parse_sql_generation_content,
+)
 
 
 class DeepSeekProvider:
@@ -35,9 +38,15 @@ class DeepSeekProvider:
         response = self._post_chat_completion(request)
         response.raise_for_status()
         content = _extract_message_content(response.json())
+        sql, is_follow_up, change_kind = parse_sql_generation_content(
+            content,
+            expect_structured=request.prior_sql is not None,
+        )
         return SQLGenerationResult(
-            sql=_strip_sql_fence(content),
+            sql=sql,
             provider=self.name,
+            is_follow_up=is_follow_up,
+            change_kind=change_kind,
         )
 
     def _post_chat_completion(self, request: SQLGenerationRequest) -> httpx.Response:
@@ -79,10 +88,3 @@ def _timeout_config(timeout: float) -> httpx.Timeout:
         write=min(10.0, timeout),
         pool=min(5.0, timeout),
     )
-
-
-def _strip_sql_fence(content: str) -> str:
-    match = re.fullmatch(r"```(?:sql)?\s*(.*?)\s*```", content.strip(), flags=re.IGNORECASE | re.DOTALL)
-    if match is not None:
-        return match.group(1).strip()
-    return content.strip()

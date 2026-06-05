@@ -84,6 +84,47 @@ def test_deepseek_provider_strips_sql_markdown_fence():
     assert result.sql == "SELECT 1"
 
 
+def test_deepseek_provider_parses_followup_json():
+    client = FakeHTTPClient(
+        _response(
+            '{"sql": "SELECT COUNT(*) AS order_count FROM fact_orders", '
+            '"is_follow_up": true, "change_kind": "metric"}'
+        )
+    )
+    provider = DeepSeekProvider(api_key="test-key", http_client=client)
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="换成订单数",
+            schema_context="# Schema Context",
+            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+            prior_summary="Previous query",
+        )
+    )
+
+    assert result.sql == "SELECT COUNT(*) AS order_count FROM fact_orders"
+    assert result.is_follow_up is True
+    assert result.change_kind == "metric"
+
+
+def test_deepseek_provider_salvages_followup_sql_to_fresh_when_json_parse_fails():
+    client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
+    provider = DeepSeekProvider(api_key="test-key", http_client=client)
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="换成订单数",
+            schema_context="# Schema Context",
+            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+            prior_summary="Previous query",
+        )
+    )
+
+    assert result.sql == "SELECT order_id FROM fact_orders"
+    assert result.is_follow_up is False
+    assert result.change_kind == "none"
+
+
 def test_deepseek_provider_rejects_missing_message_content():
     payload = {"choices": [{"message": {"content": None}}]}
     client = FakeHTTPClient(

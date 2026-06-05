@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import list_verified_queries
@@ -27,6 +29,9 @@ class SQLGenerationRequest:
     datasource_dialect: str = "duckdb"
     olap_intents: list[str] = field(default_factory=list)
     olap_hint: str = ""
+    prior_sql: str | None = None
+    prior_summary: str | None = None
+    carried_filters: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,8 @@ class SQLGenerationResult:
     sql: str
     provider: str
     matched_query_id: str | None = None
+    is_follow_up: bool = False
+    change_kind: str = "none"
 
 
 class LLMProvider(Protocol):
@@ -120,3 +127,37 @@ def _normalize_text(text: str) -> str:
 
 def _question_terms(text: str) -> tuple[str, ...]:
     return tuple(term for term in ("最近30天", "销售额", "订单数", "地区", "渠道", "商品", "销量") if term in text)
+
+
+CHANGE_KINDS = {"dimension", "filter", "metric", "time", "none"}
+SQL_START_RE = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
+
+
+def parse_sql_generation_content(content: str, *, expect_structured: bool) -> tuple[str, bool, str]:
+    stripped = strip_code_fence(content)
+    if not expect_structured:
+        return stripped, False, "none"
+
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        if SQL_START_RE.match(stripped):
+            return stripped, False, "none"
+        raise ValueError("SQL generation response did not include extractable SQL.") from None
+
+    if not isinstance(payload, dict):
+        raise ValueError("SQL generation response must be a JSON object.")
+    sql = payload.get("sql")
+    if not isinstance(sql, str) or not sql.strip():
+        raise ValueError("SQL generation response JSON must include sql.")
+    change_kind = payload.get("change_kind", "none")
+    if change_kind not in CHANGE_KINDS:
+        change_kind = "none"
+    return strip_code_fence(sql), bool(payload.get("is_follow_up", False)), change_kind
+
+
+def strip_code_fence(content: str) -> str:
+    match = re.fullmatch(r"```(?:sql|json)?\s*(.*?)\s*```", content.strip(), flags=re.IGNORECASE | re.DOTALL)
+    if match is not None:
+        return match.group(1).strip()
+    return content.strip()

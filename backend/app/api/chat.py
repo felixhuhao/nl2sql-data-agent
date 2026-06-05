@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from collections.abc import Iterator
 
 import httpx
@@ -8,6 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend.app.agent.conversation import ConversationContext, build_conversation_context
 from backend.app.agent.nodes import iter_pre_repair_workflow
 from backend.app.agent.olap_intent import describe_olap_intents
 from backend.app.agent.repair import RepairEvent, iter_sql_repair_events
@@ -19,10 +21,12 @@ from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
+from backend.app.api.session_store import SessionStore
 from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+session_store = SessionStore()
 
 
 class WorkflowPayloadError(RuntimeError):
@@ -32,12 +36,18 @@ class WorkflowPayloadError(RuntimeError):
 class ChatQueryRequest(BaseModel):
     question: str
     datasource: str = DEFAULT_DATASOURCE
+    session_id: str | None = None
 
 
 @router.post("/query")
 def query_endpoint(request: ChatQueryRequest) -> StreamingResponse:
     return StreamingResponse(
-        iter_chat_events(request.question, datasource_name=request.datasource),
+        iter_chat_events(
+            request.question,
+            datasource_name=request.datasource,
+            session_id=request.session_id,
+            emit_session_event=True,
+        ),
         media_type="text/event-stream",
     )
 
@@ -50,9 +60,23 @@ def iter_chat_events(
     retriever=retrieve_metadata_assets,
     scope_builder=build_default_guard_scope,
     executor=execute_guarded_sql,
+    session_id: str | None = None,
+    conversation_context: ConversationContext | None = None,
+    store: SessionStore = session_store,
+    emit_session_event: bool = False,
 ) -> Iterator[str]:
-    state = AgentState(question=question, datasource_name=datasource_name)
+    active_session_id = session_id or uuid.uuid4().hex
+    context = conversation_context
+    if context is None and session_id:
+        context = store.get(session_id)
+    if context is not None and context.datasource_name != datasource_name:
+        context = None
+
+    state = AgentState(question=question, datasource_name=datasource_name, conversation_context=context)
     try:
+        if emit_session_event:
+            yield _sse_event("session", {"session_id": active_session_id})
+
         active_provider = provider or get_default_llm_provider()
         for step in iter_pre_repair_workflow(
             state,
@@ -106,9 +130,14 @@ def iter_chat_events(
             },
         )
 
+        context_to_store = build_conversation_context(state)
+        if context_to_store is not None:
+            store.append(active_session_id, context_to_store)
+
         yield _sse_event(
             "done",
             {
+                "session_id": active_session_id,
                 "question": state.question,
                 "sql": state.sql,
                 "normalized_sql": state.guard_result.normalized_sql if state.guard_result else None,
@@ -122,6 +151,8 @@ def iter_chat_events(
                 "olap_description": describe_olap_intents(state.olap_intents),
                 "plan_hints": state.plan_hints,
                 "runtime_stats": state.runtime_stats,
+                "is_follow_up": state.is_follow_up,
+                "change_kind": state.change_kind,
             },
         )
     except httpx.TimeoutException:
@@ -226,6 +257,8 @@ def _workflow_step_payload(step: str, state: AgentState) -> dict:
             "provider": state.provider,
             "sql": state.sql,
             "matched_query_id": state.matched_query_id,
+            "is_follow_up": state.is_follow_up,
+            "change_kind": state.change_kind,
         }
     raise WorkflowPayloadError(f"Unsupported workflow step: {step}")
 
@@ -277,6 +310,12 @@ def _repair_step_payload(event: RepairEvent) -> dict:
             "row_count": event.state.query_result.row_count if event.state.query_result else 0,
             "elapsed_ms": event.state.query_result.elapsed_ms if event.state.query_result else None,
         }
+    if event.step == "conversation_filter_verify":
+        return {
+            "step": "conversation_filter_verify",
+            "status": "completed",
+            "missing_filters": [predicate.label() for predicate in event.state.missing_carried_filters],
+        }
     if event.step == "repair_sql":
         latest_repair = event.state.repair_history[-1] if event.state.repair_history else {}
         return {
@@ -301,4 +340,6 @@ def _repair_error_payload(event: RepairEvent) -> dict:
         "guard_stage": event.error_kind if event.error_stage == "sql_guard" else None,
         "explainability": event.state.explainability,
         "repair_history": event.state.repair_history,
+        "missing_filters": [predicate.label() for predicate in event.state.missing_carried_filters],
+        "attempted_sql": event.state.sql,
     }
