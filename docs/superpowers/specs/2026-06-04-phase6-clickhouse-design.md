@@ -379,8 +379,10 @@ ClickHouse 数据源需要独立的语义资产种子：analysis_space（datasou
 
 ### Docker Compose
 
+> Historical note: Phase 7 packaging moved the runnable compose entrypoint to the repository root `docker-compose.yml`; the old ClickHouse-only `docker/docker-compose.yml` has been removed to avoid duplicate startup paths.
+
 ```yaml
-# docker/docker-compose.yml
+# root docker-compose.yml includes this ClickHouse service
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8-alpine
