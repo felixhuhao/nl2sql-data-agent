@@ -172,22 +172,22 @@ python scripts/run_smoke_eval.py
 
 当前 smoke eval 覆盖：
 
-- DuckDB 42 条基线 case：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、指标/别名检索、fallback、Value Recall、语义向量召回、安全拦截和修复链路
-- ClickHouse 17 条方言 case：日期函数、条件聚合、`uniqExact` / `sumIf` / `countIf`、OLAP TopN，以及 ClickHouse 特有危险命令/函数拦截
-- retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation
+- DuckDB 50 条基线和 OLAP case：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、占比、同比/环比、移动平均、指标/别名检索、fallback、Value Recall、语义向量召回、安全拦截和修复链路
+- ClickHouse 25 条方言和 OLAP case：日期函数、条件聚合、`uniqExact` / `sumIf` / `countIf`、OLAP TopN、占比、同比/环比、移动平均、EXPLAIN 性能提示，以及 ClickHouse 特有危险命令/函数拦截
+- retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation、OLAP intent / SQL pattern / chart / plan-hint 回归
 - 错误归因：retrieval_miss、sql_generation_error、sql_generation_timeout、sql_generation_mismatch、dialect_mismatch、sql_invalid、guard_blocked、fanout_risk、guard_mismatch、execution_error、result_mismatch、chart_mismatch、explainability_error、explainability_mismatch
 
 通过时输出类似：
 
 ```text
-42/42 smoke cases passed.
-DuckDB (本地) - 42 cases: 42/42 passed.
-skipped 17 cases for provider=mock.
-focused context: avg=1911 chars, full=7875 chars, avg_reduction=75.7%, fallback=4/42
+50/50 smoke cases passed.
+DuckDB (本地) - 50 cases: 50/50 passed.
+skipped 25 cases for provider=mock.
+focused context: avg=1917 chars, full=7875 chars, avg_reduction=75.7%, fallback=4/50
 report: evals\reports\smoke_latest.md
 ```
 
-报告会写入 `evals/reports/smoke_latest.md`，包含 provider、skipped cases、按数据源分组的通过率、错误类型分布、retrieval expected hit rate、full schema vs focused context 对比、每条 case 的 SQL、检索资产和失败详情。ClickHouse 未启用或不可连接时，ClickHouse case 会自动跳过。
+报告会写入 `evals/reports/smoke_latest.md`，包含 provider、skipped cases、按数据源分组的通过率、Phase 6.5 OLAP 命中率、错误类型分布、retrieval expected hit rate、full schema vs focused context 对比、每条 case 的 SQL、检索资产和失败详情。ClickHouse 未启用或不可连接时，ClickHouse case 会自动跳过。
 
 运行 DeepSeek real eval：
 
@@ -210,7 +210,7 @@ python scripts/run_smoke_eval.py --provider mock --vector-compare --report-path 
 - Mock provider 只覆盖少量 verified/demo 问题，不是完整自然语言泛化能力。
 - DeepSeek provider 已接入，real eval 会保存 generated SQL 和 normalized SQL；业务语义等价性仍需要人工审阅报告。
 - SQL 高亮目前是基础代码块展示，未接入完整语法高亮。
-- ECharts 当前只渲染 time-series line chart，其他结果使用表格 fallback。
+- ECharts 当前覆盖 line、bar、pie、dual-axis 等常见 OLAP 推荐图表，更复杂的多维可视化仍使用表格 fallback。
 
 ## 暂不纳入 Scope
 

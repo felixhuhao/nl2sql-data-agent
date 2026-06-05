@@ -32,7 +32,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [region_group, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.region_key -> dim_regions.region_key
         - fact_orders.date_key -> dim_date.date_key
@@ -50,7 +50,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [channel_name, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.channel_key -> dim_channels.channel_key
         - fact_orders.date_key -> dim_date.date_key
@@ -68,7 +68,7 @@ cases:
         - fact_order_items.quantity
       result_columns: [product_name, quantity_sold]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
         - fact_order_items.date_key -> dim_date.date_key
@@ -94,7 +94,7 @@ cases:
         - fact_order_items.item_amount
       result_columns: [category, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
         - fact_order_items.date_key -> dim_date.date_key
@@ -177,7 +177,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [channel_name, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.channel_key -> dim_channels.channel_key
 
@@ -207,7 +207,7 @@ cases:
         - fact_order_items.item_amount
       result_columns: [category, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
 
@@ -256,7 +256,7 @@ cases:
         - fact_orders.order_id
       result_columns: [user_id, user_name, order_count]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.user_key -> dim_users.user_key
         - fact_orders.date_key -> dim_date.date_key
@@ -282,7 +282,7 @@ cases:
         - fact_orders.user_key
       result_columns: [channel_name, user_count]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.channel_key -> dim_channels.channel_key
         - fact_orders.date_key -> dim_date.date_key
@@ -328,7 +328,7 @@ cases:
         - fact_order_items.quantity
       result_columns: [product_name, quantity_sold]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
 
@@ -367,8 +367,8 @@ cases:
     tags: [orders, time_series, chart]
     mock_sql: >-
       SELECT d.date_value, COUNT(DISTINCT o.order_id) AS order_count
-      FROM fact_orders o
-      JOIN dim_date d ON o.date_key = d.date_key
+      FROM dim_date d
+      LEFT JOIN fact_orders o ON o.date_key = d.date_key
       WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
       GROUP BY d.date_value
       ORDER BY d.date_value
@@ -411,7 +411,7 @@ cases:
         - fact_order_items.item_amount
       result_columns: [region_group, category, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.order_id -> fact_orders.order_id
         - fact_orders.region_key -> dim_regions.region_key
@@ -499,7 +499,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [payment_bucket, order_count]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.date_key -> dim_date.date_key
 
@@ -723,7 +723,7 @@ cases:
         - dim_channels.channel_name
       result_columns: [channel_name, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.channel_key -> dim_channels.channel_key
 
@@ -773,7 +773,7 @@ cases:
         - dim_products.category
       result_columns: [category, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
 
@@ -929,6 +929,241 @@ cases:
       guard_stage: function_guard
       reason_contains: read_parquet is not allowed
 
+  - id: phase65_duckdb_top_products_bar
+    type: normal
+    question: 最近30天销量最高的10个商品
+    tags: [phase65, duckdb, topn, product, chart]
+    provider: mock
+    mock_sql: >-
+      SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY p.name
+      ORDER BY quantity_sold DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'ORDER\s+BY\s+quantity_sold\s+DESC'
+        - 'LIMIT\s+10'
+      result_columns: [product_name, quantity_sold]
+      min_row_count: 1
+      chart_type: bar
+
+  - id: phase65_duckdb_bare_top_products
+    type: normal
+    question: Show top products by sales in the last 30 days
+    tags: [phase65, duckdb, topn, product, english]
+    provider: mock
+    mock_sql: >-
+      SELECT p.name AS product_name, SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      GROUP BY p.name
+      ORDER BY sales_amount DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'LIMIT\s+10'
+      result_columns: [product_name, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+
+  - id: phase65_duckdb_top_hyphen_channels
+    type: normal
+    question: Show top-10 channels by sales
+    tags: [phase65, duckdb, topn, channel, english]
+    provider: mock
+    mock_sql: >-
+      SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      GROUP BY c.channel_name
+      ORDER BY sales_amount DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'ORDER\s+BY\s+sales_amount\s+DESC'
+        - 'LIMIT\s+10'
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+
+  - id: phase65_duckdb_channel_share_pie
+    type: normal
+    question: 各渠道销售占比
+    tags: [phase65, duckdb, distribution, channel, chart]
+    provider: mock
+    mock_sql: >-
+      WITH sales_by_channel AS (
+        SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_channels c ON o.channel_key = c.channel_key
+        GROUP BY c.channel_name
+      )
+      SELECT
+        channel_name,
+        ROUND(sales_amount / NULLIF(SUM(sales_amount) OVER (), 0), 4) AS channel_share
+      FROM sales_by_channel
+      ORDER BY channel_share DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_sql_patterns:
+        - 'SUM\s*\(\s*sales_amount\s*\)\s+OVER'
+      result_columns: [channel_name, channel_share]
+      min_row_count: 1
+      chart_type: pie
+
+  - id: phase65_duckdb_region_top_share
+    type: normal
+    question: 前十地区销售额及占比
+    tags: [phase65, duckdb, topn, distribution, region]
+    provider: mock
+    mock_sql: >-
+      WITH region_sales AS (
+        SELECT r.region_group, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_regions r ON o.region_key = r.region_key
+        GROUP BY r.region_group
+      )
+      SELECT
+        region_group,
+        sales_amount,
+        ROUND(sales_amount / NULLIF(SUM(sales_amount) OVER (), 0), 4) AS region_share
+      FROM region_sales
+      ORDER BY sales_amount DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'SUM\s*\(\s*sales_amount\s*\)\s+OVER'
+        - 'LIMIT\s+10'
+      result_columns: [region_group, sales_amount, region_share]
+      min_row_count: 1
+      chart_type: bar
+
+  - id: phase65_duckdb_monthly_yoy
+    type: normal
+    question: 按月统计销售额同比
+    tags: [phase65, duckdb, yoy_mom, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      WITH monthly_sales AS (
+        SELECT DATE_TRUNC('month', d.date_value) AS month_start, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_date d ON o.date_key = d.date_key
+        GROUP BY month_start
+      ),
+      compared AS (
+        SELECT
+          month_start,
+          sales_amount,
+          LAG(sales_amount, 12) OVER (ORDER BY month_start) AS prev_year_sales
+        FROM monthly_sales
+      )
+      SELECT
+        month_start,
+        sales_amount,
+        prev_year_sales,
+        ROUND((sales_amount - prev_year_sales) / NULLIF(prev_year_sales, 0) * 100, 2) AS yoy_pct
+      FROM compared
+      ORDER BY month_start
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [yoy_mom]
+      required_sql_patterns:
+        - 'DATE_TRUNC\s*\('
+        - 'LAG\s*\(\s*sales_amount\s*,\s*12\s*\)\s+OVER'
+      result_columns: [month_start, sales_amount, prev_year_sales, yoy_pct]
+      min_row_count: 12
+      chart_type: dual_axis
+
+  - id: phase65_duckdb_monthly_mom
+    type: normal
+    question: 每月销售额环比
+    tags: [phase65, duckdb, yoy_mom, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      WITH monthly_sales AS (
+        SELECT DATE_TRUNC('month', d.date_value) AS month_start, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_date d ON o.date_key = d.date_key
+        GROUP BY month_start
+      ),
+      compared AS (
+        SELECT
+          month_start,
+          sales_amount,
+          LAG(sales_amount, 1) OVER (ORDER BY month_start) AS prev_month_sales
+        FROM monthly_sales
+      )
+      SELECT
+        month_start,
+        sales_amount,
+        prev_month_sales,
+        ROUND((sales_amount - prev_month_sales) / NULLIF(prev_month_sales, 0) * 100, 2) AS mom_pct
+      FROM compared
+      ORDER BY month_start
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [yoy_mom]
+      required_sql_patterns:
+        - 'LAG\s*\(\s*sales_amount\s*,\s*1\s*\)\s+OVER'
+      result_columns: [month_start, sales_amount, prev_month_sales, mom_pct]
+      min_row_count: 12
+      chart_type: dual_axis
+
+  - id: phase65_duckdb_daily_moving_average
+    type: normal
+    question: 最近30天每日销售额7日移动平均
+    tags: [phase65, duckdb, moving_avg, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      WITH calendar AS (
+        SELECT date_value, date_key
+        FROM dim_date
+        WHERE date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31'
+      ),
+      daily_sales AS (
+        SELECT c.date_value, COALESCE(SUM(o.payment_amount), 0) AS sales_amount
+        FROM calendar c
+        LEFT JOIN fact_orders o ON o.date_key = c.date_key
+        GROUP BY c.date_value
+      )
+      SELECT
+        date_value,
+        sales_amount,
+        AVG(sales_amount) OVER (ORDER BY date_value ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma_7d
+      FROM daily_sales
+      ORDER BY date_value
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [moving_avg]
+      required_sql_patterns:
+        - 'AVG\s*\(\s*sales_amount\s*\)\s+OVER'
+        - 'ROWS\s+BETWEEN\s+6\s+PRECEDING\s+AND\s+CURRENT\s+ROW'
+      result_columns: [date_value, sales_amount, ma_7d]
+      min_row_count: 30
+      chart_type: line
+
   - id: ch_monthly_sales
     type: normal
     datasource: clickhouse_ecommerce
@@ -1013,7 +1248,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [channel_name, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.channel_key -> dim_channels.channel_key
         - fact_orders.date_key -> dim_date.date_key
@@ -1043,7 +1278,7 @@ cases:
         - fact_orders.payment_amount
       result_columns: [region_group, sales_amount]
       min_row_count: 1
-      chart_type: table
+      chart_type: bar
       join_paths:
         - fact_orders.region_key -> dim_regions.region_key
         - fact_orders.date_key -> dim_date.date_key
@@ -1276,6 +1511,275 @@ cases:
       result_columns: [payment_bucket, order_count]
       min_row_count: 1
       chart_type: table
+
+  - id: phase65_clickhouse_top_channels_bar
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse top-5 渠道销售额
+    tags: [phase65, clickhouse, topn, channel, chart]
+    provider: mock
+    mock_sql: >-
+      SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      GROUP BY c.channel_name
+      ORDER BY sales_amount DESC
+      LIMIT 5
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'ORDER\s+BY\s+sales_amount\s+DESC'
+        - 'LIMIT\s+5'
+      dialect_hints:
+        - no_duckdb_syntax: true
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_top_regions_no_time_filter
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 销售额最高的前十地区
+    tags: [phase65, clickhouse, topn, region, performance]
+    provider: mock
+    mock_sql: >-
+      SELECT r.region_group, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_regions r ON o.region_key = r.region_key
+      GROUP BY r.region_group
+      ORDER BY sales_amount DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'LIMIT\s+10'
+      dialect_hints:
+        - no_duckdb_syntax: true
+      result_columns: [region_group, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_channel_share_pie
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 各渠道销售占比
+    tags: [phase65, clickhouse, distribution, channel, chart]
+    provider: mock
+    mock_sql: >-
+      WITH sales_by_channel AS (
+        SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_channels c ON o.channel_key = c.channel_key
+        GROUP BY c.channel_name
+      )
+      SELECT
+        channel_name,
+        round(sales_amount / nullIf(SUM(sales_amount) OVER (), 0), 4) AS channel_share
+      FROM sales_by_channel
+      ORDER BY channel_share DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_sql_patterns:
+        - 'SUM\s*\(\s*sales_amount\s*\)\s+OVER'
+      dialect_hints:
+        - no_duckdb_syntax: true
+      result_columns: [channel_name, channel_share]
+      min_row_count: 1
+      chart_type: pie
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_monthly_yoy
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 按月统计销售额同比
+    tags: [phase65, clickhouse, yoy_mom, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      WITH monthly_sales AS (
+        SELECT toStartOfMonth(d.date_value) AS month_start, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_date d ON o.date_key = d.date_key
+        GROUP BY month_start
+      ),
+      compared AS (
+        SELECT
+          month_start,
+          sales_amount,
+          lagInFrame(sales_amount, 12) OVER (ORDER BY month_start ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS prev_year_sales
+        FROM monthly_sales
+      )
+      SELECT
+        month_start,
+        sales_amount,
+        prev_year_sales,
+        round((sales_amount - prev_year_sales) / nullIf(prev_year_sales, 0) * 100, 2) AS yoy_pct
+      FROM compared
+      ORDER BY month_start
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [yoy_mom]
+      required_sql_patterns:
+        - pattern: 'toStartOfMonth\s*\('
+          case_sensitive: true
+        - pattern: 'lagInFrame\s*\(\s*sales_amount\s*,\s*12\s*\)\s+OVER'
+          case_sensitive: true
+      dialect_hints:
+        - function: toStartOfMonth
+        - no_duckdb_syntax: true
+      result_columns: [month_start, sales_amount, prev_year_sales, yoy_pct]
+      min_row_count: 12
+      chart_type: dual_axis
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_monthly_mom
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 每月销售额环比
+    tags: [phase65, clickhouse, yoy_mom, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      WITH monthly_sales AS (
+        SELECT toStartOfMonth(d.date_value) AS month_start, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_date d ON o.date_key = d.date_key
+        GROUP BY month_start
+      ),
+      compared AS (
+        SELECT
+          month_start,
+          sales_amount,
+          lagInFrame(sales_amount, 1) OVER (ORDER BY month_start ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS prev_month_sales
+        FROM monthly_sales
+      )
+      SELECT
+        month_start,
+        sales_amount,
+        prev_month_sales,
+        round((sales_amount - prev_month_sales) / nullIf(prev_month_sales, 0) * 100, 2) AS mom_pct
+      FROM compared
+      ORDER BY month_start
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [yoy_mom]
+      required_sql_patterns:
+        - pattern: 'lagInFrame\s*\(\s*sales_amount\s*,\s*1\s*\)\s+OVER'
+          case_sensitive: true
+      dialect_hints:
+        - function: toStartOfMonth
+        - no_duckdb_syntax: true
+      result_columns: [month_start, sales_amount, prev_month_sales, mom_pct]
+      min_row_count: 12
+      chart_type: dual_axis
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_daily_moving_average
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天每日销售额7日移动平均
+    tags: [phase65, clickhouse, moving_avg, sales, time_series]
+    provider: mock
+    mock_sql: >-
+      WITH calendar AS (
+        SELECT date_value, date_key
+        FROM dim_date
+        WHERE date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      ),
+      daily_sales AS (
+        SELECT c.date_value, ifNull(SUM(o.payment_amount), 0) AS sales_amount
+        FROM calendar c
+        LEFT JOIN fact_orders o ON o.date_key = c.date_key
+        GROUP BY c.date_value
+      )
+      SELECT
+        date_value,
+        sales_amount,
+        avg(sales_amount) OVER (ORDER BY date_value ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma_7d
+      FROM daily_sales
+      ORDER BY date_value
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [moving_avg]
+      required_sql_patterns:
+        - 'avg\s*\(\s*sales_amount\s*\)\s+OVER'
+        - 'ROWS\s+BETWEEN\s+6\s+PRECEDING\s+AND\s+CURRENT\s+ROW'
+      dialect_hints:
+        - no_duckdb_syntax: true
+      result_columns: [date_value, sales_amount, ma_7d]
+      min_row_count: 30
+      chart_type: line
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_top_products_chinese_number
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 最近30天销量前十商品
+    tags: [phase65, clickhouse, topn, product, chinese_number]
+    provider: mock
+    mock_sql: >-
+      SELECT p.name AS product_name, SUM(i.quantity) AS quantity_sold
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      JOIN dim_date d ON i.date_key = d.date_key
+      WHERE d.date_value BETWEEN toDate('2025-12-02') AND toDate('2025-12-31')
+      GROUP BY p.name
+      ORDER BY quantity_sold DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'LIMIT\s+10'
+      dialect_hints:
+        - no_duckdb_syntax: true
+      result_columns: [product_name, quantity_sold]
+      min_row_count: 1
+      chart_type: bar
+      plan_hints_exist: true
+
+  - id: phase65_clickhouse_region_share_topn
+    type: normal
+    datasource: clickhouse_ecommerce
+    question: ClickHouse 前十地区销售额及占比
+    tags: [phase65, clickhouse, topn, distribution, region]
+    provider: mock
+    mock_sql: >-
+      WITH region_sales AS (
+        SELECT r.region_group, SUM(o.payment_amount) AS sales_amount
+        FROM fact_orders o
+        JOIN dim_regions r ON o.region_key = r.region_key
+        GROUP BY r.region_group
+      )
+      SELECT
+        region_group,
+        sales_amount,
+        round(sales_amount / nullIf(SUM(sales_amount) OVER (), 0), 4) AS region_share
+      FROM region_sales
+      ORDER BY sales_amount DESC
+      LIMIT 10
+    expected:
+      should_execute: true
+      matched_query_id: null
+      olap_intents: [topn]
+      required_sql_patterns:
+        - 'SUM\s*\(\s*sales_amount\s*\)\s+OVER'
+        - 'LIMIT\s+10'
+      dialect_hints:
+        - no_duckdb_syntax: true
+      result_columns: [region_group, sales_amount, region_share]
+      min_row_count: 1
+      chart_type: bar
+      plan_hints_exist: true
 
   - id: ch_unsafe_system_command
     type: safety

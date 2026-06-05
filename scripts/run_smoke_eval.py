@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.agent.nodes import generate_sql_node, olap_intent_detect_node
+from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
@@ -60,6 +62,7 @@ class SmokeResult:
     case_id: str
     case_type: str
     question: str
+    tags: list[str] = field(default_factory=list)
     datasource_name: str = DEFAULT_DATASOURCE
     datasource_dialect: str = "duckdb"
     datasource_display_name: str = "DuckDB (本地)"
@@ -88,6 +91,15 @@ class SmokeResult:
     guard_reason: str | None = None
     elapsed_ms: int | None = None
     repair_count: int = 0
+    olap_intents: list[str] = field(default_factory=list)
+    plan_hints: list[str] = field(default_factory=list)
+    runtime_stats: dict[str, Any] | None = None
+    expected_olap_intents: list[str] = field(default_factory=list)
+    expected_sql_patterns: list[str] = field(default_factory=list)
+    olap_intent_match: bool | None = None
+    sql_pattern_match: bool | None = None
+    chart_match: bool | None = None
+    plan_hint_match: bool | None = None
 
     def fail(self, message: str, error_category: str | None = None) -> None:
         self.passed = False
@@ -309,6 +321,7 @@ def _run_case(
         case_id=case["id"],
         case_type=case.get("type", ""),
         question=case["question"],
+        tags=list(case.get("tags") or []),
         datasource_name=datasource.name,
         datasource_dialect=datasource.dialect,
         datasource_display_name=datasource.display_name,
@@ -389,15 +402,17 @@ def _run_case(
             result.fail(f"SQL repair workflow failed: {exc}", "repair_error")
             return result
 
-        _record_state_result(result, state)
+        result.repair_count = len(state.repair_history)
         _validate_repair_expectations(result, expected)
 
         final_event = repair_events[-1] if repair_events else None
         if expected.get("repair_should_fail"):
+            _record_state_result(result, state)
             _validate_expected_repair_failure(result, final_event, expected)
             return result
 
         if final_event and final_event.step == "error":
+            _record_state_result(result, state)
             error_category = (
                 _guard_error_category(final_event.error_kind)
                 if final_event.error_stage == "sql_guard"
@@ -412,6 +427,9 @@ def _run_case(
         if state.query_result is None:
             result.fail("repair workflow finished without query result.", "execution_error")
             return result
+
+        explain_performance_node(state)
+        _record_state_result(result, state)
 
         chart_recommendation = recommend_chart(state.query_result, olap_intents=state.olap_intents)
         result.chart_type = chart_recommendation.chart_type
@@ -489,6 +507,7 @@ def _run_guard_only_case(
         return
 
     state.guard_result = guard_result
+    _record_state_result(result, state)
     result.guard_stage = guard_result.stage
     result.guard_reason = guard_result.reason
     result.normalized_sql = guard_result.normalized_sql
@@ -501,6 +520,9 @@ def _record_state_result(result: SmokeResult, state: AgentState) -> None:
     result.sql = state.sql
     result.generated_sql = state.sql
     result.repair_count = len(state.repair_history)
+    result.olap_intents = list(state.olap_intents)
+    result.plan_hints = list(state.plan_hints)
+    result.runtime_stats = state.runtime_stats
     if state.guard_result is not None:
         result.guard_stage = state.guard_result.stage
         result.guard_reason = state.guard_result.reason
@@ -668,6 +690,8 @@ def _validate_normal_case(
         )
 
     _validate_dialect_hints(result, expected)
+    _validate_olap_expectations(result, expected)
+    _validate_required_sql_patterns(result, expected)
 
     expected_sql_keywords = expected.get("expected_sql_keywords") or []
     if expected_sql_keywords and result.generated_sql:
@@ -701,6 +725,10 @@ def _validate_normal_case(
             f"expected chart type {expected_chart_type}, got {chart_type}",
             "chart_mismatch",
         )
+    if "phase65" in result.tags and expected_chart_type:
+        result.chart_match = chart_type == expected_chart_type
+
+    _validate_plan_hint_expectation(result, expected)
 
     _validate_subset(
         result,
@@ -725,6 +753,74 @@ def _validate_normal_case(
     )
 
 
+def _validate_olap_expectations(result: SmokeResult, expected: dict[str, Any]) -> None:
+    expected_intents = list(expected.get("olap_intents") or [])
+    result.expected_olap_intents = expected_intents
+    if not expected_intents:
+        return
+
+    missing_intents = sorted(set(expected_intents) - set(result.olap_intents))
+    result.olap_intent_match = not missing_intents
+    if not result.olap_intent_match:
+        result.fail(
+            f"missing expected OLAP intents {missing_intents}; got {result.olap_intents}",
+            "olap_intent_mismatch",
+        )
+
+
+def _validate_required_sql_patterns(result: SmokeResult, expected: dict[str, Any]) -> None:
+    pattern_expectations = _sql_pattern_expectations(expected)
+    result.expected_sql_patterns = [pattern for pattern, _ in pattern_expectations]
+    if not pattern_expectations:
+        return
+
+    sql_text = _result_sql_text(result)
+    missing_patterns = [
+        pattern
+        for pattern, case_sensitive in pattern_expectations
+        if not _sql_pattern_matches(pattern, sql_text, case_sensitive=case_sensitive)
+    ]
+    result.sql_pattern_match = not missing_patterns
+    if missing_patterns:
+        result.fail(
+            f"missing required SQL patterns: {missing_patterns}",
+            "sql_generation_mismatch",
+        )
+
+
+def _sql_pattern_expectations(expected: dict[str, Any]) -> list[tuple[str, bool]]:
+    pattern_expectations = []
+    for item in expected.get("required_sql_patterns") or []:
+        if isinstance(item, str):
+            pattern_expectations.append((item, False))
+            continue
+        if isinstance(item, dict) and item.get("pattern"):
+            pattern_expectations.append((str(item["pattern"]), bool(item.get("case_sensitive"))))
+    return pattern_expectations
+
+
+def _sql_pattern_matches(pattern: str, sql_text: str, *, case_sensitive: bool) -> bool:
+    flags = re.DOTALL if case_sensitive else re.IGNORECASE | re.DOTALL
+    return re.search(pattern, sql_text, flags=flags) is not None
+
+
+def _result_sql_text(result: SmokeResult) -> str:
+    return "\n".join(part for part in (result.generated_sql, result.normalized_sql) if part)
+
+
+def _validate_plan_hint_expectation(result: SmokeResult, expected: dict[str, Any]) -> None:
+    plan_hints_exist = expected.get("plan_hints_exist")
+    if plan_hints_exist is None:
+        return
+
+    result.plan_hint_match = bool(result.plan_hints) == bool(plan_hints_exist)
+    if not result.plan_hint_match:
+        result.fail(
+            f"expected plan_hints_exist {plan_hints_exist}, got {bool(result.plan_hints)}",
+            "performance_mismatch",
+        )
+
+
 DUCKDB_SYNTAX_MARKERS = ("date_trunc(", "::", "read_csv(", "read_json(", "read_parquet(")
 
 
@@ -732,7 +828,7 @@ def _validate_dialect_hints(result: SmokeResult, expected: dict[str, Any]) -> No
     hints = expected.get("dialect_hints") or []
     if not hints:
         return
-    sql_text = "\n".join(part for part in (result.generated_sql, result.normalized_sql) if part)
+    sql_text = _result_sql_text(result)
     normalized_sql = sql_text.casefold()
     for hint in hints:
         if not isinstance(hint, dict):
@@ -1000,6 +1096,8 @@ def _render_report(
     retrieval_stats = _retrieval_stats(results)
     error_distribution = _error_distribution(results)
     chart_distribution = _chart_distribution(results)
+    phase65_stats = _phase65_stats(results)
+    datasource_groups = _group_results_by_datasource(results)
     lines = [
         "# Smoke Eval Report",
         "",
@@ -1025,7 +1123,7 @@ def _render_report(
         "| Datasource | Dialect | Cases | Passed | Avg elapsed |",
         "|------------|---------|-------|--------|-------------|",
     ]
-    for _, group in _group_results_by_datasource(results):
+    for _, group in datasource_groups:
         group_summary = _summary_metrics(group)
         first = group[0]
         lines.append(
@@ -1041,6 +1139,38 @@ def _render_report(
             )
             + " |"
         )
+
+    if phase65_stats["cases"] > 0:
+        lines.extend(
+            [
+                "",
+                "## Phase 6.5 OLAP Analytics",
+                "",
+                "| Datasource | Cases | OLAP Intent | YoY/MoM SQL | TopN SQL | Moving Avg SQL | Chart | Plan Hints |",
+                "|------------|-------|-------------|-------------|----------|----------------|-------|------------|",
+            ]
+        )
+        for _, group in datasource_groups:
+            group_stats = _phase65_stats(group)
+            if group_stats["cases"] == 0:
+                continue
+            first = group[0]
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _md_cell(first.datasource_display_name),
+                        str(group_stats["cases"]),
+                        _format_check_rate(group_stats["olap_intent"]),
+                        _format_check_rate(group_stats["yoy_mom_sql"]),
+                        _format_check_rate(group_stats["topn_sql"]),
+                        _format_check_rate(group_stats["moving_avg_sql"]),
+                        _format_check_rate(group_stats["chart"]),
+                        _format_check_rate(group_stats["plan_hints"]),
+                    ]
+                )
+                + " |"
+            )
 
     lines.extend(
         [
@@ -1091,7 +1221,7 @@ def _render_report(
             "",
         ]
     )
-    for _, group in _group_results_by_datasource(results):
+    for _, group in datasource_groups:
         lines.extend(
             [
                 f"### {_datasource_section_title(group)}",
@@ -1153,7 +1283,7 @@ def _render_report(
             lines.append("")
 
     lines.extend(["", "## Retrieval Details", ""])
-    for _, group in _group_results_by_datasource(results):
+    for _, group in datasource_groups:
         lines.extend([f"### {_datasource_section_title(group)}", ""])
         for result in group:
             lines.extend(
@@ -1282,6 +1412,61 @@ def _chart_distribution(results: list[SmokeResult]) -> dict[str, int]:
             continue
         distribution[result.chart_type] = distribution.get(result.chart_type, 0) + 1
     return distribution
+
+
+def _phase65_stats(results: list[SmokeResult]) -> dict[str, Any]:
+    phase_results = [result for result in results if "phase65" in result.tags]
+    return {
+        "cases": len(phase_results),
+        "olap_intent": _boolean_check_stats(
+            [result.olap_intent_match for result in phase_results]
+        ),
+        "yoy_mom_sql": _boolean_check_stats(
+            [
+                result.sql_pattern_match
+                for result in phase_results
+                if _expects_phase65_intent(result, "yoy_mom")
+            ]
+        ),
+        "topn_sql": _boolean_check_stats(
+            [
+                result.sql_pattern_match
+                for result in phase_results
+                if _expects_phase65_intent(result, "topn")
+            ]
+        ),
+        "moving_avg_sql": _boolean_check_stats(
+            [
+                result.sql_pattern_match
+                for result in phase_results
+                if _expects_phase65_intent(result, "moving_avg")
+            ]
+        ),
+        "chart": _boolean_check_stats([result.chart_match for result in phase_results]),
+        "plan_hints": _boolean_check_stats(
+            [result.plan_hint_match for result in phase_results]
+        ),
+    }
+
+
+def _expects_phase65_intent(result: SmokeResult, intent: str) -> bool:
+    return intent in result.expected_olap_intents
+
+
+def _boolean_check_stats(values: list[bool | None]) -> dict[str, int]:
+    expected_values = [value for value in values if value is not None]
+    return {
+        "hits": sum(1 for value in expected_values if value),
+        "expected": len(expected_values),
+    }
+
+
+def _format_check_rate(stats: dict[str, int]) -> str:
+    expected = stats["expected"]
+    if expected == 0:
+        return "n/a"
+    hits = stats["hits"]
+    return f"{hits}/{expected} ({_format_percent(_safe_rate(hits, expected))})"
 
 
 def _format_distribution(distribution: dict[str, int]) -> str:
