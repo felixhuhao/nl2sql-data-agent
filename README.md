@@ -207,7 +207,7 @@ python scripts/run_smoke_eval.py
 
 当前 smoke eval 覆盖：
 
-- DuckDB 50 条基线和 OLAP case：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、占比、同比/环比、移动平均、指标/别名检索、fallback、Value Recall、语义向量召回、安全拦截和修复链路
+- DuckDB 51 条基线、OLAP 和多轮追问 case：趋势、地区、渠道、商品 TopN、品类、客单价、复购率、时间段对比、占比、同比/环比、移动平均、多轮指标/过滤/时间切换、指标/别名检索、fallback、Value Recall、语义向量召回、安全拦截和修复链路
 - ClickHouse 25 条方言和 OLAP case：日期函数、条件聚合、`uniqExact` / `sumIf` / `countIf`、OLAP TopN、占比、同比/环比、移动平均、EXPLAIN 性能提示，以及 ClickHouse 特有危险命令/函数拦截
 - retrieval、focused context、SQL Guard、只读执行器、query-level explainability、chart recommendation、OLAP intent / SQL pattern / chart / plan-hint 回归
 - 错误归因：retrieval_miss、sql_generation_error、sql_generation_timeout、sql_generation_mismatch、dialect_mismatch、sql_invalid、guard_blocked、fanout_risk、guard_mismatch、execution_error、result_mismatch、chart_mismatch、explainability_error、explainability_mismatch
@@ -215,10 +215,10 @@ python scripts/run_smoke_eval.py
 通过时输出类似：
 
 ```text
-50/50 smoke cases passed.
-DuckDB (本地) - 50 cases: 50/50 passed.
+51/51 smoke cases passed.
+DuckDB (本地) - 51 cases: 51/51 passed.
 skipped 25 cases for provider=mock.
-focused context: avg=1917 chars, full=7875 chars, avg_reduction=75.7%, fallback=4/50
+focused context: avg=1842 chars, full=7345 chars, avg_reduction=74.9%, fallback=4/51
 report: evals\reports\smoke_latest.md
 ```
 
@@ -304,11 +304,28 @@ query_readonly("DELETE FROM fact_orders WHERE order_id = 'O00000001'")
 
 ## Demo Evidence
 
+- [Mock smoke eval report](evals/reports/smoke_latest.md)：51/51 mock regression cases passed，覆盖多轮追问 filter / metric / time persistence。
 - [DeepSeek real eval report](evals/reports/deepseek_latest.md)：18/18 real cases passed，14/14 reference result matches。
 
 ### Query Workflow
 
 ![ClickHouse daily sales query](docs/assets/screenshots/query_daily_sales_clickhouse.png)
+
+### Multi-Turn Follow-Up
+
+演示链路：
+
+```text
+最近30天销售额
+按地区拆分
+只看华东
+换成订单数
+改成最近90天
+```
+
+系统会把后续问题识别为追问，并在切换维度、过滤条件、指标和时间范围时保留其他约束。
+
+![Multi-turn follow-up final step](docs/assets/screenshots/query_followup_step5_time_90d.png)
 
 ### SQL Guard
 
@@ -324,6 +341,11 @@ query_readonly("DELETE FROM fact_orders WHERE order_id = 'O00000001'")
 - [Verified queries admin](docs/assets/screenshots/admin_verified_queries.png)
 - [Relationships admin](docs/assets/screenshots/admin_relationships.png)
 - [ClickHouse channel sales query](docs/assets/screenshots/query_channel_sales_clickhouse.png)
+- [Follow-up step 1: recent 30-day sales](docs/assets/screenshots/query_followup_step1_recent30_sales.png)
+- [Follow-up step 2: region breakdown](docs/assets/screenshots/query_followup_step2_region_breakdown.png)
+- [Follow-up step 3: East China filter](docs/assets/screenshots/query_followup_step3_filter_east.png)
+- [Follow-up step 4: order count metric](docs/assets/screenshots/query_followup_step4_metric_order_count.png)
+- [Follow-up step 5: recent 90-day time window](docs/assets/screenshots/query_followup_step5_time_90d.png)
 
 ## 当前限制
 
