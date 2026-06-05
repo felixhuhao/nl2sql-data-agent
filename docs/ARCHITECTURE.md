@@ -164,5 +164,10 @@ step datasource_selected → step intent_guard → step retrieve_context → ste
 ## 11. 相关文档
 
 - 路线图与阶段验收：`docs/ROADMAP.md`
+- 面试讲解与简历表达：`docs/INTERVIEW_PITCH.md`
+- SQL Guard 设计：`docs/SQL_GUARD_DESIGN.md`
+- Metadata Semantic Layer 设计：`docs/METADATA_SEMANTIC_LAYER.md`
+- Evaluation 设计：`docs/EVALUATION_DESIGN.md`
+- Agent Workflow 设计：`docs/AGENT_WORKFLOW.md`
 - 各阶段详细设计：`docs/superpowers/specs/2026-*-design.md`
 - NL2SQL 调研：`docs/NL2SQL_RESEARCH.md`

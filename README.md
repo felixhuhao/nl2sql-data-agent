@@ -268,6 +268,29 @@ query_readonly("DELETE FROM fact_orders WHERE order_id = 'O00000001'")
 
 返回 `ok=true` 且 `data.allowed=false`、`stage=operation_guard`，并且不会调用执行器。
 
+## Demo Evidence
+
+- [DeepSeek real eval report](evals/reports/deepseek_latest.md)：18/18 real cases passed，14/14 reference result matches。
+
+### Query Workflow
+
+![ClickHouse daily sales query](docs/assets/screenshots/query_daily_sales_clickhouse.png)
+
+### SQL Guard
+
+![SQL Guard blocks destructive intent](docs/assets/screenshots/sql_guard_blocked.png)
+
+### Semantic Layer Admin
+
+![ClickHouse table metadata](docs/assets/screenshots/admin_tables_clickhouse.png)
+
+更多截图见 [docs/assets/screenshots](docs/assets/screenshots/)：
+
+- [TopN query with explainability](docs/assets/screenshots/query_top_products_explainability.png)
+- [Verified queries admin](docs/assets/screenshots/admin_verified_queries.png)
+- [Relationships admin](docs/assets/screenshots/admin_relationships.png)
+- [ClickHouse channel sales query](docs/assets/screenshots/query_channel_sales_clickhouse.png)
+
 ## 当前限制
 
 - Mock provider 只覆盖少量 verified/demo 问题，不是完整自然语言泛化能力。
@@ -299,6 +322,12 @@ query_readonly("DELETE FROM fact_orders WHERE order_id = 'O00000001'")
 
 ## 文档
 
+- [INTERVIEW_PITCH.md](docs/INTERVIEW_PITCH.md)
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [SQL_GUARD_DESIGN.md](docs/SQL_GUARD_DESIGN.md)
+- [METADATA_SEMANTIC_LAYER.md](docs/METADATA_SEMANTIC_LAYER.md)
+- [EVALUATION_DESIGN.md](docs/EVALUATION_DESIGN.md)
+- [AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md)
 - [NL2SQL_RESEARCH.md](docs/NL2SQL_RESEARCH.md)
 - [ROADMAP.md](docs/ROADMAP.md)
 - [Phase 3 Design](docs/superpowers/specs/2026-05-30-nl2sql-phase3-design.md)
