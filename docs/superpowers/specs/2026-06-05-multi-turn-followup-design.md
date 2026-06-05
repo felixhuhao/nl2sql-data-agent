@@ -225,9 +225,10 @@ generate_sql -> sql_guard (allowed) -> conversation_filter_verify -> execute
   fire **one** targeted repair ("preserve filter X"), which re-enters `sql_guard` and then
   `conversation_filter_verify` again.
 - These filter repairs **share the global max-2 repair budget** with guard/execution repairs,
-  so triggers cannot amplify. If still unsatisfied after the budget is spent, proceed to
-  execute and surface the dropped filter in explainability — no hard-fail loop, no stale
-  results (read-only execution never ran on the unverified SQL because verify precedes it).
+  so triggers cannot amplify. If still unsatisfied after the budget is spent, **stop before
+  execution** and emit an error event with `step = conversation_filter_verify`, the missing
+  predicate, and the attempted SQL. This avoids silently answering a broader query than the
+  user asked for.
 
 This targets the specific drift case (a filter added in turn N silently dropped in turn N+1)
 without an IR or full AST extraction, and never executes a follow-up whose carried filter was
@@ -243,8 +244,10 @@ silently lost.
 
 ## 9. Frontend (App.vue)
 
-- Hold `session_id` (uuid). `新对话` clears the message thread and mints a new id.
-- It is already a chat thread — add a compact badge on follow-up turns from `change_kind`:
+- Hold `session_id` (uuid). `新对话` clears the current question/result workspace and mints a
+  new id.
+- UI scope stays as the existing single-result workbench, not a full transcript. Add a compact
+  badge on the current result when `is_follow_up` is true, using `change_kind`:
   追问 · 维度下钻 / 值过滤 / 指标切换 / 时间范围.
 - No router or new view.
 
@@ -255,6 +258,9 @@ silently lost.
 - Unknown/expired `session_id` (restart, TTL) → treated as turn 1, graceful.
 - Cap/TTL eviction mid-conversation → follow-up degrades to fresh, no crash.
 - Datasource changed vs prior context → context dropped, treated as fresh (§5).
+- Missing carried filter after the targeted repair budget is spent →
+  `conversation_filter_verify` error before execution; the user can rephrase or start a new
+  conversation.
 - Carried context **never** bypasses SQL Guard; repairs also receive the conversation block so
   they preserve filters.
 
