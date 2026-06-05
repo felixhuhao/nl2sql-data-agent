@@ -67,6 +67,40 @@ dim_date
 
 ## 快速启动
 
+### Docker Compose 一键启动
+
+完整演示栈包含 ClickHouse、后端和前端。首次启动会自动生成 DuckDB 数据集、导出 ClickHouse CSV、初始化 ClickHouse 数据、同步 DuckDB/ClickHouse metadata。
+
+```bash
+docker compose up --build
+```
+
+访问：
+
+```text
+Frontend: http://127.0.0.1:5174/
+Backend:  http://127.0.0.1:8000/api/health
+```
+
+默认使用 `LLM_PROVIDER=mock`，不需要 API key。需要重置演示数据时：
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+如果本机已经占用 `8123`、`9000`、`8000` 或 `5174` 端口，需要先停止对应服务或调整 `docker-compose.yml` 端口映射。
+
+Qdrant 也已放入 compose，但默认不启动。需要单独启动向量数据库时：
+
+```bash
+docker compose --profile vector up -d qdrant
+```
+
+完整启用向量召回仍需要配置 embedding 模型、安装后端 `vector` extra 并将后端 `VECTOR_ENABLED=true`。默认 Compose 演示栈保持关闭，避免拉取较重的 embedding 依赖。
+
+### 本地开发启动
+
 WSL/Ubuntu 建议把 Python 虚拟环境放在 Linux 文件系统里，不要放在 `/mnt/c` 或 `/mnt/d`：
 
 ```bash
@@ -122,10 +156,10 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -e "backend[vector]"
 ```
 
-本地开发需要先启动 Qdrant，例如：
+本地开发建议使用项目 Compose 启动 Qdrant：
 
 ```bash
-docker run -d --name nl2sql-qdrant -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
+docker compose --profile vector up -d qdrant
 ```
 
 后端 `.env` 示例：

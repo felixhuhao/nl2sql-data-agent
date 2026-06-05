@@ -13,7 +13,7 @@ services:
       - clickhouse_data:/var/lib/clickhouse
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      test: ["CMD", "clickhouse-client", "--password", "clickhouse", "--query", "SELECT 1"]
       interval: 5s
       timeout: 3s
       retries: 10
