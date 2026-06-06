@@ -29,7 +29,7 @@ from backend.app.core.llm_provider import (
     SQLGenerationRequest,
     SQLGenerationResult,
 )
-from backend.app.execution.runner import execute_guarded_sql
+from backend.app.execution.runner import QueryResult, execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context_from_retrieval, build_schema_context
@@ -57,6 +57,16 @@ class CaseResources:
     datasource: DatasourceRef
     scope: Any
     full_schema_context: str
+
+
+@dataclass(frozen=True)
+class ProjectedQueryResult:
+    columns: list[str]
+    rows: list[list[Any]]
+    row_count: int
+
+
+ResultLike = QueryResult | ProjectedQueryResult
 
 
 @dataclass
@@ -599,7 +609,11 @@ def _run_conversation_case(
         if conversation_context is not None:
             result.active_filters = [predicate.label() for predicate in conversation_context.active_filters]
 
-        chart_recommendation = recommend_chart(final_state.query_result, olap_intents=final_state.olap_intents)
+        query_result = final_state.query_result
+        if query_result is None:
+            result.fail("conversation turn finished without query result.", "execution_error")
+            return result
+        chart_recommendation = recommend_chart(query_result, olap_intents=final_state.olap_intents)
         result.chart_type = chart_recommendation.chart_type
         expected = case.get("expected", {})
         _validate_normal_case(
@@ -991,21 +1005,27 @@ def _validate_reference_result(
     return comparison["match"]
 
 
-def _compare_query_results(actual, expected) -> dict[str, Any]:
-    actual, expected = _align_named_column_subset(actual, expected)
-    if len(actual.columns) != len(expected.columns):
+def _compare_query_results(actual: QueryResult, expected: QueryResult) -> dict[str, Any]:
+    aligned_actual, aligned_expected = _align_named_column_subset(actual, expected)
+    if len(aligned_actual.columns) != len(aligned_expected.columns):
         return {
             "match": False,
-            "reason": f"reference result column count {len(expected.columns)} != actual {len(actual.columns)}",
+            "reason": (
+                f"reference result column count {len(aligned_expected.columns)} "
+                f"!= actual {len(aligned_actual.columns)}"
+            ),
         }
-    if actual.row_count != expected.row_count:
+    if aligned_actual.row_count != aligned_expected.row_count:
         return {
             "match": False,
-            "reason": f"reference result row_count {expected.row_count} != actual {actual.row_count}",
+            "reason": (
+                f"reference result row_count {aligned_expected.row_count} "
+                f"!= actual {aligned_actual.row_count}"
+            ),
         }
 
-    actual_rows = sorted((_normalize_row(row) for row in actual.rows), key=repr)
-    expected_rows = sorted((_normalize_row(row) for row in expected.rows), key=repr)
+    actual_rows = sorted((_normalize_row(row) for row in aligned_actual.rows), key=repr)
+    expected_rows = sorted((_normalize_row(row) for row in aligned_expected.rows), key=repr)
     for index, (actual_row, expected_row) in enumerate(zip(actual_rows, expected_rows, strict=True)):
         if not _rows_equal(actual_row, expected_row):
             return {
@@ -1015,7 +1035,7 @@ def _compare_query_results(actual, expected) -> dict[str, Any]:
     return {"match": True, "reason": ""}
 
 
-def _align_named_column_subset(actual, expected):
+def _align_named_column_subset(actual: QueryResult, expected: QueryResult) -> tuple[ResultLike, ResultLike]:
     if len(actual.columns) == len(expected.columns):
         return actual, expected
     if len(actual.columns) > len(expected.columns):
@@ -1036,20 +1056,16 @@ def _is_optional_identifier_column(column: str) -> bool:
     return normalized.endswith("_id") or normalized.endswith("_key")
 
 
-def _project_named_columns(query_result, columns: list[str]):
+def _project_named_columns(query_result: QueryResult, columns: list[str]) -> ResultLike:
     if not all(column in query_result.columns for column in columns):
         return query_result
 
     indexes = [query_result.columns.index(column) for column in columns]
-    return type(
-        "ProjectedQueryResult",
-        (),
-        {
-            "columns": list(columns),
-            "rows": [[row[index] for index in indexes] for row in query_result.rows],
-            "row_count": query_result.row_count,
-        },
-    )()
+    return ProjectedQueryResult(
+        columns=list(columns),
+        rows=[[row[index] for index in indexes] for row in query_result.rows],
+        row_count=query_result.row_count,
+    )
 
 
 def _normalize_row(row: list[Any]) -> tuple[Any, ...]:

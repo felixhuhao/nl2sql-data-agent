@@ -50,9 +50,12 @@ def export_tables(duckdb_path: Path, output_dir: Path, tables: list[str] | None 
                 (HEADER, DELIMITER ',')
                 """
             )
-            counts[table_name] = connection.execute(
+            row = connection.execute(
                 f"SELECT COUNT(*) FROM {_quote_identifier(table_name)}"
-            ).fetchone()[0]
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(f"COUNT(*) returned no row for {table_name}.")
+            counts[table_name] = row[0]
     return counts
 
 

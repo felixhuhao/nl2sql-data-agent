@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -62,6 +63,8 @@ def guard_sql(
     operation_result = _check_operation(expression)
     if operation_result is not None:
         return operation_result
+    if not isinstance(expression, exp.Select):
+        return _reject("operation_guard", "Only SELECT statements are allowed.")
 
     function_result = _check_functions(sql, expression, dialect)
     if function_result is not None:
@@ -89,7 +92,7 @@ def guard_sql(
     )
 
 
-def _parse_statements(sql: str, dialect: str) -> list[exp.Expression] | GuardResult:
+def _parse_statements(sql: str, dialect: str) -> list[Any] | GuardResult:
     if not sql or not sql.strip():
         return _reject("syntax_guard", "SQL is empty.")
     try:
@@ -108,7 +111,7 @@ def _check_blocked_command(sql: str, dialect: str) -> GuardResult | None:
     return None
 
 
-def _check_operation(expression: exp.Expression) -> GuardResult | None:
+def _check_operation(expression: Any) -> GuardResult | None:
     if isinstance(expression, exp.Union):
         return _reject("operation_guard", "UNION is not allowed in Phase 1.")
 
@@ -130,7 +133,7 @@ def _check_insert_into_function(sql: str, dialect: str) -> GuardResult | None:
     return _reject("function_guard", "INSERT INTO FUNCTION is not allowed.")
 
 
-def _check_functions(sql: str, expression: exp.Expression, dialect: str) -> GuardResult | None:
+def _check_functions(sql: str, expression: Any, dialect: str) -> GuardResult | None:
     blocked_functions = _blocked_functions(dialect)
     function_re = _blocked_function_re(blocked_functions)
     match = function_re.search(sql) if function_re is not None else None
@@ -168,7 +171,7 @@ def _blocked_function_re(blocked_functions: set[str]) -> re.Pattern | None:
     return re.compile(rf"\b({pattern})\s*\(", re.IGNORECASE)
 
 
-def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult | None:
+def _check_scope(expression: Any, scope: GuardScope) -> GuardResult | None:
     cte_names = _cte_names(expression)
     selects = list(expression.find_all(exp.Select))
 
@@ -200,7 +203,7 @@ def _check_scope(expression: exp.Expression, scope: GuardScope) -> GuardResult |
     return None
 
 
-def _check_fanout_risk(expression: exp.Expression) -> GuardResult | None:
+def _check_fanout_risk(expression: Any) -> GuardResult | None:
     for select in expression.find_all(exp.Select):
         physical_aliases, _ = _select_table_context(select, _cte_names(expression))
         referenced_tables = set(physical_aliases.values())
@@ -220,7 +223,7 @@ def _select_aggregates_order_amount(select: exp.Select) -> bool:
     return False
 
 
-def _apply_cost_guard(expression: exp.Expression) -> tuple[exp.Expression, list[str]] | GuardResult:
+def _apply_cost_guard(expression: exp.Select) -> tuple[exp.Select, list[str]] | GuardResult:
     limit = expression.args.get("limit")
     if limit is None:
         if _is_scalar_aggregate_select(expression):
@@ -255,7 +258,7 @@ def _limit_value(limit: exp.Limit) -> int | None:
     return _literal_int(limit_expression)
 
 
-def _literal_int(expression: exp.Expression | None) -> int | None:
+def _literal_int(expression: Any | None) -> int | None:
     if not isinstance(expression, exp.Literal) or expression.is_string:
         return None
     try:
@@ -276,7 +279,7 @@ def _is_scalar_aggregate_select(expression: exp.Select) -> bool:
     return True
 
 
-def _nearest_aggregate(expression: exp.Expression) -> exp.AggFunc | None:
+def _nearest_aggregate(expression: Any) -> exp.AggFunc | None:
     current = expression.parent
     while current is not None:
         if isinstance(current, exp.AggFunc):
@@ -287,7 +290,7 @@ def _nearest_aggregate(expression: exp.Expression) -> exp.AggFunc | None:
     return None
 
 
-def _cte_names(expression: exp.Expression) -> set[str]:
+def _cte_names(expression: Any) -> set[str]:
     return {cte.alias_or_name for cte in expression.find_all(exp.CTE)}
 
 
@@ -304,8 +307,8 @@ def _select_table_context(select: exp.Select, cte_names: set[str]) -> tuple[dict
     return physical_aliases, cte_aliases
 
 
-def _nearest_select(expression: exp.Expression) -> exp.Select | None:
-    current: exp.Expression | None = expression
+def _nearest_select(expression: Any) -> exp.Select | None:
+    current = expression
     while current is not None:
         if isinstance(current, exp.Select):
             return current

@@ -17,6 +17,9 @@ class DataSourceConnector(Protocol):
     def execute(self, sql: str, timeout: int | None = None) -> RawResult:
         ...
 
+    def execute_with_explain(self, sql: str) -> tuple[RawResult, dict | None]:
+        ...
+
     def explain(self, sql: str) -> dict | None:
         ...
 

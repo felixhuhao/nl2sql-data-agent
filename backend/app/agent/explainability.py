@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -53,7 +54,7 @@ def _extract_sql_assets(sql: str, dialect: str = "duckdb") -> tuple[list[str], l
     return tables, sorted(set(columns))
 
 
-def _table_aliases(expression: exp.Expression) -> dict[str, str]:
+def _table_aliases(expression: Any) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for table in expression.find_all(exp.Table):
         table_name = table.name

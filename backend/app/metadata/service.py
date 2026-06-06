@@ -398,7 +398,7 @@ def build_schema_context(datasource_name: str = DEFAULT_DATASOURCE) -> str:
         allowed_tables = set(analysis_space_payload["tables"])
         metrics = _enabled_metrics(session, set(analysis_space_payload["enabled_metrics"]), datasource_name=datasource_name)
         verified_queries = _verified_queries(session, datasource_name=datasource_name)
-        tables = session.scalars(
+        tables = list(session.scalars(
             select(MetaTable)
             .where(
                 MetaTable.enabled.is_(True),
@@ -406,8 +406,8 @@ def build_schema_context(datasource_name: str = DEFAULT_DATASOURCE) -> str:
                 MetaTable.table_name.in_(allowed_tables),
             )
             .order_by(MetaTable.table_name)
-        ).all()
-        relationships = session.scalars(
+        ).all())
+        relationships = list(session.scalars(
             select(MetaRelationship)
             .where(
                 MetaRelationship.source_table.in_(allowed_tables),
@@ -415,7 +415,7 @@ def build_schema_context(datasource_name: str = DEFAULT_DATASOURCE) -> str:
                 MetaRelationship.datasource == datasource_name,
             )
             .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
-        ).all()
+        ).all())
         table_columns = {table.table_name: _columns_for_table(session, table.id) for table in tables}
         return _render_schema_context(
             settings.dataset_current_date,
@@ -549,11 +549,11 @@ def validate_semantic_assets(datasource_name: str = DEFAULT_DATASOURCE) -> dict:
 
 
 def _columns_for_table(session: Session, table_id: int) -> list[MetaColumn]:
-    return session.scalars(
+    return list(session.scalars(
         select(MetaColumn)
         .where(MetaColumn.table_id == table_id)
         .order_by(MetaColumn.id)
-    ).all()
+    ).all())
 
 
 def _render_schema_context(
@@ -663,7 +663,7 @@ def _tables_by_name(
     selected_tables = table_names & allowed_tables
     if not selected_tables:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaTable)
         .where(
             MetaTable.enabled.is_(True),
@@ -671,7 +671,7 @@ def _tables_by_name(
             MetaTable.table_name.in_(selected_tables),
         )
         .order_by(MetaTable.table_name)
-    ).all()
+    ).all())
 
 
 def _focused_columns_by_table(
@@ -709,7 +709,7 @@ def _relationships_for_tables(
 ) -> list[MetaRelationship]:
     if not allowed_tables:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaRelationship)
         .where(
             MetaRelationship.source_table.in_(allowed_tables),
@@ -717,7 +717,7 @@ def _relationships_for_tables(
             MetaRelationship.datasource == datasource_name,
         )
         .order_by(MetaRelationship.source_table, MetaRelationship.target_table)
-    ).all()
+    ).all())
 
 
 def _expand_join_partners(
@@ -753,7 +753,7 @@ def _metrics_by_name(
 ) -> list[MetaMetric]:
     if not metric_names:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaMetric)
         .where(
             MetaMetric.enabled.is_(True),
@@ -761,7 +761,7 @@ def _metrics_by_name(
             MetaMetric.name.in_(metric_names),
         )
         .order_by(MetaMetric.id)
-    ).all()
+    ).all())
 
 
 def _verified_queries_by_id(
@@ -771,7 +771,7 @@ def _verified_queries_by_id(
 ) -> list[MetaVerifiedQuery]:
     if not query_ids:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaVerifiedQuery)
         .where(
             MetaVerifiedQuery.enabled.is_(True),
@@ -779,7 +779,7 @@ def _verified_queries_by_id(
             MetaVerifiedQuery.query_id.in_(query_ids),
         )
         .order_by(MetaVerifiedQuery.id)
-    ).all()
+    ).all())
 
 
 def _table_explainability(session: Session, table: MetaTable) -> dict:
@@ -854,7 +854,7 @@ def _enabled_metrics(
 ) -> list[MetaMetric]:
     if not enabled_metric_names:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaMetric)
         .where(
             MetaMetric.enabled.is_(True),
@@ -862,18 +862,18 @@ def _enabled_metrics(
             MetaMetric.name.in_(enabled_metric_names),
         )
         .order_by(MetaMetric.id)
-    ).all()
+    ).all())
 
 
 def _verified_queries(
     session: Session,
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> list[MetaVerifiedQuery]:
-    return session.scalars(
+    return list(session.scalars(
         select(MetaVerifiedQuery)
         .where(MetaVerifiedQuery.enabled.is_(True), MetaVerifiedQuery.datasource == datasource_name)
         .order_by(MetaVerifiedQuery.id)
-    ).all()
+    ).all())
 
 
 def _reference_index(

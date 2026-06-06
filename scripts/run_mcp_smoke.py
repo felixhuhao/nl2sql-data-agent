@@ -93,7 +93,9 @@ async def _call(session: ClientSession, tool_name: str, arguments: dict[str, Any
     assert not result.isError, f"{tool_name} returned MCP error: {result}"
     assert result.content, f"{tool_name} returned no content"
     payload = result.content[0]
-    return json.loads(payload.text)
+    text = getattr(payload, "text", None)
+    assert isinstance(text, str), f"{tool_name} returned non-text content: {payload}"
+    return json.loads(text)
 
 
 def _assert_tools(actual: list[str], expected: list[str]) -> None:

@@ -167,7 +167,7 @@ def _repair_context_from_guard(state: AgentState, attempt: int) -> SQLRepairCont
         original_sql=state.sql,
         error_stage="sql_guard",
         error_kind=state.guard_result.stage,
-        error_reason=state.guard_result.reason,
+        error_reason=state.guard_result.reason or "",
         normalized_sql=state.guard_result.normalized_sql,
     )
 

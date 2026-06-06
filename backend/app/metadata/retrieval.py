@@ -8,6 +8,7 @@ import sqlglot
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from backend.app.config import get_settings
 from backend.app.core.db import get_sqlite_engine, sqlite_session
@@ -472,7 +473,7 @@ def _tables(
 ) -> list[MetaTable]:
     if not allowed_tables:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaTable)
         .where(
             MetaTable.enabled.is_(True),
@@ -480,7 +481,7 @@ def _tables(
             MetaTable.table_name.in_(allowed_tables),
         )
         .order_by(MetaTable.table_name)
-    ).all()
+    ).all())
 
 
 def _columns(
@@ -490,7 +491,7 @@ def _columns(
 ) -> list[MetaColumn]:
     if not allowed_tables:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaColumn)
         .join(MetaTable)
         .where(
@@ -499,7 +500,7 @@ def _columns(
             MetaTable.table_name.in_(allowed_tables),
         )
         .order_by(MetaTable.table_name, MetaColumn.id)
-    ).all()
+    ).all())
 
 
 def _aliases_by_column(
@@ -530,7 +531,7 @@ def _metrics(
 ) -> list[MetaMetric]:
     if not enabled_metrics:
         return []
-    return session.scalars(
+    return list(session.scalars(
         select(MetaMetric)
         .where(
             MetaMetric.enabled.is_(True),
@@ -538,21 +539,21 @@ def _metrics(
             MetaMetric.name.in_(enabled_metrics),
         )
         .order_by(MetaMetric.id)
-    ).all()
+    ).all())
 
 
 def _verified_queries(
     session: Session,
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> list[MetaVerifiedQuery]:
-    return session.scalars(
+    return list(session.scalars(
         select(MetaVerifiedQuery)
         .where(
             MetaVerifiedQuery.enabled.is_(True),
             MetaVerifiedQuery.datasource == datasource_name,
         )
         .order_by(MetaVerifiedQuery.id)
-    ).all()
+    ).all())
 
 
 def _active_analysis_space(
@@ -579,7 +580,7 @@ def _active_analysis_space(
 def _tables_from_sql(sql: str) -> set[str]:
     try:
         expression = sqlglot.parse_one(sql, read="duckdb")
-    except sqlglot.errors.SqlglotError:
+    except SqlglotError:
         return set()
     return {table.name for table in expression.find_all(exp.Table)}
 

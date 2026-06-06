@@ -293,7 +293,10 @@ def _add_inferred_relationship(
 
 def _count_rows(table_name: str) -> int:
     with get_duckdb_connection(read_only=True) as conn:
-        return conn.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table_name)}").fetchone()[0]
+        row = conn.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table_name)}").fetchone()
+        if row is None:
+            raise RuntimeError(f"COUNT(*) returned no row for {table_name}.")
+        return row[0]
 
 
 def _profile_sample_values_json(table_name: str, column_name: str, limit: int = 5) -> str | None:

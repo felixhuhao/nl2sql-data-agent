@@ -29,6 +29,8 @@ def finalize_workflow(state: AgentState) -> AgentState:
     (``api.chat.iter_chat_events``) and synchronous (``run_query_workflow``)
     paths call this so they cannot diverge.
     """
+    if state.query_result is None:
+        raise ValueError("query_result is required to finalize workflow.")
     explain_performance_node(state)
     summarize_node(state)
     state.chart_recommendation = recommend_chart(

@@ -1,4 +1,5 @@
 import re
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -235,7 +236,7 @@ def _find_category_column(result: QueryResult, exclude: list[str]) -> str | None
 
 def _is_number(value: object) -> bool:
     try:
-        float(value)
+        float(cast(Any, value))
     except (TypeError, ValueError):
         return False
     return True

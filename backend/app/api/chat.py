@@ -121,6 +121,8 @@ def iter_chat_events(
         )
 
         chart_recommendation = state.chart_recommendation
+        if chart_recommendation is None:
+            raise WorkflowPayloadError("chart_recommendation is required after finalize_workflow.")
         yield _sse_event(
             "step",
             {

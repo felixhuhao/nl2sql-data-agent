@@ -69,6 +69,9 @@ class DuckDBConnector:
         finally:
             connection.close()
 
+    def execute_with_explain(self, sql: str) -> tuple[RawResult, dict | None]:
+        return self.execute(sql), self.explain(sql)
+
     def explain(self, sql: str) -> dict | None:
         connection = self.get_connection(read_only=True)
         try:
@@ -94,7 +97,10 @@ class DuckDBConnector:
 
     @staticmethod
     def _count_rows(connection: duckdb.DuckDBPyConnection, table_name: str) -> int:
-        return connection.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table_name)}").fetchone()[0]
+        row = connection.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table_name)}").fetchone()
+        if row is None:
+            raise RuntimeError(f"COUNT(*) returned no row for {table_name}.")
+        return row[0]
 
     @staticmethod
     def _read_sample_values(

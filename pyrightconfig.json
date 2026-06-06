@@ -1,0 +1,16 @@
+{
+  "include": [
+    "backend/app",
+    "mcp_servers",
+    "scripts"
+  ],
+  "exclude": [
+    "backend/app/metadata/vector"
+  ],
+  "extraPaths": [
+    "."
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportPrivateImportUsage": false
+}

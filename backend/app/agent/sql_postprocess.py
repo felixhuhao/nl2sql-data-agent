@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
@@ -50,7 +52,7 @@ def _alias_metric_projections(select: exp.Select) -> bool:
     return changed
 
 
-def _metric_alias_for_projection(projection: exp.Expression, table_aliases: dict[str, str]) -> str | None:
+def _metric_alias_for_projection(projection: Any, table_aliases: dict[str, str]) -> str | None:
     if _is_aov_expression(projection, table_aliases):
         return "aov"
     if _is_sales_amount_expression(projection, table_aliases):
@@ -60,7 +62,7 @@ def _metric_alias_for_projection(projection: exp.Expression, table_aliases: dict
     return None
 
 
-def _is_sales_amount_expression(expression: exp.Expression, table_aliases: dict[str, str]) -> bool:
+def _is_sales_amount_expression(expression: Any, table_aliases: dict[str, str]) -> bool:
     if not isinstance(expression, exp.Sum):
         return False
     column = expression.this
@@ -70,7 +72,7 @@ def _is_sales_amount_expression(expression: exp.Expression, table_aliases: dict[
     )
 
 
-def _is_order_count_expression(expression: exp.Expression, table_aliases: dict[str, str]) -> bool:
+def _is_order_count_expression(expression: Any, table_aliases: dict[str, str]) -> bool:
     if not isinstance(expression, exp.Count):
         return False
     distinct = expression.this
@@ -80,7 +82,7 @@ def _is_order_count_expression(expression: exp.Expression, table_aliases: dict[s
     return isinstance(column, exp.Column) and _column_matches(column, "fact_orders", "order_id", table_aliases)
 
 
-def _is_aov_expression(expression: exp.Expression, table_aliases: dict[str, str]) -> bool:
+def _is_aov_expression(expression: Any, table_aliases: dict[str, str]) -> bool:
     if not isinstance(expression, exp.Div):
         return False
     return _is_sales_amount_expression(expression.left, table_aliases) and _is_order_count_expression(
@@ -116,8 +118,8 @@ def _table_aliases(select: exp.Select) -> dict[str, str]:
     return aliases
 
 
-def _nearest_select(expression: exp.Expression) -> exp.Select | None:
-    current: exp.Expression | None = expression
+def _nearest_select(expression: Any) -> exp.Select | None:
+    current = expression
     while current is not None:
         if isinstance(current, exp.Select):
             return current

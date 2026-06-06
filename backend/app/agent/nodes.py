@@ -143,7 +143,7 @@ def olap_intent_detect_node(state: AgentState) -> AgentState:
     metrics = []
     if state.retrieval_result is not None:
         metrics = state.retrieval_result.get("metrics", [])
-    state.olap_intents = detect_olap_intents(state.question)
+    state.olap_intents = list(detect_olap_intents(state.question))
     state.olap_hint = build_olap_hint(
         state.olap_intents,
         datasource_dialect=state.datasource_dialect,

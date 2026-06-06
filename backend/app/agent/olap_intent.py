@@ -60,7 +60,7 @@ _PATTERNS_BY_INTENT: dict[OLAPIntentType, tuple[re.Pattern[str], ...]] = {
     "yoy_mom": _YOY_MOM_PATTERNS,
     "moving_avg": _MOVING_AVG_PATTERNS,
 }
-_INTENT_DESCRIPTIONS: dict[OLAPIntentType, str] = {
+_INTENT_DESCRIPTIONS: dict[str, str] = {
     "topn": "检测到 TopN / 排名 / 分层分析意图",
     "yoy_mom": "检测到同比 / 环比分析意图",
     "moving_avg": "检测到移动平均分析意图",

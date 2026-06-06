@@ -191,7 +191,7 @@ def _in_predicates(node: exp.In, aliases: dict[str, str]) -> list[FilterPredicat
     return predicates
 
 
-def _qualified_column(expression: exp.Expression, aliases: dict[str, str]) -> str | None:
+def _qualified_column(expression: Any, aliases: dict[str, str]) -> str | None:
     if not isinstance(expression, exp.Column):
         return None
     table_name = aliases.get(expression.table, expression.table)
@@ -200,13 +200,13 @@ def _qualified_column(expression: exp.Expression, aliases: dict[str, str]) -> st
     return f"{table_name}.{expression.name}"
 
 
-def _literal_value(expression: exp.Expression) -> str | None:
+def _literal_value(expression: Any) -> str | None:
     if isinstance(expression, exp.Literal):
         return str(expression.this)
     return None
 
 
-def _table_aliases(expression: exp.Expression) -> dict[str, str]:
+def _table_aliases(expression: Any) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for table in expression.find_all(exp.Table):
         table_name = table.name
