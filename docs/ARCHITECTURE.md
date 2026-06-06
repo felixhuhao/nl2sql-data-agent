@@ -1,7 +1,7 @@
 # 架构设计 — Industrial NL2SQL Data Agent Platform
 
-> 本文档描述系统的整体架构、分层职责、安全边界和查询生命周期，作为面试讲解和新人上手的唯一架构真源。
-> 阶段性详细设计见 `docs/superpowers/specs/`，路线图见 `docs/ROADMAP.md`。
+> 本文档描述系统的整体架构、分层职责、安全边界和查询生命周期，作为项目技术架构的主文档。
+> Demo 和操作路径见 `docs/DEMO_GUIDE.md`，路线图见 `docs/ROADMAP.md`。
 
 ## 1. 定位
 
@@ -83,7 +83,7 @@ state.sql
 - Guard 是**方言感知**的：`get_datasource_dialect(ds)` 决定 SQLGlot dialect 和被封禁的命令/函数集合。
 - 此外 Agent 入口还有一道 `intent_guard_node` 的轻量中文意图拦截（"删除/清空/导入外部文件"等），在生成 SQL 之前就拒绝破坏性意图。
 
-> Phase 7 规划的 MCP `query_readonly` 工具复用同一条 `guard_sql` + `execute_guarded_sql`，因此外部 Agent 也无法绕过 Guard（见 `docs/superpowers/specs/2026-06-05-phase7-mcp-tooling-design.md`）。
+> MCP `query_readonly` 工具复用同一条 `guard_sql` + `execute_guarded_sql`，因此外部 Agent 也无法绕过 Guard。
 
 ## 5. 查询生命周期（统一管线）
 
@@ -164,10 +164,10 @@ step datasource_selected → step intent_guard → step retrieve_context → ste
 ## 11. 相关文档
 
 - 路线图与阶段验收：`docs/ROADMAP.md`
-- 面试讲解与简历表达：`docs/INTERVIEW_PITCH.md`
+- 项目简介：`docs/PROJECT_BRIEF.md`
+- Demo 路径：`docs/DEMO_GUIDE.md`
 - SQL Guard 设计：`docs/SQL_GUARD_DESIGN.md`
 - Metadata Semantic Layer 设计：`docs/METADATA_SEMANTIC_LAYER.md`
 - Evaluation 设计：`docs/EVALUATION_DESIGN.md`
 - Agent Workflow 设计：`docs/AGENT_WORKFLOW.md`
-- 各阶段详细设计：`docs/superpowers/specs/2026-*-design.md`
 - NL2SQL 调研：`docs/NL2SQL_RESEARCH.md`

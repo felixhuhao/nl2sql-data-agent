@@ -128,6 +128,6 @@ Semantic Layer 和 Guard 分工：
 
 二者通过 Analysis Space 连接。修改可问空间会同时影响 context 和 Guard scope。
 
-## 面试讲法
+## 技术说明
 
 > 我没有把 schema 写死在 prompt 里，而是做了一个轻量 metadata semantic layer。物理 schema 自动同步，业务语义通过指标、别名和 verified query 落库。查询时先召回可信资产构建 focused context，再由 SQL Guard 用同一份 analysis space 做执行白名单，所以准确率和安全边界来自同一套治理模型。

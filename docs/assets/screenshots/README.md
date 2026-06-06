@@ -1,6 +1,6 @@
 # Screenshots
 
-Curated screenshots for README and interview demos belong here.
+Curated screenshots for README, docs, and product demos belong here.
 
 Recommended filenames:
 

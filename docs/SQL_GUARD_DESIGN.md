@@ -125,6 +125,6 @@ warnings
 - 不做权限系统，当前用 Analysis Space 作为可信资产边界。
 - 不尝试证明 SQL 语义绝对正确，复杂业务正确性由 semantic layer 和 eval 承担。
 
-## 面试讲法
+## 技术说明
 
 > 我把 SQL Guard 设计成执行路径的承重墙，而不是 prompt 的附属品。模型可以犯错，但执行器只认 GuardResult；HTTP 和 MCP 都走同一条 Guard + readonly executor 路径。所以这个系统的安全性不依赖模型是否听话。

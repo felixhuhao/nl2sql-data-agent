@@ -139,6 +139,6 @@ ClickHouse 未启用时，ClickHouse case 会标记为 skipped，而不是失败
 - 如果 `result_mismatch` 增多，先看 reference result match，再判断是 SQL 真错还是评测期望过窄。
 - 如果 `chart_mismatch` 增多，检查 recommender 和 OLAP intent。
 
-## 面试讲法
+## 技术说明
 
 > 我把 eval 做成了工程仪表盘，而不是几条手工样例。Mock eval 保证系统确定性回归，real eval 验证真实模型表现。失败会按 retrieval、generation、Guard、execution、chart 等阶段归因；真实 SQL 用执行结果做等价判断，避免把同义 SQL 误判失败。
