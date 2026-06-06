@@ -22,7 +22,7 @@ from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.api.session_store import SessionStore
-from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
+from backend.app.sql_guard.scope import build_default_guard_scope
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
