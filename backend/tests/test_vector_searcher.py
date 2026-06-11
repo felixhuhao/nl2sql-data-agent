@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from backend.app.config import DEFAULT_EMBEDDING_MODEL
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector import searcher
 from backend.app.metadata.vector.store import VectorIndexStatus, VectorSearchHit
@@ -19,10 +20,38 @@ def test_retrieve_vector_assets_returns_disabled_when_vector_disabled(monkeypatc
     assert result.index_status == "disabled"
 
 
+def test_retrieve_vector_assets_auto_uses_default_embedding_model_when_config_blank(monkeypatch):
+    fake_store = FakeVectorStore(status=VectorIndexStatus(status="missing", stale_reason="Missing index metadata."))
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(vector_enabled="auto", embedding_model=None))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+
+    result = searcher.retrieve_vector_assets("销售额")
+
+    assert result.vector_used is False
+    assert result.index_status == "missing"
+    assert result.stale_reason == "Missing index metadata."
+    assert fake_store.expected_model == DEFAULT_EMBEDDING_MODEL
+    assert fake_store.expected_dimension is None
+
+
+def test_retrieve_vector_assets_auto_falls_back_when_qdrant_unavailable(monkeypatch):
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(vector_enabled="auto"))
+    monkeypatch.setattr(
+        searcher,
+        "get_vector_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("Qdrant down")),
+    )
+
+    result = searcher.retrieve_vector_assets("销售额")
+
+    assert result.vector_used is False
+    assert result.index_status == "disabled"
+    assert result.stale_reason == "Vector index is unavailable: Qdrant down"
+
+
 def test_retrieve_vector_assets_returns_stale_status(monkeypatch):
     fake_store = FakeVectorStore(status=VectorIndexStatus(status="stale", stale_reason="old model"))
     monkeypatch.setattr(searcher, "get_settings", lambda: _settings())
-    monkeypatch.setattr(searcher, "get_embedding_dimension", lambda: 3)
     monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
 
     result = searcher.retrieve_vector_assets("销售额")
@@ -47,7 +76,6 @@ def test_retrieve_vector_assets_searches_ready_index_and_filters_threshold(monke
         },
     )
     monkeypatch.setattr(searcher, "get_settings", lambda: _settings(threshold=0.7))
-    monkeypatch.setattr(searcher, "get_embedding_dimension", lambda: 3)
     monkeypatch.setattr(searcher, "embed_text", lambda question: [0.1, 0.2, 0.3])
     monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
 
@@ -114,6 +142,63 @@ def test_search_values_prefers_exact_and_deduplicates(monkeypatch):
     }
     assert fake_store.list_value_calls == [_datasource_filter()]
     assert fake_store.search_calls == [("value_vectors", [0.1, 0.2, 0.3], 20, _datasource_filter())]
+
+
+def test_search_values_uses_default_embedding_model_when_config_blank(monkeypatch):
+    fake_store = FakeVectorStore(
+        status=VectorIndexStatus(status="ready"),
+        value_hits=[
+            VectorSearchHit(
+                "value",
+                "dim_regions.region_group:华东",
+                "华东",
+                0.0,
+                0.5,
+                {"table_name": "dim_regions", "column_name": "region_group", "value": "华东"},
+            )
+        ],
+    )
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(vector_enabled="auto", embedding_model=None))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+
+    hits = searcher.search_values("华东地区销售额", query_vector=[0.1, 0.2, 0.3])
+
+    assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source) for hit in hits] == [
+        ("dim_regions", "region_group", "华东", "exact")
+    ]
+
+
+def test_search_values_returns_empty_when_qdrant_unavailable(monkeypatch):
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(vector_enabled="auto"))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: (_ for _ in ()).throw(RuntimeError("Qdrant down")))
+
+    assert searcher.search_values("华东地区销售额") == []
+
+
+def test_search_values_keeps_exact_hits_when_embedding_fails(monkeypatch):
+    fake_store = FakeVectorStore(
+        status=VectorIndexStatus(status="ready"),
+        value_hits=[
+            VectorSearchHit(
+                "value",
+                "dim_regions.region_group:华东",
+                "华东",
+                0.0,
+                0.5,
+                {"table_name": "dim_regions", "column_name": "region_group", "value": "华东"},
+            )
+        ],
+    )
+    monkeypatch.setattr(searcher, "get_settings", lambda: _settings(vector_enabled="auto"))
+    monkeypatch.setattr(searcher, "get_vector_store", lambda: fake_store)
+    monkeypatch.setattr(searcher, "embed_text", lambda question: (_ for _ in ()).throw(RuntimeError("no model")))
+
+    hits = searcher.search_values("华东地区销售额")
+
+    assert [(hit.table_name, hit.column_name, hit.matched_value, hit.source) for hit in hits] == [
+        ("dim_regions", "region_group", "华东", "exact")
+    ]
+    assert fake_store.search_calls == []
 
 
 def test_search_values_ignores_numeric_exact_matches(monkeypatch):

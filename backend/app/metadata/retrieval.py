@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from backend.app.config import get_settings
+from backend.app.config import get_settings, vector_config_allows_attempt
 from backend.app.connectors.registry import get_datasource_dialect
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.hybrid import hybrid_merge
@@ -189,7 +189,7 @@ def retrieve_metadata_assets(
 def _should_use_vector(use_vector: bool | None) -> bool:
     if use_vector is not None:
         return use_vector
-    return get_settings().vector_enabled
+    return vector_config_allows_attempt(get_settings())
 
 
 def _match_table(profile: QueryProfile, table: MetaTable, table_matches: dict[str, dict]) -> None:

@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.app.config import get_settings
+from backend.app.config import embedding_model_name, get_settings, vector_config_allows_attempt
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
     DEFAULT_DATASOURCE,
@@ -59,10 +59,9 @@ def rebuild_vector_index(
     batch_size: int = DEFAULT_EMBED_BATCH_SIZE,
 ) -> VectorIndexBuildResult:
     settings = get_settings()
-    if not settings.vector_enabled:
-        raise RuntimeError("VECTOR_ENABLED must be true to rebuild the vector index.")
-    if not settings.embedding_model:
-        raise RuntimeError("EMBEDDING_MODEL is required to rebuild the vector index.")
+    if not vector_config_allows_attempt(settings):
+        raise RuntimeError("VECTOR_ENABLED must not be disabled to rebuild the vector index.")
+    effective_embedding_model = embedding_model_name(settings)
 
     create_metadata_schema(get_sqlite_engine())
     vector_store = vector_store or get_vector_store()
@@ -96,14 +95,14 @@ def rebuild_vector_index(
     built_at = datetime.now(UTC).isoformat()
     asset_counts = dict(Counter(row.asset_type for row in rows))
     metadata = VectorIndexMetadata(
-        embedding_model=settings.embedding_model,
+        embedding_model=effective_embedding_model,
         embedding_dimension=embedding_dimension,
         built_at=built_at,
         asset_counts=asset_counts,
     )
     vector_store.write_metadata(metadata)
     return VectorIndexBuildResult(
-        embedding_model=settings.embedding_model,
+        embedding_model=effective_embedding_model,
         embedding_dimension=embedding_dimension,
         built_at=built_at,
         asset_counts=asset_counts,

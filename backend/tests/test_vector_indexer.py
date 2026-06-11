@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from backend.app.config import DEFAULT_EMBEDDING_MODEL
 from backend.app.metadata.models import (
     Base,
     DEFAULT_DATASOURCE,
@@ -81,11 +82,19 @@ def test_rebuild_vector_index_requires_vector_enabled(monkeypatch):
         indexer.rebuild_vector_index(vector_store=FakeVectorStore())
 
 
-def test_rebuild_vector_index_requires_embedding_model(monkeypatch):
+def test_rebuild_vector_index_uses_default_embedding_model_when_config_blank(monkeypatch):
+    session = _session_with_assets()
+    vector_store = FakeVectorStore()
     monkeypatch.setattr(indexer, "get_settings", lambda: _settings(embedding_model=None))
+    monkeypatch.setattr(indexer, "get_sqlite_engine", lambda: session.get_bind())
+    monkeypatch.setattr(indexer, "sqlite_session", lambda: FakeSessionScope(session))
+    monkeypatch.setattr(indexer, "get_embedding_dimension", lambda: 3)
+    monkeypatch.setattr(indexer, "embed_texts", _fake_embed_texts)
 
-    with pytest.raises(RuntimeError, match="EMBEDDING_MODEL"):
-        indexer.rebuild_vector_index(vector_store=FakeVectorStore())
+    result = indexer.rebuild_vector_index(vector_store=vector_store, batch_size=20)
+
+    assert result.embedding_model == DEFAULT_EMBEDDING_MODEL
+    assert vector_store.metadata.embedding_model == DEFAULT_EMBEDDING_MODEL
 
 
 def _asset(assets, asset_type, asset_id):

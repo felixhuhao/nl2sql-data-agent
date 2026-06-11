@@ -89,7 +89,7 @@ question
 
 ### 向量召回
 
-开启 `VECTOR_ENABLED=true` 时，Qdrant 保存 table/column/metric/verified query/value 向量。Hybrid retrieval 将规则分和向量分合并，默认关闭以保持本地开发轻量。
+`VECTOR_ENABLED=auto` 时，Qdrant 可保存 table/column/metric/verified query/value 向量；当 `EMBEDDING_MODEL` 为空时，系统使用默认轻量多语言 embedding model。Qdrant、依赖或索引不可用时，系统自动回退到规则召回。Hybrid retrieval 将规则分和向量分合并；只有显式设置 `VECTOR_ENABLED=disabled` 才会强制关闭向量召回。
 
 ### Fallback
 

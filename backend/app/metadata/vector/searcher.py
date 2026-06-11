@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from backend.app.config import get_settings
+from backend.app.config import embedding_model_name, get_settings, vector_config_allows_attempt
 from backend.app.metadata.models import DEFAULT_DATASOURCE
-from backend.app.metadata.vector.embedding import embed_text, get_embedding_dimension
+from backend.app.metadata.vector.embedding import embed_text
 from backend.app.metadata.vector.store import VectorIndexStatus, VectorSearchHit, get_vector_store
 
 
@@ -46,27 +46,22 @@ def retrieve_vector_assets(
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> VectorRetrievalResult:
     settings = get_settings()
-    if not settings.vector_enabled:
+    if not vector_config_allows_attempt(settings):
         return VectorRetrievalResult(vector_used=False, index_status="disabled")
-    if not settings.embedding_model:
-        return VectorRetrievalResult(
-            vector_used=False,
-            index_status="disabled",
-            stale_reason="EMBEDDING_MODEL is not configured.",
-        )
+    expected_model = embedding_model_name(settings)
+    expected_dimension = getattr(settings, "embedding_dimension", None)
 
     try:
-        embedding_dimension = get_embedding_dimension()
         vector_store = get_vector_store()
         status = vector_store.status(
-            expected_model=settings.embedding_model,
-            expected_dimension=embedding_dimension,
+            expected_model=expected_model,
+            expected_dimension=expected_dimension,
         )
     except Exception as exc:
         return VectorRetrievalResult(
             vector_used=False,
-            index_status="error",
-            stale_reason=str(exc),
+            index_status="disabled",
+            stale_reason=f"Vector index is unavailable: {exc}",
         )
 
     if status.status != "ready":
@@ -107,17 +102,29 @@ def search_values(
     datasource_name: str = DEFAULT_DATASOURCE,
 ) -> list[ValueHit]:
     settings = get_settings()
-    vector_store = get_vector_store()
-    datasource_filter = _datasource_filter(datasource_name)
-    exact_hits = _exact_value_hits(question, vector_store.list_values(where=datasource_filter))
+    if not vector_config_allows_attempt(settings):
+        return []
+    try:
+        vector_store = get_vector_store()
+        datasource_filter = _datasource_filter(datasource_name)
+        exact_hits = _exact_value_hits(question, vector_store.list_values(where=datasource_filter))
+    except Exception:
+        return []
+
     vector_hits: list[ValueHit] = []
     if query_vector is None:
-        query_vector = embed_text(question)
+        try:
+            query_vector = embed_text(question)
+        except Exception:
+            return _deduplicate_value_hits(exact_hits)
     if query_vector is not None:
-        vector_hits = _vector_value_hits(
-            vector_store.search("value_vectors", query_vector, limit=limit, where=datasource_filter),
-            settings.value_vector_similarity_threshold,
-        )
+        try:
+            vector_hits = _vector_value_hits(
+                vector_store.search("value_vectors", query_vector, limit=limit, where=datasource_filter),
+                settings.value_vector_similarity_threshold,
+            )
+        except Exception:
+            vector_hits = []
     return _deduplicate_value_hits([*exact_hits, *vector_hits])
 
 

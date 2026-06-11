@@ -15,9 +15,9 @@ from backend.app.agent.olap_intent import describe_olap_intents
 from backend.app.agent.repair import RepairEvent, iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.agent.workflow import finalize_workflow
-from backend.app.config import get_settings
+from backend.app.config import deepseek_config_available, get_settings, llm_provider_mode
 from backend.app.core.deepseek_provider import DeepSeekProvider
-from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
+from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationResult
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
@@ -181,12 +181,41 @@ def iter_chat_events(
         )
 
 
+class AutoLLMProvider:
+    name = "auto"
+
+    def __init__(
+        self,
+        primary: LLMProvider | None = None,
+        fallback: LLMProvider | None = None,
+    ) -> None:
+        self._primary = primary or DeepSeekProvider()
+        self._fallback = fallback or MockLLMProvider()
+
+    def generate_sql(self, request) -> SQLGenerationResult:
+        try:
+            return self._primary.generate_sql(request)
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            logger.warning("DeepSeek provider unavailable; falling back to mock.", exc_info=True)
+            return self._fallback.generate_sql(request)
+        except ValueError as exc:
+            if "DEEPSEEK_API_KEY" not in str(exc):
+                raise
+            logger.warning("DeepSeek provider is not configured; falling back to mock.")
+            return self._fallback.generate_sql(request)
+
+
 def get_default_llm_provider() -> LLMProvider:
-    provider_name = get_settings().llm_provider.lower()
+    settings = get_settings()
+    provider_name = llm_provider_mode(settings)
     if provider_name == "mock":
         return MockLLMProvider()
     if provider_name == "deepseek":
         return DeepSeekProvider()
+    if provider_name == "auto":
+        if deepseek_config_available(settings):
+            return AutoLLMProvider()
+        return MockLLMProvider()
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider_name}")
 
 

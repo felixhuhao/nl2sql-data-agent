@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Sequence
 
-from backend.app.config import get_settings
+from backend.app.config import embedding_model_name, get_settings, vector_config_allows_attempt
 
 
 DEFAULT_DIMENSION_PROBE_TEXT = "销售额"
@@ -44,11 +44,9 @@ def get_embedding_dimension() -> int:
 
 def get_embedding_model():
     settings = get_settings()
-    if not settings.vector_enabled:
-        raise RuntimeError("Vector search is disabled. Set VECTOR_ENABLED=true to load embeddings.")
-    if not settings.embedding_model:
-        raise RuntimeError("EMBEDDING_MODEL is required when VECTOR_ENABLED=true.")
-    return _cached_embedding_model(settings.embedding_model)
+    if not vector_config_allows_attempt(settings):
+        raise RuntimeError("Vector search is disabled. Set VECTOR_ENABLED=auto or true to load embeddings.")
+    return _cached_embedding_model(embedding_model_name(settings))
 
 
 def clear_embedding_model_cache() -> None:
@@ -66,7 +64,7 @@ def _load_sentence_transformer(model_name: str):
     except ImportError as exc:
         raise RuntimeError(
             "sentence-transformers is required for vector search. "
-            "Install backend dependencies or set VECTOR_ENABLED=false."
+            "Install backend[vector] dependencies or set VECTOR_ENABLED=disabled."
         ) from exc
 
     return SentenceTransformer(model_name)

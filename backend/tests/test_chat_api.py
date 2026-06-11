@@ -666,8 +666,8 @@ def test_datasources_endpoint_lists_available_sources(monkeypatch):
 
 def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
     monkeypatch.setattr(
-        "backend.app.main.get_settings",
-        lambda: SimpleNamespace(llm_provider="deepseek"),
+        "backend.app.main.effective_llm_provider_name",
+        lambda: "deepseek",
     )
     client = TestClient(main.app)
 
@@ -679,6 +679,19 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
     api_response = client.get("/api/health")
     assert api_response.status_code == 200
     assert api_response.json() == {"status": "ok", "llm_provider": "deepseek"}
+
+
+def test_health_endpoint_reports_mock_when_auto_lacks_deepseek_key(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.main.effective_llm_provider_name",
+        lambda: "mock",
+    )
+    client = TestClient(main.app)
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "llm_provider": "mock"}
 
 
 def test_api_allows_local_vite_origin():
@@ -728,6 +741,76 @@ def test_iter_chat_events_uses_configured_deepseek_provider(monkeypatch):
 
     generate_step = next(event for event in events if event["data"].get("step") == "generate_sql")
     assert generate_step["data"]["provider"] == "deepseek"
+
+
+def test_iter_chat_events_auto_uses_deepseek_when_key_is_configured(monkeypatch):
+    class FakeDeepSeekProvider:
+        name = "deepseek"
+
+        def generate_sql(self, request):
+            assert request.schema_context == "# Schema Context"
+            return SQLGenerationResult(
+                sql="SELECT order_id, payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.api.chat.get_settings",
+        lambda: SimpleNamespace(llm_provider="auto", deepseek_api_key="test-key"),
+    )
+    monkeypatch.setattr("backend.app.api.chat.DeepSeekProvider", FakeDeepSeekProvider)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(
+            columns=["order_id", "payment_amount"],
+            rows=[["O00000001", 100]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单金额",
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    generate_step = next(event for event in events if event["data"].get("step") == "generate_sql")
+    assert generate_step["data"]["provider"] == "deepseek"
+
+
+def test_iter_chat_events_auto_falls_back_to_mock_when_deepseek_unavailable(monkeypatch):
+    class FailingDeepSeekProvider:
+        name = "deepseek"
+
+        def generate_sql(self, request):
+            raise httpx.ConnectError("DeepSeek is down")
+
+    monkeypatch.setattr(
+        "backend.app.api.chat.get_settings",
+        lambda: SimpleNamespace(llm_provider="auto", deepseek_api_key="test-key"),
+    )
+    monkeypatch.setattr("backend.app.api.chat.DeepSeekProvider", FailingDeepSeekProvider)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(
+            columns=["order_id", "payment_amount"],
+            rows=[["O00000001", 100]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单金额",
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    generate_step = next(event for event in events if event["data"].get("step") == "generate_sql")
+    assert generate_step["data"]["provider"] == "mock"
 
 
 def _parse_events(chunks) -> list[dict]:

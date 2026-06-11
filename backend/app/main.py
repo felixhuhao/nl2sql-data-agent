@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.chat import router as chat_router
 from backend.app.api.datasources import router as datasources_router
 from backend.app.api.metadata import router as metadata_router
-from backend.app.config import get_settings
+from backend.app.config import effective_llm_provider_name
 from backend.app.connectors.registry import get_datasource_manager
 
 
@@ -32,4 +32,4 @@ app.include_router(metadata_router)
 @app.get("/health")
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "llm_provider": get_settings().llm_provider}
+    return {"status": "ok", "llm_provider": effective_llm_provider_name()}
