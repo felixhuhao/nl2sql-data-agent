@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+
+from backend.app.connectors.registry import get_datasource_dialect
+from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector.searcher import (
     ValueHit,
     VectorRetrievalResult,
     retrieve_vector_assets,
     search_values,
 )
-from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.vector.store import VectorSearchHit
 
 
-RULE_WEIGHT = 0.6
-VECTOR_WEIGHT = 0.3
+RULE_WEIGHT = 0.3
+VECTOR_WEIGHT = 0.6
 PRIORITY_WEIGHT = 0.1
 MAX_RULE_SCORE = 30.0
+QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
 
 
 def hybrid_merge(
@@ -27,7 +34,11 @@ def hybrid_merge(
     metric_limit: int,
     verified_query_limit: int,
     datasource_name: str = DEFAULT_DATASOURCE,
+    allowed_tables: set[str] | None = None,
+    allowed_columns: set[tuple[str, str]] | None = None,
+    datasource_dialect: str | None = None,
 ) -> dict:
+    datasource_dialect = datasource_dialect or get_datasource_dialect(datasource_name)
     vector_result = retrieve_vector_assets(question, datasource_name=datasource_name)
     merged = {
         **rule_result,
@@ -60,6 +71,24 @@ def hybrid_merge(
             ),
             merged,
         )
+
+    _expand_metric_dependencies(
+        table_matches,
+        column_matches,
+        metric_matches,
+        merged,
+        allowed_tables=allowed_tables or set(),
+        allowed_columns=allowed_columns or set(),
+    )
+    _expand_verified_query_dependencies(
+        table_matches,
+        column_matches,
+        verified_query_matches,
+        merged,
+        allowed_tables=allowed_tables or set(),
+        allowed_columns=allowed_columns or set(),
+        datasource_dialect=datasource_dialect,
+    )
 
     merged["tables"] = _rank_with_hybrid_score(table_matches.values(), table_limit, "table")
     merged["columns"] = _rank_with_hybrid_score(column_matches.values(), column_limit, "column")
@@ -163,6 +192,145 @@ def _merge_value_hits(
         )
         _add_sources(result["retrieval_meta"]["sources"], f"table:{hit.table_name}", [reason])
         _add_sources(result["retrieval_meta"]["sources"], f"column:{hit.column_asset_id}", [reason])
+
+
+def _expand_metric_dependencies(
+    table_matches: dict[Any, dict],
+    column_matches: dict[Any, dict],
+    metric_matches: dict[Any, dict],
+    result: dict,
+    *,
+    allowed_tables: set[str],
+    allowed_columns: set[tuple[str, str]],
+) -> None:
+    for metric in metric_matches.values():
+        metric_name = metric.get("name")
+        if not metric_name:
+            continue
+        for table_name, column_name in _qualified_columns(str(metric.get("expression") or "")):
+            if not _dependency_allowed(table_name, column_name, allowed_tables, allowed_columns):
+                continue
+            _add_dependency_table(
+                table_matches,
+                table_name,
+                reason=f"metric_expression:{metric_name}",
+                source="metric_expansion",
+                result=result,
+                score=7,
+            )
+            _add_dependency_column(
+                column_matches,
+                table_name,
+                column_name,
+                reason=f"metric_expression:{metric_name}",
+                result=result,
+                score=7,
+            )
+        default_time_column = metric.get("default_time_column")
+        if default_time_column:
+            table_name, column_name = _split_qualified_name(str(default_time_column))
+            if table_name and column_name and _dependency_allowed(table_name, column_name, allowed_tables, allowed_columns):
+                _add_sources(
+                    result["retrieval_meta"]["sources"],
+                    f"column:{table_name}.{column_name}",
+                    [f"metric_default_time_column:{metric_name}"],
+                )
+
+
+def _expand_verified_query_dependencies(
+    table_matches: dict[Any, dict],
+    column_matches: dict[Any, dict],
+    verified_query_matches: dict[Any, dict],
+    result: dict,
+    *,
+    allowed_tables: set[str],
+    allowed_columns: set[tuple[str, str]],
+    datasource_dialect: str,
+) -> None:
+    for query in verified_query_matches.values():
+        query_id = query.get("id")
+        sql = str(query.get("sql") or "")
+        if not query_id or not sql:
+            continue
+        for table_name in _tables_from_sql(sql, dialect=datasource_dialect):
+            if allowed_tables and table_name not in allowed_tables:
+                continue
+            _add_dependency_table(
+                table_matches,
+                table_name,
+                reason=f"verified_query:{query_id}",
+                source="verified_query",
+                result=result,
+                score=10,
+            )
+        for table_name, column_name in _qualified_columns(sql):
+            if not _dependency_allowed(table_name, column_name, allowed_tables, allowed_columns):
+                continue
+            _add_dependency_column(
+                column_matches,
+                table_name,
+                column_name,
+                reason=f"verified_query:{query_id}",
+                result=result,
+                score=10,
+            )
+
+
+def _add_dependency_table(
+    table_matches: dict[Any, dict],
+    table_name: str,
+    *,
+    reason: str,
+    source: str,
+    result: dict,
+    score: float,
+) -> None:
+    if table_name not in table_matches:
+        table_matches[table_name] = {
+            "table_name": table_name,
+            "source": source,
+            "score": 0,
+            "reasons": [],
+        }
+    table_matches[table_name]["score"] += score
+    if reason not in table_matches[table_name]["reasons"]:
+        table_matches[table_name]["reasons"].append(reason)
+    _add_sources(result["retrieval_meta"]["sources"], f"table:{table_name}", [f"dependency:{reason}"])
+
+
+def _add_dependency_column(
+    column_matches: dict[Any, dict],
+    table_name: str,
+    column_name: str,
+    *,
+    reason: str,
+    result: dict,
+    score: float,
+) -> None:
+    key = (table_name, column_name)
+    if key not in column_matches:
+        column_matches[key] = {
+            "table_name": table_name,
+            "column_name": column_name,
+            "matched_aliases": [],
+            "score": 0,
+            "reasons": [],
+        }
+    column_matches[key]["score"] += score
+    if reason not in column_matches[key]["reasons"]:
+        column_matches[key]["reasons"].append(reason)
+    _add_sources(result["retrieval_meta"]["sources"], f"column:{table_name}.{column_name}", [f"dependency:{reason}"])
+
+
+def _dependency_allowed(
+    table_name: str,
+    column_name: str,
+    allowed_tables: set[str],
+    allowed_columns: set[tuple[str, str]],
+) -> bool:
+    if allowed_tables and table_name not in allowed_tables:
+        return False
+    return not (allowed_columns and (table_name, column_name) not in allowed_columns)
 
 
 def _safe_search_values(
@@ -304,8 +472,35 @@ def _asset_key(asset_type: str, payload: dict) -> str:
 
 
 def _split_column_asset_id(asset_id: str) -> tuple[str, str]:
-    table_name, _, column_name = asset_id.partition(".")
+    stripped_asset_id = _strip_datasource_prefix(asset_id)
+    table_name, _, column_name = stripped_asset_id.partition(".")
     return table_name, column_name
+
+
+def _split_qualified_name(value: str) -> tuple[str | None, str | None]:
+    table_name, separator, column_name = value.partition(".")
+    if not separator:
+        return None, None
+    return table_name, column_name
+
+
+def _strip_datasource_prefix(asset_id: str) -> str:
+    first, separator, rest = asset_id.partition(":")
+    if separator and "." not in first:
+        return rest
+    return asset_id
+
+
+def _qualified_columns(text: str) -> set[tuple[str, str]]:
+    return set(QUALIFIED_COLUMN_RE.findall(text))
+
+
+def _tables_from_sql(sql: str, *, dialect: str = "duckdb") -> set[str]:
+    try:
+        expression = sqlglot.parse_one(sql, read=dialect)
+    except SqlglotError:
+        return set()
+    return {table.name for table in expression.find_all(exp.Table)}
 
 
 def _business_priority(asset_type: str) -> float:

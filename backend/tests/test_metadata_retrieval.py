@@ -28,9 +28,9 @@ def test_retrieve_assets_matches_channel_aliases(monkeypatch):
 
     result = retrieval.retrieve_metadata_assets("按渠道统计最近30天销售额", use_vector=False)
 
-    assert _item_by_name(result["tables"], "dim_channels", "table_name")["source"] == "direct_match"
+    assert _item_by_name(result["tables"], "dim_channels", "table_name")["source"] == "lexical"
     assert _item_by_name(result["tables"], "fact_orders", "table_name")["source"] in {
-        "direct_match",
+        "lexical",
         "metric_expansion",
         "verified_query",
     }
@@ -55,6 +55,17 @@ def test_retrieve_assets_matches_sales_share_intent(monkeypatch):
     assert ("fact_orders", "payment_amount") in _column_keys(result)
 
 
+def test_retrieve_assets_matches_sales_share_concept_without_metric_label(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+
+    result = retrieval.retrieve_metadata_assets("各渠道营收占比", use_vector=False)
+
+    sales_amount = _item_by_name(result["metrics"], "sales_amount", "name")
+    assert "metric_sales_share_intent" in sales_amount["reasons"]
+    assert ("fact_orders", "payment_amount") in _column_keys(result)
+
+
 def test_retrieve_assets_matches_metric_label(monkeypatch):
     engine = _patch_retrieval_db(monkeypatch)
     _insert_demo_physical_metadata(engine)
@@ -76,6 +87,16 @@ def test_retrieve_assets_skips_metric_time_column_without_time_intent(monkeypatc
     assert ("dim_date", "date_value") not in _column_keys(result)
     assert all("metric_time_column:sales_amount" not in table["reasons"] for table in result["tables"])
     assert all("metric_time_column:sales_amount" not in column["reasons"] for column in result["columns"])
+
+
+def test_retrieve_assets_preserves_standalone_recent_time_intent(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+
+    result = retrieval.retrieve_metadata_assets("最近销售额", use_vector=False)
+
+    assert "dim_date" in _names(result["tables"], "table_name")
+    assert ("dim_date", "date_value") in _column_keys(result)
 
 
 def test_retrieve_assets_matches_sample_values(monkeypatch):
@@ -188,6 +209,20 @@ def test_retrieve_assets_uses_vector_before_fallback(monkeypatch):
     assert result["fallback_used"] is False
     assert result["tables"] == []
     assert result["metrics"][0]["name"] == "sales_amount"
+
+
+def test_query_profile_uses_cjk_ngrams_without_noisy_unigrams():
+    terms = retrieval._query_profile("按渠道统计销售额").terms
+
+    assert {"渠道", "销售", "销售额"}.issubset(terms)
+    assert "渠" not in terms
+    assert "销" not in terms
+
+
+def test_ascii_term_variants_cover_common_morphology():
+    terms = retrieval._query_profile("branches updated ranking sales").terms
+
+    assert {"branch", "update", "rank", "sale"}.issubset(terms)
 
 
 def _patch_retrieval_db(monkeypatch):
