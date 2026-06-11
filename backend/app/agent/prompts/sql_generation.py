@@ -101,7 +101,8 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
             "Generate SQL valid for the datasource dialect above.",
             "Fix the SQL using only the provided schema context.",
             "Follow any schema-specific SQL generation guidance from the schema context.",
-            "If a column is not allowed or missing, replace it with the semantically closest allowed column from the schema context; keep user-facing dimensions readable and avoid replacing names with *_key columns.",
+            "If a column is not allowed or missing, replace it only with an allowed column that has the same business role based on schema labels, descriptions, tags, aliases, Metric Definitions, or SQL Generation Guidance.",
+            "If no safe same-role replacement exists, remove the invalid projection or filter and preserve the rest of the query rather than inventing a column; keep user-facing dimensions readable and avoid replacing names with *_key columns.",
             _repair_return_instruction(request),
         ]
     )
@@ -157,6 +158,19 @@ def _repair_return_instruction(request: SQLGenerationRequest) -> str:
             "Do not return JSON.",
         ]
     )
+
+
+def _schema_context_guide() -> list[str]:
+    return [
+        "Schema context reading guide:",
+        "- The Analysis Space section lists the only allowed datasource, operations, tables, and metrics.",
+        "- In the Tables section, lines like '- table_name: ...' define available tables; indented lines like '- column_name (TYPE) [tags] - ...' define columns for the most recent table.",
+        "- Join Relationships use 'source_table.source_column -> target_table.target_column' to describe allowed join paths and cardinality.",
+        "- Metric Definitions use 'label (metric_name) = expression'; use the expression for the calculation and metric_name as the SELECT alias.",
+        "- SQL Generation Guidance contains schema-specific rules that override generic examples when both apply.",
+        "- Verified Queries are vetted examples; reuse their SQL only when the user's request clearly asks for the same metric, dimensions, filters, and time range.",
+        "- If a Verified Query does not clearly match, generate fresh SQL from the schema context and do not carry over filters or time ranges from the example.",
+    ]
 
 
 def _few_shot_examples() -> list[str]:
@@ -219,6 +233,8 @@ def _system_prompt(dialect: str = "duckdb") -> str:
             "For dimension value lists, ORDER BY the displayed name/label column for deterministic results.",
             "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
             "Follow schema-specific SQL generation guidance in the schema context when present.",
+            "",
+            *_schema_context_guide(),
             "",
             *_few_shot_examples(),
         ]

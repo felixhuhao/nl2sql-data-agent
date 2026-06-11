@@ -32,6 +32,46 @@ def test_build_query_explainability_extracts_assets_and_date_rule():
     assert result["guard_result"]["allowed"] is True
 
 
+def test_build_query_explainability_matches_additional_relative_date_rules():
+    result = build_query_explainability(
+        sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders LIMIT 500",
+        question="查询最近7天销售额",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql="SELECT 1 LIMIT 500",
+        ),
+    )
+
+    assert result["date_interpretation"] == {
+        "matched": True,
+        "dataset_current_date": "2025-12-31",
+        "phrase": "最近7天",
+        "start": "2025-12-25",
+        "end": "2025-12-31",
+    }
+
+
+def test_build_query_explainability_matches_english_relative_date_rule():
+    result = build_query_explainability(
+        sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders LIMIT 500",
+        question="show revenue for last 30 days",
+        guard_result=GuardResult(
+            allowed=True,
+            stage="passed",
+            normalized_sql="SELECT 1 LIMIT 500",
+        ),
+    )
+
+    assert result["date_interpretation"] == {
+        "matched": True,
+        "dataset_current_date": "2025-12-31",
+        "phrase": "last 30 days",
+        "start": "2025-12-02",
+        "end": "2025-12-31",
+    }
+
+
 def test_build_query_explainability_handles_rejected_sql():
     result = build_query_explainability(
         sql="DELETE FROM fact_orders",

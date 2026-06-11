@@ -28,6 +28,16 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "do not substitute surrogate *_key columns" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
+    assert "Schema context reading guide:" in system_prompt
+    assert "The Analysis Space section lists the only allowed datasource" in system_prompt
+    assert "lines like '- table_name: ...' define available tables" in system_prompt
+    assert "indented lines like '- column_name (TYPE) [tags] - ...' define columns" in system_prompt
+    assert "source_table.source_column -> target_table.target_column" in system_prompt
+    assert "label (metric_name) = expression" in system_prompt
+    assert "SQL Generation Guidance contains schema-specific rules" in system_prompt
+    assert "Verified Queries are vetted examples" in system_prompt
+    assert "same metric, dimensions, filters, and time range" in system_prompt
+    assert "do not carry over filters or time ranges from the example" in system_prompt
     assert "Few-shot examples:" in system_prompt
     assert "illustrative only" in system_prompt
     assert "Example 1 - OUTPUT_FORMAT=sql" in system_prompt
@@ -63,6 +73,25 @@ def test_sql_generation_prompt_few_shot_examples_are_not_demo_schema_specific():
     assert "dim_products" not in system_prompt
     assert "fact_orders" not in system_prompt
     assert "fact_order_items" not in system_prompt
+
+
+def test_sql_generation_prompt_schema_context_guide_is_schema_neutral():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="List records",
+            schema_context="# Schema Context",
+        )
+    )
+
+    system_prompt = messages[0]["content"]
+    guide = system_prompt.split("Schema context reading guide:", maxsplit=1)[1].split("Few-shot examples:", maxsplit=1)[0]
+    assert "table_name" in guide
+    assert "column_name" in guide
+    assert "metric_name" in guide
+    assert "source_table.source_column -> target_table.target_column" in guide
+    assert "fact_orders" not in guide
+    assert "dim_products" not in guide
+    assert "fact_order_items" not in guide
 
 
 def test_sql_generation_prompt_uses_clickhouse_dialect_instructions():
@@ -164,7 +193,11 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
     assert "Normalized SQL:" in repair_message
     assert "aggregate at the correct grain" in repair_message
     assert "schema-specific SQL generation guidance" in repair_message
-    assert "semantically closest allowed column" in repair_message
+    assert "same business role" in repair_message
+    assert "schema labels, descriptions, tags, aliases" in repair_message
+    assert "If no safe same-role replacement exists" in repair_message
+    assert "rather than inventing a column" in repair_message
+    assert "semantically closest allowed column" not in repair_message
     assert "avoid replacing names with *_key columns" in repair_message
     assert "OUTPUT_FORMAT=sql" in repair_message
     assert "Return corrected SQL only." in repair_message

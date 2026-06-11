@@ -8,6 +8,7 @@ from sqlglot.errors import SqlglotError
 
 from backend.app.config import get_settings
 from backend.app.connectors.registry import get_datasource_dialect
+from backend.app.core.date_rules import build_relative_date_rules
 from backend.app.core.db import get_sqlite_engine, sqlite_session
 from backend.app.metadata.models import (
     DEFAULT_DATASOURCE,
@@ -539,12 +540,7 @@ def build_explainability_context(datasource_name: str = DEFAULT_DATASOURCE) -> d
             "datasource_dialect": datasource_dialect,
             "date_rule": {
                 "dataset_current_date": settings.dataset_current_date,
-                "relative_rules": {
-                    "最近30天": {
-                        "start": "2025-12-02",
-                        "end": "2025-12-31",
-                    }
-                },
+                "relative_rules": build_relative_date_rules(settings.dataset_current_date),
             },
             "tables": [_table_explainability(session, table) for table in tables],
             "metrics": [_metric_payload(metric) for metric in metrics],
@@ -605,7 +601,8 @@ def _render_schema_context(
         *DIALECT_CONTEXT_HINTS.get(datasource_dialect, DIALECT_CONTEXT_HINTS["duckdb"]),
         "",
         f"dataset_current_date = {dataset_current_date}",
-        "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31",
+        "relative_date_rules:",
+        *_relative_date_rule_lines(dataset_current_date),
         "",
     ]
     if generation_guidance:
@@ -634,6 +631,13 @@ def _render_schema_context(
                 ]
             )
     return "\n".join(lines)
+
+
+def _relative_date_rule_lines(dataset_current_date: str) -> list[str]:
+    return [
+        f"- {phrase} = {date_range['start']} 到 {date_range['end']}"
+        for phrase, date_range in build_relative_date_rules(dataset_current_date).items()
+    ]
 
 
 def _schema_generation_guidance(

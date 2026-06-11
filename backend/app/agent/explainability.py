@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from typing import Any
 
 import sqlglot
@@ -8,6 +7,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from backend.app.config import get_settings
+from backend.app.core.date_rules import match_relative_date_rule
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import list_relationships
 from backend.app.sql_guard.models import GuardResult
@@ -75,16 +75,14 @@ def _matched_join_paths(matched_tables: list[str], datasource_name: str = DEFAUL
 
 def _date_interpretation(question: str) -> dict:
     end = get_settings().dataset_current_date
-    if "最近30天" not in question:
+    date_range = match_relative_date_rule(question, end)
+    if date_range is None:
         return {
             "matched": False,
             "dataset_current_date": end,
         }
-    start = (datetime.strptime(end, "%Y-%m-%d").date() - timedelta(days=29)).isoformat()
     return {
         "matched": True,
-        "phrase": "最近30天",
         "dataset_current_date": end,
-        "start": start,
-        "end": end,
+        **date_range,
     }

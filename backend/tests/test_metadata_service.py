@@ -36,6 +36,11 @@ def test_build_schema_context_reads_runtime_assets_from_db(monkeypatch):
     assert "ignored_metric" not in schema_context
     assert "dim_products.name AS product_name" not in schema_context
     assert "fact_order_items.item_amount" not in schema_context
+    assert "relative_date_rules:" in schema_context
+    assert "- 最近7天 = 2025-12-25 到 2025-12-31" in schema_context
+    assert "- 最近30天 = 2025-12-02 到 2025-12-31" in schema_context
+    assert "- 本月 = 2025-12-01 到 2025-12-31" in schema_context
+    assert "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31" not in schema_context
 
 
 def test_build_explainability_context_reads_runtime_assets_from_db(monkeypatch):
@@ -50,6 +55,18 @@ def test_build_explainability_context_reads_runtime_assets_from_db(monkeypatch):
     assert context["metrics"][0]["allowed_dimensions"] == ["date"]
     assert context["verified_queries"][0]["id"] == "custom_query"
     assert context["verified_queries"][0]["tags"] == ["custom"]
+    assert context["date_rule"]["relative_rules"]["最近7天"] == {
+        "start": "2025-12-25",
+        "end": "2025-12-31",
+    }
+    assert context["date_rule"]["relative_rules"]["最近30天"] == {
+        "start": "2025-12-02",
+        "end": "2025-12-31",
+    }
+    assert context["date_rule"]["relative_rules"]["本月"] == {
+        "start": "2025-12-01",
+        "end": "2025-12-31",
+    }
 
 
 def test_metadata_api_runtime_assets_read_from_db(monkeypatch):
