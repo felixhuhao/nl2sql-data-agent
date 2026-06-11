@@ -17,7 +17,8 @@ def test_sql_generation_prompt_contains_core_constraints():
     )
 
     system_prompt = messages[0]["content"]
-    assert "Return SQL only" in system_prompt
+    assert "Follow the Output format section exactly" in system_prompt
+    assert "Return SQL only unless" not in system_prompt
     assert "DuckDB SQL dialect" in system_prompt
     assert "single SELECT statement" in system_prompt
     assert "Analysis Space" in system_prompt
@@ -31,8 +32,12 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "fact_order_items.item_amount" not in system_prompt
     assert "fact_orders.payment_amount" not in system_prompt
     assert "sales_amount, order_count, or aov" not in system_prompt
-    assert "dim_products.name AS product_name" in messages[1]["content"]
-    assert "SUM(fact_order_items.item_amount)" in messages[1]["content"]
+    user_prompt = messages[1]["content"]
+    assert "OUTPUT_FORMAT=sql" in user_prompt
+    assert "Return one SQL SELECT statement and nothing else." in user_prompt
+    assert "Do not return JSON." in user_prompt
+    assert "dim_products.name AS product_name" in user_prompt
+    assert "SUM(fact_order_items.item_amount)" in user_prompt
 
 
 def test_sql_generation_prompt_uses_clickhouse_dialect_instructions():
@@ -65,6 +70,28 @@ def test_sql_generation_prompt_includes_schema_context_and_question():
     assert messages[1]["role"] == "user"
     assert "# Schema Context" in messages[1]["content"]
     assert "查询订单" in messages[1]["content"]
+    assert "OUTPUT_FORMAT=sql" in messages[1]["content"]
+
+
+def test_sql_generation_prompt_uses_json_output_format_for_prior_sql():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="换成订单数",
+            schema_context="# Schema Context",
+            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+            prior_summary="Previous query grouped by day.",
+        )
+    )
+
+    user_prompt = messages[1]["content"]
+    assert "Conversation context:" in user_prompt
+    assert "Previous query grouped by day." in user_prompt
+    assert "Conversation follow-up rules:" in user_prompt
+    assert "OUTPUT_FORMAT=json" in user_prompt
+    assert "Return one JSON object and nothing else." in user_prompt
+    assert '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }' in user_prompt
+    assert "change_kind must be one of: dimension, filter, metric, time, none." in user_prompt
+    assert "OUTPUT_FORMAT=sql" not in user_prompt
 
 
 def test_sql_generation_prompt_includes_olap_hint():
@@ -100,6 +127,8 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
 
     assert [message["role"] for message in messages] == ["system", "user", "assistant", "user"]
     assert messages[2]["content"] == "SELECT p.category, SUM(o.payment_amount) FROM fact_orders o"
+    assert "OUTPUT_FORMAT=sql" not in messages[1]["content"]
+    assert sum(message["content"].count("Output format:") for message in messages) == 1
     repair_message = messages[3]["content"]
     assert "Attempt: 1" in repair_message
     assert "Error stage: sql_guard" in repair_message
@@ -112,7 +141,38 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
     assert "schema-specific SQL generation guidance" in repair_message
     assert "semantically closest allowed column" in repair_message
     assert "avoid replacing names with *_key columns" in repair_message
+    assert "OUTPUT_FORMAT=sql" in repair_message
     assert "Return corrected SQL only." in repair_message
+    assert "Do not return JSON." in repair_message
+
+
+def test_sql_generation_repair_prompt_uses_json_format_for_prior_sql():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="换成订单数",
+            schema_context="# Schema Context",
+            repair=SQLRepairContext(
+                attempt=1,
+                original_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+                error_stage="sql_guard",
+                error_kind="missing_carried_filter",
+                error_reason="Missing carried filter channel = 'online'.",
+            ),
+            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders WHERE channel = 'online'",
+            prior_summary="Previous query filtered to online channel.",
+        )
+    )
+
+    repair_message = messages[3]["content"]
+    assert "OUTPUT_FORMAT=json" not in messages[1]["content"]
+    assert sum(message["content"].count("Output format:") for message in messages) == 1
+    assert "Conversation context:" in repair_message
+    assert "Previous query filtered to online channel." in repair_message
+    assert "missing filter" in repair_message
+    assert "OUTPUT_FORMAT=json" in repair_message
+    assert "Return one JSON object and nothing else." in repair_message
+    assert "is_follow_up must be true only when the new question refines the previous query." in repair_message
+    assert "OUTPUT_FORMAT=sql" not in repair_message
 
 
 def test_sql_generation_repair_prompt_guides_product_name_repair():

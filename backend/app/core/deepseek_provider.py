@@ -9,7 +9,6 @@ from backend.app.config import get_settings
 from backend.app.core.llm_provider import (
     SQLGenerationRequest,
     SQLGenerationResult,
-    infer_followup_change_kind,
     parse_sql_generation_content,
 )
 
@@ -39,12 +38,9 @@ class DeepSeekProvider:
         response = self._post_chat_completion(request)
         response.raise_for_status()
         content = _extract_message_content(response.json())
-        fallback_is_follow_up, fallback_change_kind = infer_followup_change_kind(request.question)
         sql, is_follow_up, change_kind = parse_sql_generation_content(
             content,
             expect_structured=request.prior_sql is not None,
-            fallback_is_follow_up=request.prior_sql is not None and fallback_is_follow_up,
-            fallback_change_kind=fallback_change_kind,
         )
         return SQLGenerationResult(
             sql=sql,

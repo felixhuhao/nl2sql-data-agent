@@ -49,6 +49,7 @@ def test_deepseek_provider_posts_chat_completion_request():
     assert client.requests[0]["json"]["stream"] is False
     assert client.requests[0]["json"]["messages"][0]["role"] == "system"
     assert client.requests[0]["json"]["messages"][1]["role"] == "user"
+    assert "OUTPUT_FORMAT=sql" in client.requests[0]["json"]["messages"][1]["content"]
     timeout = client.requests[0]["timeout"]
     assert timeout.connect == 10.0
     assert timeout.read == 30.0
@@ -105,42 +106,37 @@ def test_deepseek_provider_parses_followup_json():
     assert result.sql == "SELECT COUNT(*) AS order_count FROM fact_orders"
     assert result.is_follow_up is True
     assert result.change_kind == "metric"
+    assert "OUTPUT_FORMAT=json" in client.requests[0]["json"]["messages"][1]["content"]
 
 
-def test_deepseek_provider_infers_followup_when_structured_response_is_bare_sql():
+def test_deepseek_provider_rejects_bare_sql_when_structured_response_is_required():
     client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
     provider = DeepSeekProvider(api_key="test-key", http_client=client)
 
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="换成订单数",
-            schema_context="# Schema Context",
-            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
-            prior_summary="Previous query",
+    with pytest.raises(ValueError, match="JSON object"):
+        provider.generate_sql(
+            SQLGenerationRequest(
+                question="换成订单数",
+                schema_context="# Schema Context",
+                prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+                prior_summary="Previous query",
+            )
         )
-    )
-
-    assert result.sql == "SELECT order_id FROM fact_orders"
-    assert result.is_follow_up is True
-    assert result.change_kind == "metric"
 
 
-def test_deepseek_provider_salvages_unrelated_bare_sql_to_fresh_with_prior_context():
+def test_deepseek_provider_rejects_bare_sql_for_standalone_turn_with_prior_context():
     client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
     provider = DeepSeekProvider(api_key="test-key", http_client=client)
 
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="列出订单",
-            schema_context="# Schema Context",
-            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
-            prior_summary="Previous query",
+    with pytest.raises(ValueError, match="JSON object"):
+        provider.generate_sql(
+            SQLGenerationRequest(
+                question="列出订单",
+                schema_context="# Schema Context",
+                prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+                prior_summary="Previous query",
+            )
         )
-    )
-
-    assert result.sql == "SELECT order_id FROM fact_orders"
-    assert result.is_follow_up is False
-    assert result.change_kind == "none"
 
 
 def test_deepseek_provider_rejects_missing_message_content():

@@ -27,7 +27,9 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
     if request.olap_hint:
         user_content = f"{user_content}\n\nOLAP SQL guidance:\n{request.olap_hint}"
     if request.prior_sql:
-        user_content = f"{user_content}\n\n{_conversation_output_contract()}"
+        user_content = f"{user_content}\n\n{_conversation_followup_rules()}"
+    if request.repair is None:
+        user_content = f"{user_content}\n\n{_output_format_contract(request)}"
 
     user_message = {
         "role": "user",
@@ -106,10 +108,10 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
     return "\n".join(lines)
 
 
-def _conversation_output_contract() -> str:
+def _conversation_followup_rules() -> str:
     return "\n".join(
         [
-            "Conversation follow-up output contract:",
+            "Conversation follow-up rules:",
             "First decide whether the new question refines the previous query.",
             "If it is not a follow-up, ignore the previous query and answer standalone.",
             "If it is a follow-up, return a full standalone SQL preserving prior dimensions, filters, metric, and time window unless the user changes them.",
@@ -117,21 +119,44 @@ def _conversation_output_contract() -> str:
             "For change_kind=filter, add or change only the filter; keep previous dimensions, metric, and time window.",
             "For change_kind=metric, change only the metric; keep previous dimensions, filters, and time window.",
             "For change_kind=time, change only the time window; keep previous dimensions, filters, and metric.",
-            "The output MUST be JSON even if the SQL is simple; never return bare SQL in follow-up mode.",
-            "Return a single JSON object and nothing else:",
-            '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }',
-            "change_kind must be one of: dimension, filter, metric, time, none.",
+        ]
+    )
+
+
+def _output_format_contract(request: SQLGenerationRequest) -> str:
+    if request.prior_sql:
+        return "\n".join(
+            [
+                "Output format:",
+                "OUTPUT_FORMAT=json",
+                "Return one JSON object and nothing else.",
+                '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }',
+                "sql must be a full standalone SELECT statement.",
+                "is_follow_up must be true only when the new question refines the previous query.",
+                "change_kind must be one of: dimension, filter, metric, time, none.",
+            ]
+        )
+    return "\n".join(
+        [
+            "Output format:",
+            "OUTPUT_FORMAT=sql",
+            "Return one SQL SELECT statement and nothing else.",
+            "Do not return JSON.",
         ]
     )
 
 
 def _repair_return_instruction(request: SQLGenerationRequest) -> str:
     if request.prior_sql:
-        return (
-            "Return a single JSON object and nothing else, preserving the original "
-            "is_follow_up/change_kind semantics when applicable."
-        )
-    return "Return corrected SQL only."
+        return _output_format_contract(request)
+    return "\n".join(
+        [
+            "Output format:",
+            "OUTPUT_FORMAT=sql",
+            "Return corrected SQL only.",
+            "Do not return JSON.",
+        ]
+    )
 
 
 def _system_prompt(dialect: str = "duckdb") -> str:
@@ -139,7 +164,7 @@ def _system_prompt(dialect: str = "duckdb") -> str:
     return "\n".join(
         [
             "You generate SQL for a governed NL2SQL data agent.",
-            "Return SQL only unless the user prompt explicitly asks for the conversation follow-up JSON object. Do not include markdown, comments, prose, or explanation.",
+            "Follow the Output format section exactly. For OUTPUT_FORMAT=sql return only SQL; for OUTPUT_FORMAT=json return only the requested JSON object. Do not include markdown, comments, prose, or explanation.",
             *dialect_lines,
             "Only generate a single SELECT statement.",
             "Use only tables and columns present in the provided schema context.",
