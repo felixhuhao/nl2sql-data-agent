@@ -159,6 +159,46 @@ def _repair_return_instruction(request: SQLGenerationRequest) -> str:
     )
 
 
+def _few_shot_examples() -> list[str]:
+    return [
+        "Few-shot examples:",
+        "These examples are illustrative only; do not copy example table, column, or metric names unless they appear in the current schema context.",
+        "",
+        "Example 1 - OUTPUT_FORMAT=sql with a metric alias:",
+        'Question: "Show total value by category"',
+        "Schema excerpt: example_events(category, event_value); metric total_value = SUM(example_events.event_value)",
+        "Output:",
+        "SELECT e.category AS category, SUM(e.event_value) AS total_value",
+        "FROM example_events AS e",
+        "GROUP BY e.category",
+        "ORDER BY total_value DESC",
+        "LIMIT 10",
+        "",
+        "Example 2 - OUTPUT_FORMAT=json for a conversation follow-up:",
+        (
+            "Previous SQL: SELECT e.category AS category, SUM(e.event_value) AS total_value "
+            "FROM example_events AS e GROUP BY e.category"
+        ),
+        'New question: "Only completed records"',
+        "Output:",
+        (
+            '{"sql": "SELECT e.category AS category, SUM(e.event_value) AS total_value '
+            "FROM example_events AS e WHERE e.status = 'completed' GROUP BY e.category "
+            'ORDER BY total_value DESC LIMIT 10", "is_follow_up": true, "change_kind": "filter"}'
+        ),
+        "",
+        "Example 3 - repair when OUTPUT_FORMAT=sql:",
+        "Failed SQL: SELECT e.category_name FROM example_events AS e",
+        "Error: column example_events.category_name is not allowed; column example_events.category is allowed.",
+        "Output:",
+        "SELECT e.category AS category",
+        "FROM example_events AS e",
+        "ORDER BY e.category",
+        "LIMIT 20",
+        "If a repair prompt uses OUTPUT_FORMAT=json, return the corrected standalone SQL in the JSON sql field.",
+    ]
+
+
 def _system_prompt(dialect: str = "duckdb") -> str:
     dialect_lines = DIALECT_INSTRUCTIONS.get(dialect, DIALECT_INSTRUCTIONS["duckdb"])
     return "\n".join(
@@ -179,5 +219,7 @@ def _system_prompt(dialect: str = "duckdb") -> str:
             "For dimension value lists, ORDER BY the displayed name/label column for deterministic results.",
             "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
             "Follow schema-specific SQL generation guidance in the schema context when present.",
+            "",
+            *_few_shot_examples(),
         ]
     )

@@ -28,6 +28,11 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "do not substitute surrogate *_key columns" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
+    assert "Few-shot examples:" in system_prompt
+    assert "illustrative only" in system_prompt
+    assert "Example 1 - OUTPUT_FORMAT=sql" in system_prompt
+    assert "Example 2 - OUTPUT_FORMAT=json" in system_prompt
+    assert "Example 3 - repair" in system_prompt
     assert "dim_products.name AS product_name" not in system_prompt
     assert "fact_order_items.item_amount" not in system_prompt
     assert "fact_orders.payment_amount" not in system_prompt
@@ -38,6 +43,26 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Do not return JSON." in user_prompt
     assert "dim_products.name AS product_name" in user_prompt
     assert "SUM(fact_order_items.item_amount)" in user_prompt
+
+
+def test_sql_generation_prompt_few_shot_examples_are_not_demo_schema_specific():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="List records",
+            schema_context="# Schema Context",
+        )
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "example_events" in system_prompt
+    assert "do not copy example table, column, or metric names" in system_prompt
+    assert '{"sql": "SELECT e.category AS category' in system_prompt
+    assert '"is_follow_up": true' in system_prompt
+    assert '"change_kind": "filter"' in system_prompt
+    assert "Failed SQL: SELECT e.category_name" in system_prompt
+    assert "dim_products" not in system_prompt
+    assert "fact_orders" not in system_prompt
+    assert "fact_order_items" not in system_prompt
 
 
 def test_sql_generation_prompt_uses_clickhouse_dialect_instructions():
