@@ -45,18 +45,26 @@ def test_build_olap_hint_includes_metric_context_and_intent_guidance():
     assert "dimension_col AS dimension_name" in hint
     assert "product_name" not in hint
     assert "fact_order_items" not in hint
+    assert "fact_orders" not in hint
+    assert "payment_amount" not in hint
+    assert "dim_date" not in hint
     assert hint.count("LAG(metric_value, 12) OVER") == 1
     assert "prev_year_value" in hint
     assert "For ClickHouse monthly periods use toStartOfMonth(date_column)." in hint
-    assert "toStartOfMonth(dd.date_value)" in hint
+    assert "toStartOfMonth(date_column)" in hint
+    assert "required_schema_joins" in hint
+    assert "metric_expression AS metric_value" in hint
 
 
 def test_build_olap_hint_uses_duckdb_month_expression():
     hint = build_olap_hint(["yoy_mom"], datasource_dialect="duckdb")
 
-    assert "DATE_TRUNC('month', dd.date_value)" in hint
+    assert "DATE_TRUNC('month', date_column)" in hint
     assert "For DuckDB monthly periods use DATE_TRUNC('month', date_column)." in hint
     assert "toStartOfMonth" not in hint
+    assert "fact_orders" not in hint
+    assert "payment_amount" not in hint
+    assert "dim_date" not in hint
 
 
 def test_build_olap_hint_includes_moving_average_pattern():
@@ -65,6 +73,12 @@ def test_build_olap_hint_includes_moving_average_pattern():
     assert "Moving average SQL guidance:" in hint
     assert "AVG(metric_value) OVER" in hint
     assert "ROWS BETWEEN 6 PRECEDING AND CURRENT ROW" in hint
+    assert "date_column AS period" in hint
+    assert "metric_expression AS metric_value" in hint
+    assert "required_schema_joins" in hint
+    assert "fact_orders" not in hint
+    assert "payment_amount" not in hint
+    assert "dim_date" not in hint
 
 
 def test_describe_olap_intents_formats_empty_and_detected_intents():

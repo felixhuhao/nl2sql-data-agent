@@ -147,7 +147,8 @@ def _yoy_mom_hint(datasource_dialect: str) -> str:
             "YoY / MoM SQL guidance:",
             "Key rules:",
             "- Use a subquery: aggregate by period first, then apply LAG() in the outer query.",
-            "- Join fact_orders.date_key to dim_date.date_key when using business dates.",
+            "- Choose the date column, metric expression, source tables, and joins from the schema context.",
+            "- When a business date dimension is present, use the join relationship provided in the schema context.",
             month_rule,
             "- MoM uses LAG(value, 1); monthly YoY uses LAG(value, 12); quarterly YoY uses LAG(value, 4).",
             "- Use NULLIF(previous_value, 0) for percentage change division.",
@@ -165,9 +166,9 @@ def _yoy_mom_hint(datasource_dialect: str) -> str:
             "  FROM (",
             "    SELECT",
             f"      {month_expr} AS period,",
-            "      SUM(fo.payment_amount) AS metric_value",
-            "    FROM fact_orders fo",
-            "    JOIN dim_date dd ON fo.date_key = dd.date_key",
+            "      metric_expression AS metric_value",
+            "    FROM source_tables",
+            "    JOIN required_schema_joins",
             "    GROUP BY period",
             "  ) base",
             ") compared",
@@ -190,10 +191,10 @@ def _moving_avg_hint() -> str:
             "  metric_value,",
             "  AVG(metric_value) OVER (ORDER BY period ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma_7d",
             "FROM (",
-            "  SELECT dd.date_value AS period, SUM(fo.payment_amount) AS metric_value",
-            "  FROM fact_orders fo",
-            "  JOIN dim_date dd ON fo.date_key = dd.date_key",
-            "  GROUP BY dd.date_value",
+            "  SELECT date_column AS period, metric_expression AS metric_value",
+            "  FROM source_tables",
+            "  JOIN required_schema_joins",
+            "  GROUP BY date_column",
             ") base",
             "ORDER BY period",
         ]
@@ -202,8 +203,8 @@ def _moving_avg_hint() -> str:
 
 def _month_period_expr(datasource_dialect: str) -> str:
     if datasource_dialect == "clickhouse":
-        return "toStartOfMonth(dd.date_value)"
-    return "DATE_TRUNC('month', dd.date_value)"
+        return "toStartOfMonth(date_column)"
+    return "DATE_TRUNC('month', date_column)"
 
 
 def _month_period_rule(datasource_dialect: str) -> str:
