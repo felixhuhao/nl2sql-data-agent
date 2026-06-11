@@ -6,7 +6,13 @@ def test_sql_generation_prompt_contains_core_constraints():
     messages = build_sql_generation_messages(
         SQLGenerationRequest(
             question="查询最近30天每日销售额和订单数",
-            schema_context="# Schema Context",
+            schema_context=(
+                "# Schema Context\n"
+                "\n"
+                "## SQL Generation Guidance\n"
+                "- For product names, use dim_products.name AS product_name.\n"
+                "- For product or category sales amount on item-level joins, use SUM(fact_order_items.item_amount)."
+            ),
         )
     )
 
@@ -17,14 +23,16 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Analysis Space" in system_prompt
     assert "Qualify every physical column" in system_prompt
     assert "Alias every computed projection" in system_prompt
-    assert "use the metric name as the SELECT alias" in system_prompt
+    assert "use the metric name from the schema context as the SELECT alias" in system_prompt
     assert "do not substitute surrogate *_key columns" in system_prompt
-    assert "dim_products.name AS product_name" in system_prompt
-    assert "do not invent dim_products.product_name" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
-    assert "SUM(fact_order_items.item_amount)" in system_prompt
-    assert "Do not aggregate fact_orders.payment_amount after joining fact_order_items" in system_prompt
+    assert "dim_products.name AS product_name" not in system_prompt
+    assert "fact_order_items.item_amount" not in system_prompt
+    assert "fact_orders.payment_amount" not in system_prompt
+    assert "sales_amount, order_count, or aov" not in system_prompt
+    assert "dim_products.name AS product_name" in messages[1]["content"]
+    assert "SUM(fact_order_items.item_amount)" in messages[1]["content"]
 
 
 def test_sql_generation_prompt_uses_clickhouse_dialect_instructions():
@@ -100,7 +108,8 @@ def test_sql_generation_prompt_uses_multi_turn_repair_context():
     assert "Datasource dialect: duckdb" in repair_message
     assert "Generate SQL valid for the datasource dialect above." in repair_message
     assert "Normalized SQL:" in repair_message
-    assert "fact_order_items.item_amount" in repair_message
+    assert "aggregate at the correct grain" in repair_message
+    assert "schema-specific SQL generation guidance" in repair_message
     assert "semantically closest allowed column" in repair_message
     assert "avoid replacing names with *_key columns" in repair_message
     assert "Return corrected SQL only." in repair_message
@@ -110,7 +119,14 @@ def test_sql_generation_repair_prompt_guides_product_name_repair():
     messages = build_sql_generation_messages(
         SQLGenerationRequest(
             question="Show top products by sales in the last 30 days",
-            schema_context="# Schema Context\n- dim_products.name (VARCHAR): 商品名称",
+            schema_context=(
+                "# Schema Context\n"
+                "## SQL Generation Guidance\n"
+                "- For product names, use dim_products.name AS product_name; do not invent dim_products.product_name.\n"
+                "## Tables\n"
+                "- dim_products: 商品维表\n"
+                "  - name (VARCHAR) - 商品名称"
+            ),
             repair=SQLRepairContext(
                 attempt=1,
                 original_sql="SELECT p.product_name FROM dim_products p",
@@ -125,7 +141,9 @@ def test_sql_generation_repair_prompt_guides_product_name_repair():
 
     repair_message = messages[3]["content"]
     assert "dim_products.product_name" in repair_message
-    assert "dim_products.name AS product_name" in repair_message
+    assert "dim_products.name AS product_name" not in repair_message
+    assert "dim_products.name AS product_name" in messages[1]["content"]
+    assert "schema-specific SQL generation guidance" in repair_message
     assert "avoid replacing names with *_key columns" in repair_message
 
 

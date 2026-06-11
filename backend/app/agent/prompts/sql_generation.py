@@ -81,8 +81,8 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
         lines.extend(
             [
                 "",
-                "If the error is fanout_guard, do not aggregate fact_orders.payment_amount after joining fact_order_items.",
-                "For product/category sales, use fact_order_items.item_amount.",
+                "If the error is fanout_guard, follow the schema-specific SQL generation guidance and aggregate at the correct grain.",
+                "Do not repair by reusing a measure that the schema context marks as fanout-prone.",
             ]
         )
     if request.repair.error_kind == "missing_carried_filter":
@@ -98,8 +98,8 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
             "",
             "Generate SQL valid for the datasource dialect above.",
             "Fix the SQL using only the provided schema context.",
+            "Follow any schema-specific SQL generation guidance from the schema context.",
             "If a column is not allowed or missing, replace it with the semantically closest allowed column from the schema context; keep user-facing dimensions readable and avoid replacing names with *_key columns.",
-            "If the failed SQL used dim_products.product_name, use dim_products.name AS product_name instead.",
             _repair_return_instruction(request),
         ]
     )
@@ -146,17 +146,13 @@ def _system_prompt(dialect: str = "duckdb") -> str:
             "Use only assets inside the Analysis Space.",
             "Qualify every physical column with its table name or table alias.",
             "Alias every computed projection with a stable snake_case name.",
-            "When using a Metric Layer expression, use the metric name as the SELECT alias, such as sales_amount, order_count, or aov.",
+            "When using a Metric Layer expression, use the metric name from the schema context as the SELECT alias.",
             "For human-readable dimensions, prefer descriptive name/label columns from the schema and do not substitute surrogate *_key columns unless the user asks for IDs or keys.",
-            "For product names, use dim_products.name AS product_name when dim_products is available; do not invent dim_products.product_name and do not use product_key as the product display label.",
             "For ranking questions without an explicit count, return the top 10 rows with ORDER BY and LIMIT 10.",
             "For plain list, sample, or browse-data questions without an explicit count, return representative business columns and LIMIT 20.",
-            "For open-ended browse-data questions, prefer order_id and a primary business measure; avoid date/time columns unless the user asks for time.",
+            "For open-ended browse-data questions, prefer identifiers and primary business measures from the schema context; avoid date/time columns unless the user asks for time.",
             "For dimension value lists, ORDER BY the displayed name/label column for deterministic results.",
-            "For user rankings, include dim_users.user_id and dim_users.name AS user_name when dim_users is available.",
             "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
-            "For product or category sales amount, use SUM(fact_order_items.item_amount), not SUM(fact_orders.payment_amount).",
-            "Do not aggregate fact_orders.payment_amount after joining fact_order_items; it duplicates order-level amounts.",
-            "Prefer verified queries when the user question matches one.",
+            "Follow schema-specific SQL generation guidance in the schema context when present.",
         ]
     )

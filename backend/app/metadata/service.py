@@ -34,6 +34,7 @@ from backend.app.sql_guard import GuardScope, guard_sql
 
 
 QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
+ROLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]+")
 DIALECT_CONTEXT_HINTS = {
     "clickhouse": [
         "- dialect = clickhouse",
@@ -48,6 +49,28 @@ DIALECT_CONTEXT_HINTS = {
         "- Do not add time filters unless the user asks for a time range.",
     ],
 }
+PRODUCT_TABLE_ROLE_TERMS = ("product", "products", "sku", "商品", "产品")
+USER_TABLE_ROLE_TERMS = ("user", "users", "customer", "member", "用户", "客户", "会员")
+ORDER_TABLE_ROLE_TERMS = ("order", "orders", "订单")
+ITEM_TABLE_ROLE_TERMS = ("item", "items", "line", "lines", "detail", "details", "明细")
+DISPLAY_NAME_COLUMN_TERMS = ("name", "title", "label", "display", "名称", "名字")
+USER_ID_COLUMN_TERMS = ("user_id", "customer_id", "member_id", "id", "用户id", "客户id", "会员id")
+AMOUNT_COLUMN_TERMS = (
+    "amount",
+    "payment",
+    "paid",
+    "total",
+    "sales",
+    "revenue",
+    "gmv",
+    "金额",
+    "销售额",
+    "营收",
+    "收入",
+    "成交额",
+    "实付",
+)
+SURROGATE_KEY_TERMS = ("key", "_id", "id", "键", "代理键")
 
 
 class MetadataAdminError(ValueError):
@@ -566,6 +589,7 @@ def _render_schema_context(
     verified_queries: list[MetaVerifiedQuery],
     datasource_dialect: str,
 ) -> str:
+    generation_guidance = _schema_generation_guidance(tables, table_columns, relationships, metrics, verified_queries)
     lines = [
         "# Schema Context",
         "",
@@ -583,8 +607,10 @@ def _render_schema_context(
         f"dataset_current_date = {dataset_current_date}",
         "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31",
         "",
-        "## Tables",
     ]
+    if generation_guidance:
+        lines.extend(["## SQL Generation Guidance", *generation_guidance, ""])
+    lines.append("## Tables")
     for table in tables:
         lines.append(_table_context_line(table))
         for column in table_columns.get(table.table_name, []):
@@ -608,6 +634,232 @@ def _render_schema_context(
                 ]
             )
     return "\n".join(lines)
+
+
+def _schema_generation_guidance(
+    tables: list[MetaTable],
+    table_columns: dict[str, list[MetaColumn]],
+    relationships: list[MetaRelationship],
+    metrics: list[MetaMetric],
+    verified_queries: list[MetaVerifiedQuery],
+) -> list[str]:
+    guidance: list[str] = []
+    if metrics:
+        metric_names = ", ".join(metric.name for metric in metrics)
+        guidance.append(
+            "- When selecting a Metric Definition, use its metric name as the SELECT alias "
+            f"(available metric names: {metric_names})."
+        )
+    if verified_queries:
+        guidance.append(
+            "- Use a Verified Query only when the question clearly asks for the same metric, "
+            "dimensions, filters, and time range."
+        )
+
+    table_by_name = {table.table_name: table for table in tables}
+
+    product_guidance = _product_display_guidance(tables, table_columns)
+    if product_guidance:
+        guidance.append(product_guidance)
+
+    user_guidance = _user_ranking_guidance(tables, table_columns)
+    if user_guidance:
+        guidance.append(user_guidance)
+
+    fanout_guidance = _item_sales_fanout_guidance(table_by_name, table_columns, relationships)
+    if fanout_guidance:
+        guidance.append(fanout_guidance)
+
+    return guidance
+
+
+def _product_display_guidance(
+    tables: list[MetaTable],
+    table_columns: dict[str, list[MetaColumn]],
+) -> str | None:
+    product_table = _best_table_for_role(tables, PRODUCT_TABLE_ROLE_TERMS)
+    if product_table is None:
+        return None
+    product_columns = table_columns.get(product_table.table_name, [])
+    display_column = _best_column_for_role(product_columns, DISPLAY_NAME_COLUMN_TERMS, exclude_terms=SURROGATE_KEY_TERMS)
+    if display_column is None:
+        return None
+    guidance = f"- For product names, use {product_table.table_name}.{display_column.column_name} AS product_name"
+    if not _has_column(product_columns, "product_name"):
+        guidance += f"; do not invent {product_table.table_name}.product_name"
+    key_column = _best_column_for_role(product_columns, SURROGATE_KEY_TERMS, prefer_exact_suffix=True)
+    if key_column is not None and key_column.column_name != display_column.column_name:
+        guidance += (
+            f" and do not use {product_table.table_name}.{key_column.column_name} as the product display label"
+        )
+    return f"{guidance}."
+
+
+def _user_ranking_guidance(
+    tables: list[MetaTable],
+    table_columns: dict[str, list[MetaColumn]],
+) -> str | None:
+    user_table = _best_table_for_role(tables, USER_TABLE_ROLE_TERMS)
+    if user_table is None:
+        return None
+    user_columns = table_columns.get(user_table.table_name, [])
+    id_column = _best_column_for_role(user_columns, USER_ID_COLUMN_TERMS, prefer_exact_suffix=True)
+    name_column = _best_column_for_role(user_columns, DISPLAY_NAME_COLUMN_TERMS, exclude_terms=SURROGATE_KEY_TERMS)
+    if id_column is None or name_column is None:
+        return None
+    return (
+        "- For user rankings, include "
+        f"{user_table.table_name}.{id_column.column_name} and "
+        f"{user_table.table_name}.{name_column.column_name} AS user_name."
+    )
+
+
+def _item_sales_fanout_guidance(
+    table_by_name: dict[str, MetaTable],
+    table_columns: dict[str, list[MetaColumn]],
+    relationships: list[MetaRelationship],
+) -> str | None:
+    item_table_name, order_table_name = _item_order_table_pair(table_by_name, relationships)
+    if item_table_name is None or order_table_name is None:
+        return None
+    item_amount_column = _best_amount_column(table_columns.get(item_table_name, []), prefer_item_level=True)
+    order_amount_column = _best_amount_column(table_columns.get(order_table_name, []), prefer_item_level=False)
+    if item_amount_column is None or order_amount_column is None:
+        return None
+    return (
+        "- For product or category sales amount on item-level joins, use "
+        f"SUM({item_table_name}.{item_amount_column.column_name}), "
+        f"not SUM({order_table_name}.{order_amount_column.column_name}); "
+        f"{order_table_name}.{order_amount_column.column_name} is order-level and can duplicate "
+        f"after joining {item_table_name}."
+    )
+
+
+def _best_table_for_role(tables: list[MetaTable], role_terms: tuple[str, ...]) -> MetaTable | None:
+    scored = [
+        (_metadata_role_score(_table_role_text(table), role_terms), table.table_name, table)
+        for table in tables
+    ]
+    scored = [item for item in scored if item[0] > 0]
+    if not scored:
+        return None
+    # Equal role scores are rare; sort by table name to keep guidance deterministic.
+    return sorted(scored, key=lambda item: (-item[0], item[1]))[0][2]
+
+
+def _best_column_for_role(
+    columns: list[MetaColumn],
+    role_terms: tuple[str, ...],
+    *,
+    exclude_terms: tuple[str, ...] = (),
+    prefer_exact_suffix: bool = False,
+) -> MetaColumn | None:
+    scored = []
+    for column in columns:
+        text = _column_role_text(column)
+        score = _metadata_role_score(text, role_terms)
+        if score == 0:
+            continue
+        if exclude_terms and _metadata_role_score(text, exclude_terms):
+            continue
+        if prefer_exact_suffix and any(
+            _normalized_identifier(column.column_name).endswith(_normalized_identifier(term))
+            for term in role_terms
+        ):
+            score += 2
+        scored.append((score, column.column_name, column))
+    if not scored:
+        return None
+    # Equal role scores are rare; sort by column name to keep guidance deterministic.
+    return sorted(scored, key=lambda item: (-item[0], item[1]))[0][2]
+
+
+def _best_amount_column(columns: list[MetaColumn], *, prefer_item_level: bool) -> MetaColumn | None:
+    scored = []
+    for column in columns:
+        text = _column_role_text(column)
+        score = _metadata_role_score(text, AMOUNT_COLUMN_TERMS)
+        if score == 0:
+            continue
+        if _metadata_role_score(text, ("quantity", "count", "数量", "件数")):
+            continue
+        if column.is_metric:
+            score += 1
+        if prefer_item_level:
+            score += _metadata_role_score(text, ITEM_TABLE_ROLE_TERMS)
+        scored.append((score, column.column_name, column))
+    if not scored:
+        return None
+    # Equal role scores are rare; sort by column name to keep guidance deterministic.
+    return sorted(scored, key=lambda item: (-item[0], item[1]))[0][2]
+
+
+def _item_order_table_pair(
+    table_by_name: dict[str, MetaTable],
+    relationships: list[MetaRelationship],
+) -> tuple[str | None, str | None]:
+    for relationship in relationships:
+        source = table_by_name.get(relationship.source_table)
+        target = table_by_name.get(relationship.target_table)
+        if source is None or target is None:
+            continue
+        source_item_score = _metadata_role_score(_table_role_text(source), ITEM_TABLE_ROLE_TERMS)
+        target_item_score = _metadata_role_score(_table_role_text(target), ITEM_TABLE_ROLE_TERMS)
+        source_order_score = _metadata_role_score(_table_role_text(source), ORDER_TABLE_ROLE_TERMS)
+        target_order_score = _metadata_role_score(_table_role_text(target), ORDER_TABLE_ROLE_TERMS)
+        if source_item_score > target_item_score and target_order_score > 0:
+            return source.table_name, target.table_name
+        if target_item_score > source_item_score and source_order_score > 0:
+            return target.table_name, source.table_name
+    return None, None
+
+
+def _has_column(columns: list[MetaColumn], column_name: str) -> bool:
+    return any(column.column_name == column_name for column in columns)
+
+
+def _metadata_role_score(text: str, terms: tuple[str, ...]) -> int:
+    tokens = _metadata_role_tokens(text)
+    return sum(1 for term in terms if _metadata_role_terms_match(tokens, term))
+
+
+def _table_role_text(table: MetaTable) -> str:
+    return _metadata_role_text(table.table_name, table.display_name, table.description, table.domain)
+
+
+def _column_role_text(column: MetaColumn) -> str:
+    return _metadata_role_text(column.column_name, column.description)
+
+
+def _metadata_role_text(*values: object | None) -> str:
+    return " ".join(
+        str(value).casefold().replace("_", " ").replace("-", " ")
+        for value in values
+        if value is not None
+    )
+
+
+def _metadata_role_tokens(text: str) -> set[str]:
+    role_text = _metadata_role_text(text)
+    tokens: set[str] = set()
+    for token in ROLE_TOKEN_RE.findall(role_text):
+        tokens.add(token)
+        if re.fullmatch(r"[\u3400-\u9fff]+", token):
+            tokens.update(
+                token[index : index + ngram_size]
+                for ngram_size in range(2, min(4, len(token)) + 1)
+                for index in range(0, len(token) - ngram_size + 1)
+            )
+    return tokens
+
+
+def _metadata_role_terms_match(tokens: set[str], term: str) -> bool:
+    term_tokens = _metadata_role_tokens(term)
+    return bool(term_tokens) and term_tokens.issubset(tokens)
+
+
+def _normalized_identifier(value: str) -> str:
+    return "_".join(ROLE_TOKEN_RE.findall(value.casefold().replace("-", "_")))
 
 
 def _table_context_line(table: MetaTable) -> str:
