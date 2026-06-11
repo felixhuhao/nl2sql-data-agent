@@ -76,7 +76,12 @@ def test_datasource_selected_node_sets_datasource_metadata(monkeypatch):
     ("question", "expected_error"),
     [
         ("删除2024年的订单数据", "DELETE intent is not allowed."),
+        ("DELETE FROM fact_orders WHERE order_id = 1", "DELETE intent is not allowed."),
+        ("创建一张临时订单表", "CREATE intent is not allowed."),
+        ("DROP fact_orders", "DROP intent is not allowed."),
+        ("load extension httpfs", "COPY/LOAD intent is not allowed."),
         ("从外部 CSV 读取订单数据", "EXTERNAL_FILE_READ intent is not allowed."),
+        ("read_csv('/tmp/orders.csv')", "EXTERNAL_FILE_READ intent is not allowed."),
     ],
 )
 def test_intent_guard_node_rejects_blocked_questions(question: str, expected_error: str):
@@ -89,7 +94,24 @@ def test_intent_guard_node_rejects_blocked_questions(question: str, expected_err
     assert state.completed_steps == ["intent_guard"]
 
 
-@pytest.mark.parametrize("question", ["改成最近90天", "改为订单数", "换成最近90天"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "改成最近90天",
+        "改为订单数",
+        "换成最近90天",
+        "create a chart for sales by region",
+        "build a table of sales by region",
+        "load dashboard for channel sales",
+        "copy this chart configuration",
+        "查看删除率趋势",
+        "按订单查看删除率",
+        "查看删除的订单",
+        "查询已删除订单数量",
+        "更新后的销售趋势",
+        "创建销售额可视化",
+    ],
+)
 def test_intent_guard_node_allows_followup_rewording(question: str):
     state = AgentState(question=question)
 

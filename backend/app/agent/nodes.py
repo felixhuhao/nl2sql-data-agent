@@ -30,24 +30,125 @@ ScopeBuilder = Callable[..., GuardScope]
 SQLExecutor = Callable[..., QueryResult]
 
 
-_BLOCKED_INTENT_KEYWORDS = (
-    ("DELETE", ("delete", "删除", "删掉", "清空", "清除")),
-    ("UPDATE", ("update", "修改", "更新")),
-    ("INSERT", ("insert", "新增", "插入", "写入")),
-    ("CREATE", ("create", "建表", "创建表", "创建一张表")),
-    ("DROP", ("drop", "删表")),
-    ("ALTER", ("alter", "改表", "修改表结构")),
-    ("TRUNCATE", ("truncate", "截断")),
-    ("COPY/LOAD", ("copy", "load", "install", "导入", "加载")),
+_SQL_COMMAND_INTENT_PATTERNS = (
+    ("DELETE", re.compile(r"^\s*delete\s+from\b", re.IGNORECASE)),
+    ("UPDATE", re.compile(r"^\s*update\s+[A-Za-z_][A-Za-z0-9_.]*\b", re.IGNORECASE)),
+    ("INSERT", re.compile(r"^\s*insert\s+into\b", re.IGNORECASE)),
+    (
+        "CREATE",
+        re.compile(
+            r"^\s*create\s+(?:or\s+replace\s+)?(?:table|view|schema|database|index)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("DROP", re.compile(r"^\s*drop\s+(?:table\s+)?[A-Za-z_][A-Za-z0-9_.]*\b", re.IGNORECASE)),
+    ("ALTER", re.compile(r"^\s*alter\s+(?:table|view|schema|database)\b", re.IGNORECASE)),
+    ("TRUNCATE", re.compile(r"^\s*truncate\s+(?:table\s+)?[A-Za-z_][A-Za-z0-9_.]*\b", re.IGNORECASE)),
+    (
+        "COPY/LOAD",
+        re.compile(
+            (
+                r"^\s*(?:copy\s+(?:\([^)]+\)|[A-Za-z_][A-Za-z0-9_.]*)\s+(?:from|to)\b|"
+                r"(?:load|install)\s+(?:extension\s+)?"
+                r"(?:httpfs|sqlite|postgres|mysql|json|spatial|parquet|iceberg|delta)\b|"
+                r"(?:load|install)\s+extension\b)"
+            ),
+            re.IGNORECASE,
+        ),
+    ),
 )
-_EXTERNAL_FILE_KEYWORDS = (
-    "read_csv",
-    "read_json",
-    "read_parquet",
-    "外部csv",
-    "外部parquet",
-    "外部json",
-    "外部文件",
+_ENGLISH_MUTATION_VERBS: dict[str, set[str]] = {
+    "DELETE": {"delete", "remove", "clear", "truncate"},
+    "UPDATE": {"update", "modify", "change"},
+    "INSERT": {"insert", "add", "write"},
+    "CREATE": {"create"},
+    "DROP": {"drop"},
+    "ALTER": {"alter"},
+}
+_ENGLISH_DATA_OBJECT_TOKENS = {
+    "data",
+    "dataset",
+    "database",
+    "schema",
+    "table",
+    "tables",
+    "view",
+    "views",
+    "index",
+    "indexes",
+    "row",
+    "rows",
+    "record",
+    "records",
+    "column",
+    "columns",
+    "order",
+    "orders",
+}
+_ENGLISH_ADMIN_OBJECT_TOKENS = {
+    "extension",
+    "extensions",
+    "httpfs",
+}
+_CHINESE_DELETE_VERB = r"(?<!已)(?<!被)(?:删除(?!率|的|过的)|删掉(?!的|过的)|清空|清除)"
+_CHINESE_MUTATION_PATTERNS = (
+    (
+        "DELETE",
+        (
+            re.compile(_CHINESE_DELETE_VERB + r".{0,12}(?:数据|订单|记录|行)"),
+            re.compile(r"(?:数据|订单|记录|行).{0,12}" + _CHINESE_DELETE_VERB),
+        ),
+    ),
+    (
+        "UPDATE",
+        (
+            re.compile(r"(?:更新|修改).{0,12}(?:数据|订单|记录|表|字段|列|状态)"),
+            re.compile(r"(?:数据|订单|记录|表|字段|列|状态).{0,12}(?:更新|修改)"),
+        ),
+    ),
+    (
+        "INSERT",
+        (
+            re.compile(r"(?:新增|插入|写入).{0,12}(?:数据|订单|记录|表|行)"),
+            re.compile(r"(?:数据|订单|记录|表|行).{0,12}(?:新增|插入|写入)"),
+        ),
+    ),
+    (
+        "CREATE",
+        (
+            re.compile(r"(?:创建|新建|建).{0,8}(?:表|数据表|数据库|视图|索引)"),
+            re.compile(r"(?:建表|创建表|新建表|建库|创建数据库|新建数据库)"),
+        ),
+    ),
+    (
+        "DROP",
+        (
+            re.compile(r"(?:删除|删掉|移除).{0,8}(?:表|数据库|视图|索引)"),
+            re.compile(r"(?:删表|删除表|删库|删除数据库)"),
+        ),
+    ),
+    (
+        "ALTER",
+        (
+            re.compile(r"(?:修改|变更|调整).{0,8}(?:表结构|字段|列|schema|模式)"),
+        ),
+    ),
+)
+_EXTERNAL_FUNCTION_RE = re.compile(
+    r"\b(?:read_csv|read_json|read_parquet|s3|url|hdfs|remote|remoteSecure)\s*\(",
+    re.IGNORECASE,
+)
+_EXTERNAL_FILE_PATTERNS = (
+    re.compile(
+        r"\b(?:read|load|import|ingest)\b.{0,40}\b(?:csv|json|parquet|file|files|s3|https?|url|path)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:csv|json|parquet|file|files|s3|https?|url|path)\b.{0,40}\b(?:read|load|import|ingest)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:读取|导入|加载).{0,24}(?:外部|文件|csv|json|parquet|路径|本地|远程|s3|url|http)", re.IGNORECASE),
+    re.compile(r"(?:外部|文件|csv|json|parquet|路径|本地|远程|s3|url|http).{0,24}(?:读取|导入|加载)", re.IGNORECASE),
 )
 
 
@@ -342,15 +443,41 @@ def summarize_node(state: AgentState) -> AgentState:
 
 
 def _detect_blocked_intent(question: str) -> str | None:
-    normalized = _normalize_intent_text(question)
-    if any(keyword in normalized for keyword in _EXTERNAL_FILE_KEYWORDS):
+    if _matches_external_file_intent(question):
         return "EXTERNAL_FILE_READ"
 
-    for operation, keywords in _BLOCKED_INTENT_KEYWORDS:
-        if any(keyword in normalized for keyword in keywords):
+    for operation, pattern in _SQL_COMMAND_INTENT_PATTERNS:
+        if pattern.search(question):
             return operation
+
+    for operation, patterns in _CHINESE_MUTATION_PATTERNS:
+        if any(pattern.search(question) for pattern in patterns):
+            return operation
+
+    tokens = set(_ascii_tokens(question))
+    table_like_tokens = {token for token in tokens if token.startswith(("fact_", "dim_"))}
+    object_tokens = tokens & _ENGLISH_DATA_OBJECT_TOKENS
+    for operation, verbs in _ENGLISH_MUTATION_VERBS.items():
+        if not tokens & verbs:
+            continue
+        if operation == "CREATE" and not object_tokens & {"database", "schema", "table", "tables", "view", "views", "index", "indexes"}:
+            continue
+        # Natural-language fallback for write intent that is not written as SQL,
+        # such as "delete fact_orders" or "remove rows from fact_orders".
+        if object_tokens or table_like_tokens:
+            return operation
+
+    # Safety net for extension management phrased as natural language.
+    if tokens & {"install", "load"} and tokens & _ENGLISH_ADMIN_OBJECT_TOKENS:
+        return "COPY/LOAD"
     return None
 
 
-def _normalize_intent_text(text: str) -> str:
-    return "".join(text.casefold().split())
+def _matches_external_file_intent(question: str) -> bool:
+    return bool(_EXTERNAL_FUNCTION_RE.search(question)) or any(
+        pattern.search(question) for pattern in _EXTERNAL_FILE_PATTERNS
+    )
+
+
+def _ascii_tokens(text: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text.casefold()))

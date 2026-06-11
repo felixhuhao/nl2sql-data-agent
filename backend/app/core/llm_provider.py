@@ -58,10 +58,6 @@ class MockLLMProvider:
 
     def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
         question = request.question.strip()
-        unsafe_sql = _unsafe_sql_for_question(question)
-        if unsafe_sql is not None:
-            return SQLGenerationResult(sql=unsafe_sql, provider=self.name)
-
         verified_query = _match_verified_query(
             question,
             self._verified_queries_provider(datasource_name=request.datasource_name),
@@ -107,17 +103,6 @@ def _match_verified_query(question: str, verified_queries: list[dict]) -> dict |
             "销量",
         }.issubset(question_terms):
             return query
-    return None
-
-
-def _unsafe_sql_for_question(question: str) -> str | None:
-    normalized_question = _normalize_text(question)
-    if any(keyword in normalized_question for keyword in ("删除", "delete")):
-        return "DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01'"
-    if any(keyword in normalized_question for keyword in ("drop", "删表")):
-        return "DROP TABLE fact_orders"
-    if any(keyword in normalized_question for keyword in ("create", "建表", "创建")):
-        return "CREATE TABLE tmp_orders AS SELECT * FROM fact_orders"
     return None
 
 

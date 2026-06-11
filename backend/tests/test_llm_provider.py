@@ -95,43 +95,20 @@ def test_mock_provider_accepts_olap_context_for_topn_question():
     assert "LIMIT 10" in result.sql
 
 
-def test_mock_provider_returns_delete_sql_for_delete_question():
+def test_mock_provider_does_not_generate_write_sql_from_keywords():
     provider = _provider()
 
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="删除2024年数据",
-            schema_context="# Schema Context",
+    for question in ("删除2024年数据", "DROP fact_orders", "创建一张临时订单表"):
+        result = provider.generate_sql(
+            SQLGenerationRequest(
+                question=question,
+                schema_context="# Schema Context",
+            )
         )
-    )
 
-    assert result.sql.startswith("DELETE FROM fact_orders")
-
-
-def test_mock_provider_returns_drop_sql_for_drop_question():
-    provider = _provider()
-
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="DROP fact_orders",
-            schema_context="# Schema Context",
-        )
-    )
-
-    assert result.sql == "DROP TABLE fact_orders"
-
-
-def test_mock_provider_returns_create_sql_for_create_question():
-    provider = _provider()
-
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="创建一张临时订单表",
-            schema_context="# Schema Context",
-        )
-    )
-
-    assert result.sql.startswith("CREATE TABLE tmp_orders")
+        assert result.provider == "mock"
+        assert result.matched_query_id is None
+        assert result.sql == "SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 20"
 
 
 def test_mock_provider_returns_fallback_select():
