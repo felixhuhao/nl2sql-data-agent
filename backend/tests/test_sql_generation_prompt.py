@@ -167,6 +167,8 @@ def test_sql_generation_prompt_uses_json_output_format_for_prior_sql():
     assert "Conversation context:" in user_prompt
     assert "Previous query grouped by day." in user_prompt
     assert "Conversation follow-up rules:" in user_prompt
+    assert "set is_follow_up=false and change_kind=none" in user_prompt
+    assert "do not carry over prior SQL, filters, dimensions, metrics, time windows, or joins" in user_prompt
     assert "OUTPUT_FORMAT=json" in user_prompt
     assert "Return one JSON object and nothing else." in user_prompt
     assert '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }' in user_prompt

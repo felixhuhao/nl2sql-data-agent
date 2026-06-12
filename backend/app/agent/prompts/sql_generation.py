@@ -127,7 +127,8 @@ def _conversation_followup_rules() -> str:
         [
             "Conversation follow-up rules:",
             "First decide whether the new question refines the previous query.",
-            "If it is not a follow-up, ignore the previous query and answer standalone.",
+            "If it is not a follow-up, set is_follow_up=false and change_kind=none.",
+            "For a non-follow-up, answer standalone and do not carry over prior SQL, filters, dimensions, metrics, time windows, or joins.",
             "If it is a follow-up, return a full standalone SQL preserving prior dimensions, filters, metric, and time window unless the user changes them.",
             "For change_kind=dimension, add the requested dimension but keep the previous metric and time window.",
             "For change_kind=filter, add or change only the filter; keep previous dimensions, metric, and time window.",

@@ -7,6 +7,7 @@ from backend.app.agent.conversation import (
     ConversationContext,
     FilterPredicate,
     build_conversation_context,
+    conversation_context_prompt,
     missing_carried_filters,
 )
 from backend.app.agent.nodes import (
@@ -182,6 +183,23 @@ def test_build_context_node_unions_prior_assets(monkeypatch):
             "source": "conversation_context",
         }
     ]
+
+
+def test_conversation_context_prompt_scopes_carried_filters_to_followups():
+    context = ConversationContext(
+        question="只看华东销售额",
+        normalized_sql="SELECT 1",
+        datasource_name="duckdb_ecommerce",
+        active_filters=[
+            FilterPredicate(column="dim_regions.region_group", op="=", value="华东"),
+        ],
+    )
+
+    prompt = conversation_context_prompt(context)
+
+    assert "If the new question is a follow-up, preserve these filters" in prompt
+    assert "If the new question is standalone, do not carry over these filters" in prompt
+    assert "- dim_regions.region_group = 华东" in prompt
 
 
 def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch):
