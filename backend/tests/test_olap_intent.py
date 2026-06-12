@@ -1,4 +1,9 @@
-from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents, describe_olap_intents
+from backend.app.agent.olap_intent import (
+    analyze_olap_intents,
+    build_olap_hint,
+    detect_olap_intents,
+    describe_olap_intents,
+)
 
 
 def test_detect_olap_intents_returns_empty_for_basic_query():
@@ -30,6 +35,33 @@ def test_detect_olap_intents_avoids_top_word_false_positives():
 
 def test_detect_olap_intents_detects_moving_average():
     assert detect_olap_intents("查询最近30天销售额7日移动平均") == ["moving_avg"]
+
+
+def test_detect_olap_intents_uses_lexical_paraphrases():
+    assert detect_olap_intents("compare sales with same period last year") == ["yoy_mom"]
+    assert detect_olap_intents("sales versus previous month by channel") == ["yoy_mom"]
+    assert detect_olap_intents("rank channels by revenue") == ["topn"]
+    assert detect_olap_intents("customer ranking by sales") == ["topn"]
+    assert detect_olap_intents("best performing categories by revenue") == ["topn"]
+    assert detect_olap_intents("worst channels by conversion") == ["topn"]
+    assert detect_olap_intents("show trailing average sales trend") == ["moving_avg"]
+    assert detect_olap_intents("smooth trend of daily sales") == ["moving_avg"]
+    assert detect_olap_intents("和去年同期对比销售额") == ["yoy_mom"]
+
+
+def test_analyze_olap_intents_reports_non_regex_signals():
+    scores = analyze_olap_intents("best performing categories by revenue")
+
+    assert scores["topn"].score >= 0.75
+    assert scores["topn"].signals == ("lexical:best_worst_context",)
+
+
+def test_detect_olap_intents_avoids_lexical_false_positives():
+    assert detect_olap_intents("show last month sales by channel") == []
+    assert detect_olap_intents("compare sales by channel") == []
+    assert detect_olap_intents("average sales by category") == []
+    assert detect_olap_intents("best practices for sales dashboards") == []
+    assert detect_olap_intents("rank correlation between price and quantity") == []
 
 
 def test_build_olap_hint_includes_metric_context_and_intent_guidance():
