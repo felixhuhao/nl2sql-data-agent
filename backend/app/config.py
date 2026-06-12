@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
     deepseek_timeout: float = 30.0
+    semantic_guard_mode: str = "off"
+    semantic_guard_timeout: float = 8.0
     sql_default_ranking_limit: int = Field(default=DEFAULT_RANKING_LIMIT, ge=1, le=500)
     sql_default_browse_limit: int = Field(default=DEFAULT_BROWSE_LIMIT, ge=1, le=500)
     vector_enabled: str | bool = "auto"
@@ -83,6 +85,11 @@ def effective_llm_provider_name(settings: Any | None = None) -> str:
     if provider_mode == "auto":
         return "deepseek" if deepseek_config_available(settings) else "mock"
     return provider_mode
+
+
+def semantic_guard_mode(settings: Any | None = None) -> str:
+    value = str(getattr(settings or get_settings(), "semantic_guard_mode", "off") or "off").strip().casefold()
+    return value if value in {"off", "warn", "enforce"} else "off"
 
 
 def vector_enabled_mode(settings: Any | None = None) -> str:

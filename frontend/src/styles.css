@@ -565,6 +565,27 @@ input[type="radio"] {
   letter-spacing: -0.005em;
 }
 
+.grounding-warning-section {
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid rgba(156, 107, 22, 0.28);
+  border-left: 3px solid #9c6b16;
+  border-radius: var(--radius);
+  background: rgba(156, 107, 22, 0.08);
+}
+
+.grounding-warning {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.grounding-warning strong {
+  color: #7a4f0c;
+  font-weight: 800;
+}
+
 /* SQL card */
 .sql-card {
   overflow: hidden;

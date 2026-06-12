@@ -54,6 +54,7 @@ const allWorkflowSteps = [
   { id: "generate_sql", label: "生成 SQL" },
   { id: "sql_guard", label: "SQL Guard" },
   { id: "conversation_filter_verify", label: "保留过滤" },
+  { id: "semantic_guard", label: "语义校验" },
   { id: "repair_sql", label: "SQL 修复" },
   { id: "execute", label: "执行查询" },
   { id: "explain_plan", label: "性能解释" },
@@ -140,9 +141,20 @@ type RuntimeStats = {
   rows_read?: number;
   bytes_read?: number;
 };
+type GroundingWarning = {
+  concept?: string;
+  failure_kind?: string;
+  sql_mapping?: string | null;
+  message?: string;
+  explanation?: string;
+  refutation_confirmed?: boolean;
+  refutation_reason?: string;
+};
 type HealthPayload = {
   status?: string;
   llm_provider?: string;
+  semantic_guard?: string;
+  semantic_verifier?: string;
 };
 type QueryDatasource = Pick<DatasourceInfo, "name" | "dialect" | "display_name">;
 
@@ -171,6 +183,7 @@ const explainability = ref<Explainability | null>(null);
 const retrievalMeta = ref<RetrievalMeta | null>(null);
 const planHints = ref<string[]>([]);
 const runtimeStats = ref<RuntimeStats | null>(null);
+const groundingWarnings = ref<GroundingWarning[]>([]);
 const repairHistory = ref<RepairHistoryItem[]>([]);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
@@ -357,6 +370,7 @@ async function submitQuestion() {
   retrievalMeta.value = null;
   planHints.value = [];
   runtimeStats.value = null;
+  groundingWarnings.value = [];
   repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
@@ -407,6 +421,7 @@ function startNewConversation() {
   retrievalMeta.value = null;
   planHints.value = [];
   runtimeStats.value = null;
+  groundingWarnings.value = [];
   repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
@@ -760,6 +775,9 @@ function handleSseChunk(chunk: string) {
       planHints.value = payload.plan_hints ?? [];
       runtimeStats.value = payload.runtime_stats ?? null;
     }
+    if (payload.grounding_warnings) {
+      groundingWarnings.value = payload.grounding_warnings;
+    }
   }
   if (event === "session") {
     sessionId.value = payload.session_id ?? sessionId.value;
@@ -777,6 +795,7 @@ function handleSseChunk(chunk: string) {
     explainability.value = payload.explainability ?? null;
     planHints.value = payload.plan_hints ?? planHints.value;
     runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
+    groundingWarnings.value = payload.grounding_warnings ?? groundingWarnings.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     sessionId.value = payload.session_id ?? sessionId.value;
@@ -792,6 +811,7 @@ function handleSseChunk(chunk: string) {
     explainability.value = payload.explainability ?? null;
     planHints.value = payload.plan_hints ?? planHints.value;
     runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
+    groundingWarnings.value = payload.grounding_warnings ?? groundingWarnings.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     chartRecommendation.value = null;
@@ -1221,6 +1241,18 @@ function switchView(view: "chat" | "admin") {
                     <span class="meta-k">耗时</span>
                     <span class="meta-v num">{{ formattedElapsedMs }}</span>
                   </div>
+                </div>
+              </section>
+
+              <section v-if="groundingWarnings.length" class="answer-section grounding-warning-section">
+                <h2>语义提示</h2>
+                <div
+                  v-for="(warning, warningIndex) in groundingWarnings"
+                  :key="`${warningIndex}-${warning.concept ?? 'semantic'}-${warning.failure_kind ?? 'warning'}`"
+                  class="grounding-warning"
+                >
+                  <strong>{{ warning.concept ?? "语义校验" }}</strong>
+                  <span>{{ warning.message ?? warning.explanation ?? "当前结果可能缺少语义支撑。" }}</span>
                 </div>
               </section>
 

@@ -4,8 +4,21 @@ from typing import Any
 
 import httpx
 
+from backend.app.agent.prompts.semantic_grounding import (
+    build_concept_extraction_messages,
+    build_grounding_check_messages,
+)
 from backend.app.agent.prompts.sql_generation import build_sql_generation_messages
 from backend.app.config import get_settings
+from backend.app.agent.semantic_grounding import (
+    ConceptExtractionRequest,
+    ConceptExtractionResult,
+    GroundingCheckRequest,
+    GroundingCheckResult,
+    SemanticGroundingVerifier,
+    parse_concept_extraction_content,
+    parse_grounding_check_content,
+)
 from backend.app.core.llm_provider import (
     SQLGenerationRequest,
     SQLGenerationResult,
@@ -13,7 +26,7 @@ from backend.app.core.llm_provider import (
 )
 
 
-class DeepSeekProvider:
+class DeepSeekProvider(SemanticGroundingVerifier):
     name = "deepseek"
 
     def __init__(
@@ -35,7 +48,7 @@ class DeepSeekProvider:
         if not self.api_key:
             raise ValueError("DEEPSEEK_API_KEY is required for DeepSeekProvider.")
 
-        response = self._post_chat_completion(request)
+        response = self._post_chat_messages(build_sql_generation_messages(request), timeout=self._timeout)
         response.raise_for_status()
         content = _extract_message_content(response.json())
         sql, is_follow_up, change_kind = parse_sql_generation_content(
@@ -49,10 +62,32 @@ class DeepSeekProvider:
             change_kind=change_kind,
         )
 
-    def _post_chat_completion(self, request: SQLGenerationRequest) -> httpx.Response:
+    def extract_required_concepts(self, request: ConceptExtractionRequest) -> ConceptExtractionResult:
+        if not self.api_key:
+            raise ValueError("DEEPSEEK_API_KEY is required for DeepSeekProvider.")
+
+        response = self._post_chat_messages(
+            build_concept_extraction_messages(request),
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        return parse_concept_extraction_content(_extract_message_content(response.json()))
+
+    def check_grounding(self, request: GroundingCheckRequest) -> GroundingCheckResult:
+        if not self.api_key:
+            raise ValueError("DEEPSEEK_API_KEY is required for DeepSeekProvider.")
+
+        response = self._post_chat_messages(
+            build_grounding_check_messages(request),
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        return parse_grounding_check_content(_extract_message_content(response.json()))
+
+    def _post_chat_messages(self, messages: list[dict[str, str]], *, timeout: float) -> httpx.Response:
         payload = {
             "model": self.model,
-            "messages": build_sql_generation_messages(request),
+            "messages": messages,
             "temperature": 0,
             "stream": False,
         }
@@ -62,10 +97,10 @@ class DeepSeekProvider:
         }
         url = f"{self.base_url}/chat/completions"
 
-        timeout = _timeout_config(self._timeout)
+        timeout_config = _timeout_config(timeout)
         if self._http_client is not None:
-            return self._http_client.post(url, json=payload, headers=headers, timeout=timeout)
-        with httpx.Client(timeout=timeout) as client:
+            return self._http_client.post(url, json=payload, headers=headers, timeout=timeout_config)
+        with httpx.Client(timeout=timeout_config) as client:
             return client.post(url, json=payload, headers=headers)
 
 

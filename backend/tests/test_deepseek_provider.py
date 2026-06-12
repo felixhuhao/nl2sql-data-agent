@@ -2,6 +2,11 @@ import httpx
 import pytest
 
 from backend.app.core.deepseek_provider import DeepSeekProvider
+from backend.app.agent.semantic_grounding import (
+    ConceptExtractionRequest,
+    GroundingCheckRequest,
+    RequiredConcept,
+)
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 
 
@@ -152,6 +157,50 @@ def test_deepseek_provider_rejects_missing_message_content():
 
     with pytest.raises(ValueError, match="message content"):
         provider.generate_sql(_request())
+
+
+def test_deepseek_provider_extracts_required_concepts():
+    client = FakeHTTPClient(
+        _response(
+            '{"concepts":[{"concept":"删除率","concept_type":"metric","supported":false,'
+            '"evidence":[],"explanation":"No deletion concept."}]}'
+        )
+    )
+    provider = DeepSeekProvider(api_key="test-key", http_client=client, timeout=8)
+
+    result = provider.extract_required_concepts(
+        ConceptExtractionRequest(
+            question="查看删除率趋势",
+            full_schema_context="# Full Schema Context",
+        )
+    )
+
+    assert result.concepts[0].concept == "删除率"
+    assert result.concepts[0].supported is False
+    assert "Full datasource metadata" in client.requests[0]["json"]["messages"][1]["content"]
+    assert client.requests[0]["timeout"].read == 8.0
+
+
+def test_deepseek_provider_checks_semantic_grounding():
+    client = FakeHTTPClient(
+        _response(
+            '{"ok":false,"issues":[{"concept":"删除的订单","failure_kind":"omitted",'
+            '"sql_mapping":null,"supported":false,"explanation":"No deleted filter."}]}'
+        )
+    )
+    provider = DeepSeekProvider(api_key="test-key", http_client=client, timeout=8)
+
+    result = provider.check_grounding(
+        GroundingCheckRequest(
+            question="删除的订单",
+            sql="SELECT order_id FROM fact_orders",
+            concepts=(RequiredConcept(concept="删除的订单", concept_type="filter", supported=False),),
+        )
+    )
+
+    assert result.ok is False
+    assert result.issues[0].failure_kind == "omitted"
+    assert "Candidate SQL" in client.requests[0]["json"]["messages"][1]["content"]
 
 
 def test_mock_provider_is_not_affected_by_deepseek_provider():

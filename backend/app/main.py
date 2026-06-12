@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.chat import router as chat_router
 from backend.app.api.datasources import router as datasources_router
 from backend.app.api.metadata import router as metadata_router
-from backend.app.config import effective_llm_provider_name
+from backend.app.config import deepseek_config_available, effective_llm_provider_name, get_settings, semantic_guard_mode
 from backend.app.connectors.registry import get_datasource_manager
 
 
@@ -32,4 +32,14 @@ app.include_router(metadata_router)
 @app.get("/health")
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "llm_provider": effective_llm_provider_name()}
+    settings = get_settings()
+    guard_mode = semantic_guard_mode(settings)
+    verifier_available = deepseek_config_available(settings)
+    verifier_status = "disabled" if guard_mode == "off" else ("available" if verifier_available else "unavailable")
+    status = "degraded" if guard_mode == "enforce" and not verifier_available else "ok"
+    return {
+        "status": status,
+        "llm_provider": effective_llm_provider_name(),
+        "semantic_guard": guard_mode,
+        "semantic_verifier": verifier_status,
+    }
