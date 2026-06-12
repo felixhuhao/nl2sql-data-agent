@@ -85,6 +85,7 @@ def _grounding_check_system_prompt() -> str:
             "Flag substitution when the SQL answers the unsupported concept with another available column, value, metric, or expression.",
             "If the unsupported concept is a filter/entity and the SQL filters to a different status or value, classify that as substituted, not omitted.",
             "Flag omission when the question requires the concept but the SQL contains no mapping/filter/calculation for it.",
+            "If the SQL uses an impossible predicate such as WHERE FALSE, 1=0, or another forced-empty result for an unsupported concept, classify it as omitted; an empty result is not semantic grounding.",
             "Do not flag a rate, share, count, or trend calculation merely because there is no pre-defined metric, as long as the required dimension/status value was marked supported by the extraction stage.",
             "Do not flag analytical operations such as rank correlation, YoY/MoM, moving averages, TopN, share, ratio, or compatible arithmetic.",
             "Return ok=true only when there are no unsupported-concept substitutions or omissions.",
