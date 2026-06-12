@@ -127,6 +127,7 @@ def test_render_report_includes_warning_distribution():
     assert "# Semantic Guard Eval Report" in report
     assert "- Verifier-only cases: 0" in report
     assert "concept_absent_full_metadata" in report
+    assert "| Pattern | Ready |" in report
     assert "substituted=1" in report
     assert "删除率=1" in report
 
@@ -245,3 +246,69 @@ def test_promotion_pattern_stats_tracks_false_confirmed_warning():
     assert stats["verifier_positive_passed"] == 1
     assert stats["verifier_negative_cases"] == 1
     assert stats["verifier_negative_passed"] == 1
+
+
+def test_promotion_readiness_marks_pattern_ready_when_criteria_are_met():
+    results = [
+        runner.SemanticEvalResult(
+            case_id=f"unsupported_{index}",
+            question="删除率",
+            tags=["unsupported"],
+            promotion_pattern="concept_absent_full_metadata",
+            expected_warning=True,
+            warning_count=1,
+            warnings=[
+                {
+                    "failure_kind": "substituted" if index == 0 else "omitted",
+                    "refutation_confirmed": True,
+                }
+            ],
+        )
+        for index in range(12)
+    ]
+    results.extend(
+        runner.SemanticEvalResult(
+            case_id=f"positive_{index}",
+            question="退货率",
+            tags=["positive_schema"],
+            case_type="verifier_only",
+            promotion_pattern="concept_absent_full_metadata",
+            required_concepts=[{"concept": "退货率", "supported": True}],
+        )
+        for index in range(5)
+    )
+    results.extend(
+        runner.SemanticEvalResult(
+            case_id=f"negative_{index}",
+            question="退货率",
+            tags=["negative_schema"],
+            case_type="verifier_only",
+            promotion_pattern="concept_absent_full_metadata",
+            required_concepts=[{"concept": "退货率", "supported": False}],
+        )
+        for index in range(3)
+    )
+
+    readiness = runner._promotion_readiness(results)["concept_absent_full_metadata"]
+
+    assert readiness == {"ready": True, "blockers": []}
+
+
+def test_promotion_readiness_lists_unmet_criteria():
+    results = [
+        runner.SemanticEvalResult(
+            case_id="unsupported",
+            question="删除率",
+            tags=["unsupported"],
+            promotion_pattern="concept_absent_full_metadata",
+            expected_warning=True,
+            warning_count=1,
+            warnings=[{"failure_kind": "substituted", "refutation_confirmed": True}],
+        )
+    ]
+
+    readiness = runner._promotion_readiness(results)["concept_absent_full_metadata"]
+
+    assert readiness["ready"] is False
+    assert "needs at least 20 cases; got 1" in readiness["blockers"]
+    assert "unsupported workflow warnings must cover substituted and omitted findings" in readiness["blockers"]

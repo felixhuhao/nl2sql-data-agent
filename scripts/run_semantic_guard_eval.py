@@ -110,6 +110,11 @@ def main() -> int:
         default=0,
         help="Retry a failed case up to N times. Useful for transient provider availability during eval collection.",
     )
+    parser.add_argument(
+        "--require-promotion-ready",
+        action="store_true",
+        help="Exit non-zero unless every selected promotion pattern satisfies Phase 2 readiness criteria.",
+    )
     args = parser.parse_args()
 
     try:
@@ -147,7 +152,20 @@ def main() -> int:
     report_path = Path(args.report_path)
     _write_report(report_path, results, semantic_mode=args.semantic_mode)
     _print_results(results, report_path=report_path)
-    return 0 if all(result.passed for result in results) else 1
+    if not all(result.passed for result in results):
+        return 1
+    if args.require_promotion_ready:
+        readiness = _promotion_readiness(results)
+        not_ready = {pattern: status for pattern, status in readiness.items() if not status["ready"]}
+        if not_ready:
+            for pattern, status in not_ready.items():
+                print(
+                    f"promotion pattern {pattern!r} is not ready: "
+                    + "; ".join(status["blockers"]),
+                    file=sys.stderr,
+                )
+            return 1
+    return 0
 
 
 def _load_cases(path: Path) -> list[dict[str, Any]]:
@@ -481,6 +499,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         for warning in result.warnings
     )
     promotion_stats = _promotion_pattern_stats(results)
+    promotion_readiness = _promotion_readiness(results)
     lines = [
         "# Semantic Guard Eval Report",
         "",
@@ -503,16 +522,18 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         "",
         "## Promotion Pattern Readiness",
         "",
-        "| Pattern | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier-only Negative | Verifier Unavailable |",
-        "|---------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|------------------------|----------------------|",
+        "| Pattern | Ready | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier-only Negative | Verifier Unavailable | Blockers |",
+        "|---------|-------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|------------------------|----------------------|----------|",
     ]
     if promotion_stats:
         for pattern, stats in promotion_stats.items():
+            readiness = promotion_readiness[pattern]
             lines.append(
                 "| "
                 + " | ".join(
                     [
                         _md_cell(pattern),
+                        "yes" if readiness["ready"] else "no",
                         str(stats["cases"]),
                         f"{stats['passed']}/{stats['cases']}",
                         str(stats["expected_warning_cases"]),
@@ -522,12 +543,13 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
                         f"{stats['verifier_positive_passed']}/{stats['verifier_positive_cases']}",
                         f"{stats['verifier_negative_passed']}/{stats['verifier_negative_cases']}",
                         str(stats["verifier_unavailable_cases"]),
+                        _md_cell("; ".join(readiness["blockers"]) or "-"),
                     ]
                 )
                 + " |"
             )
     else:
-        lines.append("| n/a | 0 | 0/0 | 0 | 0 | 0 | 0 | 0/0 | 0/0 | 0 |")
+        lines.append("| n/a | no | 0 | 0/0 | 0 | 0 | 0 | 0 | 0/0 | 0/0 | 0 | no promotion pattern cases |")
 
     lines.append("")
     lines.extend(
@@ -652,6 +674,69 @@ def _promotion_pattern_stats(results: list[SemanticEvalResult]) -> dict[str, dic
             pattern_stats["verifier_negative_passed"] += int(result.passed)
         pattern_stats["verifier_unavailable_cases"] += int(result.verifier_unavailable)
     return stats
+
+
+def _promotion_readiness(results: list[SemanticEvalResult]) -> dict[str, dict[str, Any]]:
+    stats = _promotion_pattern_stats(results)
+    readiness: dict[str, dict[str, Any]] = {}
+    for pattern, pattern_stats in stats.items():
+        pattern_results = [result for result in results if result.promotion_pattern == pattern]
+        blockers: list[str] = []
+        workflow_warning_cases = [
+            result
+            for result in pattern_results
+            if result.case_type == "workflow" and result.expected_warning is True
+        ]
+        workflow_warning_kinds = {
+            str(warning.get("failure_kind") or "")
+            for result in workflow_warning_cases
+            for warning in result.warnings
+        }
+
+        if pattern_stats["cases"] < 20:
+            blockers.append(f"needs at least 20 cases; got {pattern_stats['cases']}")
+        if pattern_stats["passed"] != pattern_stats["cases"]:
+            blockers.append(f"all cases must pass; got {pattern_stats['passed']}/{pattern_stats['cases']}")
+        if len(workflow_warning_cases) < 10:
+            blockers.append(f"needs at least 10 unsupported workflow warning cases; got {len(workflow_warning_cases)}")
+        if not {"substituted", "omitted"}.issubset(workflow_warning_kinds):
+            blockers.append("unsupported workflow warnings must cover substituted and omitted findings")
+        if pattern_stats["verifier_positive_cases"] < 5:
+            blockers.append(
+                "needs at least 5 positive-schema verifier-only cases; "
+                f"got {pattern_stats['verifier_positive_cases']}"
+            )
+        elif pattern_stats["verifier_positive_passed"] != pattern_stats["verifier_positive_cases"]:
+            blockers.append(
+                "all positive-schema verifier-only cases must pass; "
+                f"got {pattern_stats['verifier_positive_passed']}/{pattern_stats['verifier_positive_cases']}"
+            )
+        if pattern_stats["verifier_negative_cases"] < 3:
+            blockers.append(
+                "needs at least 3 negative-schema verifier-only cases; "
+                f"got {pattern_stats['verifier_negative_cases']}"
+            )
+        elif pattern_stats["verifier_negative_passed"] != pattern_stats["verifier_negative_cases"]:
+            blockers.append(
+                "all negative-schema verifier-only cases must pass; "
+                f"got {pattern_stats['verifier_negative_passed']}/{pattern_stats['verifier_negative_cases']}"
+            )
+        if pattern_stats["false_confirmed_warning_cases"]:
+            blockers.append(
+                "false confirmed warning cases must be 0; "
+                f"got {pattern_stats['false_confirmed_warning_cases']}"
+            )
+        if pattern_stats["verifier_unavailable_cases"]:
+            blockers.append(
+                "verifier unavailable cases must be 0; "
+                f"got {pattern_stats['verifier_unavailable_cases']}"
+            )
+
+        readiness[pattern] = {
+            "ready": not blockers,
+            "blockers": blockers,
+        }
+    return readiness
 
 
 def _is_verifier_positive_case(result: SemanticEvalResult) -> bool:

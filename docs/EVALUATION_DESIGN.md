@@ -121,6 +121,19 @@ backend/.venv/bin/python scripts/run_semantic_guard_eval.py --case-id verifier_r
 backend/.venv/bin/python scripts/run_semantic_guard_eval.py --promotion-pattern concept_absent_full_metadata --limit 1
 ```
 
+When collecting promotion evidence, run the full pattern with the readiness gate enabled:
+
+```bash
+backend/.venv/bin/python scripts/run_semantic_guard_eval.py \
+  --semantic-mode warn \
+  --promotion-pattern concept_absent_full_metadata \
+  --retries 1 \
+  --require-promotion-ready \
+  --report-path evals/reports/semantic_guard_promotion_latest.md
+```
+
+The readiness table is criterion-based: minimum case counts, positive/negative verifier-only coverage, substituted + omitted workflow coverage, zero false confirmed warnings, and zero verifier-unavailable cases. A provider outage fails readiness by design.
+
 Full-corpus runs are reserved for checkpoint validation because workflow cases call the generator, verifier, SQL Guard, and executor.
 
 ## 报告内容
