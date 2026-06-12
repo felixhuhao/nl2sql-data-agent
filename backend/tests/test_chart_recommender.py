@@ -58,6 +58,20 @@ def test_recommend_chart_returns_line_for_date_alias():
     assert recommendation.y_columns == ["sales_amount"]
 
 
+def test_recommend_chart_infers_line_from_temporal_and_numeric_values_without_name_hints():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["bucket", "total"],
+            rows=[["2025-12-30", 100], ["2025-12-31", 120]],
+            row_count=2,
+        )
+    )
+
+    assert recommendation.chart_type == "line"
+    assert recommendation.x_column == "bucket"
+    assert recommendation.y_columns == ["total"]
+
+
 def test_recommend_chart_returns_table_for_detail_rows():
     recommendation = recommend_chart(
         QueryResult(
@@ -131,6 +145,20 @@ def test_recommend_chart_returns_bar_for_category_metric_rows():
     assert recommendation.chart_type == "bar"
     assert recommendation.x_column == "channel_name"
     assert recommendation.y_columns == ["sales_amount"]
+
+
+def test_recommend_chart_infers_bar_from_category_and_numeric_values_without_name_hints():
+    recommendation = recommend_chart(
+        QueryResult(
+            columns=["label", "score"],
+            rows=[["官网", 100], ["天猫", 90]],
+            row_count=2,
+        )
+    )
+
+    assert recommendation.chart_type == "bar"
+    assert recommendation.x_column == "label"
+    assert recommendation.y_columns == ["score"]
 
 
 def test_recommend_chart_returns_table_for_single_category_metric_row():
