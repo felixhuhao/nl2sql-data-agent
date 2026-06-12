@@ -1,120 +1,109 @@
+from __future__ import annotations
+
 import json
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-# Demo-only business semantics. Physical tables and columns still come from DB introspection.
-TABLE_SEMANTICS = {
-    "dim_date": ("日期维表", "日期、周、月、季度、年份维度", "time"),
-    "dim_users": ("用户维表", "用户基础属性和注册信息", "user"),
-    "dim_products": ("商品维表", "商品品类、品牌和价格信息", "product"),
-    "dim_regions": ("区域维表", "省份、城市和大区信息", "region"),
-    "dim_channels": ("渠道维表", "订单来源渠道信息", "channel"),
-    "fact_orders": ("订单事实表", "订单支付金额、折扣和状态", "sales"),
-    "fact_order_items": ("订单明细事实表", "订单商品明细、数量和明细金额", "sales"),
-}
+import yaml
 
-COLUMN_SEMANTICS = {
-    "date_key": "日期键，格式 YYYYMMDD",
-    "date_value": "日期",
-    "year": "年份",
-    "quarter": "季度",
-    "month": "月份",
-    "week": "周序号",
-    "day_of_week": "星期",
-    "user_key": "用户代理键",
-    "user_id": "用户业务 ID",
-    "name": "名称",
-    "gender": "性别",
-    "age_group": "年龄段",
-    "register_date": "注册日期",
-    "city": "城市",
-    "product_key": "商品代理键",
-    "product_id": "商品业务 ID",
-    "category": "一级品类",
-    "sub_category": "二级品类",
-    "brand": "品牌",
-    "price": "标价",
-    "region_key": "区域代理键",
-    "province": "省份",
-    "region_group": "大区",
-    "channel_key": "渠道代理键",
-    "channel_name": "渠道名称",
-    "channel_type": "渠道类型",
-    "order_id": "订单 ID",
-    "total_amount": "订单原始金额",
-    "discount_amount": "订单优惠金额",
-    "payment_amount": "订单实付金额，销售额口径字段",
-    "order_status": "订单状态",
-    "item_id": "订单明细 ID",
-    "quantity": "商品数量",
-    "unit_price": "成交单价",
-    "item_amount": "明细金额",
-}
+from backend.app.config import PROJECT_ROOT, get_settings
 
-TABLE_COLUMN_SEMANTICS: dict[tuple[str, str], str] = {
-    ("dim_users", "name"): "用户姓名",
-    ("dim_users", "city"): "用户所在城市",
-    ("dim_products", "name"): "商品名称",
-    ("dim_regions", "city"): "城市",
-}
 
-DIMENSION_COLUMNS = {
-    "date_key",
-    "date_value",
-    "year",
-    "quarter",
-    "month",
-    "week",
-    "day_of_week",
-    "user_key",
-    "user_id",
-    "gender",
-    "age_group",
-    "register_date",
-    "city",
-    "product_key",
-    "product_id",
-    "category",
-    "sub_category",
-    "brand",
-    "region_key",
-    "province",
-    "region_group",
-    "channel_key",
-    "channel_name",
-    "channel_type",
-    "order_id",
-    "order_status",
-    "item_id",
-}
+DEFAULT_OVERLAY_PATH = Path(__file__).with_name("semantic_overlays") / "ecommerce.yml"
 
-METRIC_COLUMNS = {
-    "price",
-    "total_amount",
-    "discount_amount",
-    "payment_amount",
-    "quantity",
-    "unit_price",
-    "item_amount",
-}
 
-SAMPLE_VALUE_FALLBACKS = {
-    "gender": ["女", "男"],
-    "age_group": ["18-24", "25-34", "35-44", "45+"],
-    "category": ["手机数码", "家用电器", "服饰鞋包", "食品生鲜", "美妆个护"],
-    "region_group": ["华东", "华北", "华南", "西南", "华中"],
-    "channel_name": ["官网", "天猫", "京东", "抖音", "小程序"],
-    "channel_type": ["自营", "平台", "内容电商"],
-    "order_status": ["paid", "completed", "refunded"],
-}
+def _overlay_path() -> Path:
+    configured = get_settings().semantic_overlay_path
+    if configured:
+        path = configured.expanduser()
+        if path.is_absolute():
+            return path
+        return (PROJECT_ROOT / path).resolve()
+    return DEFAULT_OVERLAY_PATH
 
-CONFIRMED_RELATIONSHIPS = [
-    ("fact_orders", "user_key", "dim_users", "user_key", "many_to_one", "订单关联用户"),
-    ("fact_orders", "region_key", "dim_regions", "region_key", "many_to_one", "订单关联区域"),
-    ("fact_orders", "channel_key", "dim_channels", "channel_key", "many_to_one", "订单关联渠道"),
-    ("fact_orders", "date_key", "dim_date", "date_key", "many_to_one", "订单关联日期"),
-    ("fact_order_items", "order_id", "fact_orders", "order_id", "many_to_one", "明细关联订单"),
-    ("fact_order_items", "product_key", "dim_products", "product_key", "many_to_one", "明细关联商品"),
-    ("fact_order_items", "date_key", "dim_date", "date_key", "many_to_one", "明细关联日期"),
-]
+
+@lru_cache(maxsize=4)
+def _load_overlay(path: str | None = None) -> dict[str, Any]:
+    overlay_path = Path(path) if path else _overlay_path()
+    with overlay_path.open(encoding="utf-8") as file:
+        data = yaml.safe_load(file) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Semantic overlay must be a mapping: {overlay_path}")
+    return data
+
+
+def _table_semantics(data: dict[str, Any]) -> dict[str, tuple[str, str, str]]:
+    tables = data.get("tables") or {}
+    return {
+        name: (
+            str(values.get("display_name") or name),
+            str(values.get("description") or ""),
+            str(values.get("domain") or ""),
+        )
+        for name, values in tables.items()
+        if isinstance(values, dict)
+    }
+
+
+def _column_semantics(data: dict[str, Any]) -> dict[str, str]:
+    columns = data.get("columns") or {}
+    return {str(name): str(description) for name, description in columns.items()}
+
+
+def _table_column_semantics(data: dict[str, Any]) -> dict[tuple[str, str], str]:
+    table_columns = data.get("table_columns") or {}
+    semantics: dict[tuple[str, str], str] = {}
+    for table_name, columns in table_columns.items():
+        if not isinstance(columns, dict):
+            continue
+        for column_name, description in columns.items():
+            semantics[(str(table_name), str(column_name))] = str(description)
+    return semantics
+
+
+def _string_set(data: dict[str, Any], key: str) -> set[str]:
+    values = data.get(key) or []
+    return {str(value) for value in values}
+
+
+def _sample_value_fallbacks(data: dict[str, Any]) -> dict[str, list[str]]:
+    fallbacks = data.get("sample_value_fallbacks") or {}
+    return {
+        str(column_name): [str(value) for value in values]
+        for column_name, values in fallbacks.items()
+        if isinstance(values, list)
+    }
+
+
+def _confirmed_relationships(data: dict[str, Any]) -> list[tuple[str, str, str, str, str, str]]:
+    relationships = data.get("confirmed_relationships") or []
+    parsed = []
+    for relationship in relationships:
+        if not isinstance(relationship, dict):
+            continue
+        parsed.append(
+            (
+                str(relationship.get("source_table") or ""),
+                str(relationship.get("source_column") or ""),
+                str(relationship.get("target_table") or ""),
+                str(relationship.get("target_column") or ""),
+                str(relationship.get("relationship_type") or ""),
+                str(relationship.get("description") or ""),
+            )
+        )
+    return parsed
+
+
+_OVERLAY = _load_overlay()
+
+TABLE_SEMANTICS = _table_semantics(_OVERLAY)
+COLUMN_SEMANTICS = _column_semantics(_OVERLAY)
+TABLE_COLUMN_SEMANTICS = _table_column_semantics(_OVERLAY)
+DIMENSION_COLUMNS = _string_set(_OVERLAY, "dimension_columns")
+METRIC_COLUMNS = _string_set(_OVERLAY, "metric_columns")
+SAMPLE_VALUE_FALLBACKS = _sample_value_fallbacks(_OVERLAY)
+CONFIRMED_RELATIONSHIPS = _confirmed_relationships(_OVERLAY)
 
 
 def sample_value_fallbacks_json(column_name: str) -> str | None:

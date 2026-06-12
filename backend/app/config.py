@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     duckdb_path: Path = Field(default=PROJECT_ROOT / "data" / "ecommerce.duckdb")
     sqlite_path: Path = Field(default=PROJECT_ROOT / "data" / "metadata.sqlite")
     dataset_current_date: str = "2025-12-31"
+    semantic_overlay_path: Path | None = None
     llm_provider: str = "auto"
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
