@@ -68,6 +68,7 @@ def _concept_extraction_system_prompt() -> str:
             "For qualified entity requests, keep the qualifier/status/filter as its own required concept; a supported base entity does not make an unsupported qualifier supported.",
             "Mark a concept supported only when the metadata provides evidence through table names, column names, labels, descriptions, aliases, metric definitions, verified queries, guidance, or sample values.",
             "Support semantics: value-derived rates, shares, counts, or trends over documented dimension/status values are supported when the column and requested value meaning are documented; an exact pre-defined metric is not required.",
+            "A documented value supports only its explicit business meaning and aliases; similarity, causality, or common co-occurrence with another lifecycle/payment/fulfillment outcome is not evidence.",
             "Do not require same-named columns for analytical operations such as rank correlation, YoY/MoM, moving averages, TopN, share, ratio, or compatible arithmetic.",
             "Do not invent synonym rules. If the metadata does not support the requested business concept, mark supported=false.",
             "Return one JSON object and nothing else.",

@@ -11,7 +11,9 @@ Eval 的目标不是给项目贴一个 pass rate，而是回答三个问题：
 核心文件：
 
 - `scripts/run_smoke_eval.py`
+- `scripts/run_semantic_guard_eval.py`
 - `evals/smoke_cases.yaml`
+- `evals/semantic_guard_cases.yaml`
 - `evals/reports/*.md`
 - `backend/tests/test_smoke_eval_runner.py`
 
@@ -101,6 +103,16 @@ Runner 记录 `error_category`，例如：
 - `explainability_mismatch`
 
 这让每次失败都有明确归因，而不是只看 pass/fail。
+
+## Semantic Guard Eval
+
+Phase 1 semantic grounding uses a separate warn-only eval runner:
+
+```bash
+backend/.venv/bin/python scripts/run_semantic_guard_eval.py --semantic-mode warn --retries 1
+```
+
+The case file pairs supported no-warning questions with unsupported adjacent-substitution / omission questions. The runner records generated SQL, warning count, warning concepts, failure kinds, refutation confirmation, verifier availability, and writes `evals/reports/semantic_guard_latest.md` (ignored by git like other generated reports). These results are evidence for Phase 2 promotion; they do not enable `enforce` mode by themselves.
 
 ## 报告内容
 

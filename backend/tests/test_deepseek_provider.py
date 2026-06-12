@@ -178,6 +178,7 @@ def test_deepseek_provider_extracts_required_concepts():
 
     assert result.concepts[0].concept == "删除率"
     assert result.concepts[0].supported is False
+    assert "explicit business meaning" in client.requests[0]["json"]["messages"][0]["content"]
     assert "Full datasource metadata" in client.requests[0]["json"]["messages"][1]["content"]
     assert client.requests[0]["timeout"].read == 8.0
 
