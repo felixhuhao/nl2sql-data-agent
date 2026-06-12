@@ -6,6 +6,7 @@ from backend.app.agent.semantic_grounding import (
     ConceptExtractionRequest,
     GroundingCheckRequest,
     RequiredConcept,
+    SQLSemanticFacts,
 )
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 
@@ -195,6 +196,7 @@ def test_deepseek_provider_checks_semantic_grounding():
             question="删除的订单",
             sql="SELECT order_id FROM fact_orders",
             concepts=(RequiredConcept(concept="删除的订单", concept_type="filter", supported=False),),
+            sql_facts=SQLSemanticFacts(),
         )
     )
 

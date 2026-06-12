@@ -7,6 +7,10 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+
 from backend.app.agent.state import AgentState, GroundingWarningPayload
 from backend.app.config import get_settings, semantic_guard_mode
 from backend.app.core.llm_provider import strip_code_fence
@@ -25,6 +29,7 @@ class SemanticVerifierUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class RequiredConcept:
     concept: str
+    concept_id: str = ""
     concept_type: str = "other"
     supported: bool = False
     evidence: tuple[str, ...] = ()
@@ -38,6 +43,8 @@ class RequiredConcept:
 class SemanticGroundingIssue:
     concept: str
     failure_kind: str
+    concept_id: str = ""
+    concept_type: str = "other"
     sql_mapping: str | None = None
     supported: bool = False
     explanation: str = ""
@@ -64,6 +71,7 @@ class GroundingCheckRequest:
     question: str
     sql: str
     concepts: tuple[RequiredConcept, ...]
+    sql_facts: "SQLSemanticFacts"
     datasource_name: str = DEFAULT_DATASOURCE
     datasource_dialect: str = "duckdb"
 
@@ -78,6 +86,15 @@ class GroundingCheckResult:
 class RefutationAuditResult:
     confirmed: bool
     reason: str
+
+    def model_dump(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SQLSemanticFacts:
+    forced_empty_result: bool = False
+    forced_empty_reason: str | None = None
 
     def model_dump(self) -> dict:
         return asdict(self)
@@ -155,6 +172,7 @@ def semantic_guard_node(
 
     verifier = verifier or UnavailableSemanticGroundingVerifier("Semantic verifier is not configured.")
     auditor = auditor or SemanticRefutationAuditor()
+    sql_facts = analyze_sql_semantic_facts(state.sql, datasource_dialect=state.datasource_dialect)
 
     try:
         full_context = _full_schema_context(state, auditor)
@@ -168,11 +186,12 @@ def semantic_guard_node(
             }
             state.completed_steps.append("semantic_guard")
             return state
-        result = verifier.check_grounding(
+        result = _forced_empty_grounding_result(unsupported_concepts, sql_facts) or verifier.check_grounding(
             GroundingCheckRequest(
                 question=state.question,
                 sql=state.sql,
                 concepts=unsupported_concepts,
+                sql_facts=sql_facts,
                 datasource_name=state.datasource_name,
                 datasource_dialect=state.datasource_dialect,
             )
@@ -185,10 +204,12 @@ def semantic_guard_node(
         _record_verifier_unavailable(state, mode=mode, reason=str(exc))
         return state
 
+    result = _normalize_grounding_result(result, unsupported_concepts)
     state.semantic_guard_result = {
         "ok": result.ok,
         "verifier_unavailable": False,
         "issues": [issue.model_dump() for issue in result.issues],
+        "sql_facts": sql_facts.model_dump(),
     }
     state.completed_steps.append("semantic_guard")
     if result.ok:
@@ -213,7 +234,11 @@ def parse_concept_extraction_content(content: str) -> ConceptExtractionResult:
     raw_concepts = payload.get("concepts")
     if not isinstance(raw_concepts, list):
         raise ValueError("Semantic concept extraction response must include concepts.")
-    return ConceptExtractionResult(concepts=tuple(_parse_required_concept(item) for item in raw_concepts))
+    return ConceptExtractionResult(
+        concepts=_ensure_concept_ids(
+            tuple(_parse_required_concept(item) for item in raw_concepts)
+        )
+    )
 
 
 def parse_grounding_check_content(content: str) -> GroundingCheckResult:
@@ -236,7 +261,8 @@ def _required_concepts(
     full_schema_context: str,
 ) -> tuple[RequiredConcept, ...]:
     if state.required_concepts is not None:
-        return tuple(_coerce_required_concept(item) for item in state.required_concepts)
+        concepts = tuple(_coerce_required_concept(item) for item in state.required_concepts)
+        return concepts if all(concept.concept_id for concept in concepts) else _ensure_concept_ids(concepts)
     result = verifier.extract_required_concepts(
         ConceptExtractionRequest(
             question=state.question,
@@ -245,8 +271,26 @@ def _required_concepts(
             datasource_dialect=state.datasource_dialect,
         )
     )
-    state.required_concepts = [concept.model_dump() for concept in result.concepts]
-    return result.concepts
+    concepts = _ensure_concept_ids(result.concepts)
+    state.required_concepts = [concept.model_dump() for concept in concepts]
+    return concepts
+
+
+def analyze_sql_semantic_facts(sql: str, *, datasource_dialect: str = "duckdb") -> SQLSemanticFacts:
+    try:
+        tree = sqlglot.parse_one(sql, read=datasource_dialect or "duckdb")
+    except SqlglotError:
+        return SQLSemanticFacts()
+
+    limit = tree.args.get("limit")
+    if isinstance(limit, exp.Limit) and _is_zero_literal(limit.args.get("expression")):
+        return SQLSemanticFacts(forced_empty_result=True, forced_empty_reason="LIMIT 0")
+
+    where = tree.args.get("where")
+    if isinstance(where, exp.Where) and _is_forced_false_expression(where.this):
+        return SQLSemanticFacts(forced_empty_result=True, forced_empty_reason=f"WHERE {where.this.sql()}")
+
+    return SQLSemanticFacts()
 
 
 def _full_schema_context(state: AgentState, auditor: SemanticRefutationAuditor) -> str:
@@ -285,6 +329,8 @@ def _warning_from_issue(issue: SemanticGroundingIssue, refutation: RefutationAud
         detail = ""
     return {
         "concept": issue.concept,
+        "concept_id": issue.concept_id,
+        "concept_type": issue.concept_type,
         "failure_kind": issue.failure_kind,
         "sql_mapping": issue.sql_mapping,
         "supported": issue.supported,
@@ -330,6 +376,7 @@ def _parse_required_concept(value: object) -> RequiredConcept:
         raise ValueError("Each semantic concept must be an object.")
     return RequiredConcept(
         concept=_required_string(value.get("concept"), "concept"),
+        concept_id=_optional_string(value.get("concept_id"), ""),
         concept_type=_optional_string(value.get("concept_type"), "other"),
         supported=bool(value.get("supported", False)),
         evidence=tuple(_string_list(value.get("evidence"))),
@@ -344,9 +391,15 @@ def _parse_grounding_issue(value: object) -> SemanticGroundingIssue:
     if failure_kind not in {"substituted", "omitted"}:
         failure_kind = "omitted"
     sql_mapping = value.get("sql_mapping")
+    concept = _optional_string(value.get("concept"), "")
+    concept_id = _optional_string(value.get("concept_id"), "")
+    if not concept and not concept_id:
+        raise ValueError("Semantic grounding issue must include concept_id or concept.")
     return SemanticGroundingIssue(
-        concept=_required_string(value.get("concept"), "concept"),
+        concept=concept,
         failure_kind=failure_kind,
+        concept_id=concept_id,
+        concept_type=_optional_string(value.get("concept_type"), "other"),
         sql_mapping=sql_mapping if isinstance(sql_mapping, str) and sql_mapping.strip() else None,
         supported=bool(value.get("supported", False)),
         explanation=_optional_string(value.get("explanation"), ""),
@@ -378,3 +431,110 @@ def _string_list(value: object) -> list[str]:
 def _normalize_mode(value: str) -> str:
     normalized = str(value or "off").strip().casefold()
     return normalized if normalized in {"off", "warn", "enforce"} else "off"
+
+
+def _ensure_concept_ids(concepts: tuple[RequiredConcept, ...]) -> tuple[RequiredConcept, ...]:
+    return tuple(
+        concept
+        if concept.concept_id
+        else RequiredConcept(
+            concept=concept.concept,
+            concept_id=f"c{index + 1}",
+            concept_type=concept.concept_type,
+            supported=concept.supported,
+            evidence=concept.evidence,
+            explanation=concept.explanation,
+        )
+        for index, concept in enumerate(concepts)
+    )
+
+
+def _normalize_grounding_result(
+    result: GroundingCheckResult,
+    concepts: tuple[RequiredConcept, ...],
+) -> GroundingCheckResult:
+    by_id = {concept.concept_id: concept for concept in concepts}
+    by_name = {concept.concept: concept for concept in concepts}
+    normalized_issues = []
+    for issue in result.issues:
+        concept = by_id.get(issue.concept_id) or by_name.get(issue.concept)
+        if concept is None:
+            normalized_issues.append(issue)
+            continue
+        normalized_issues.append(
+            SemanticGroundingIssue(
+                concept=concept.concept,
+                concept_id=concept.concept_id,
+                concept_type=concept.concept_type,
+                failure_kind=issue.failure_kind,
+                sql_mapping=issue.sql_mapping,
+                supported=issue.supported,
+                explanation=issue.explanation,
+            )
+        )
+    return GroundingCheckResult(ok=result.ok, issues=tuple(normalized_issues))
+
+
+def _forced_empty_grounding_result(
+    unsupported_concepts: tuple[RequiredConcept, ...],
+    sql_facts: SQLSemanticFacts,
+) -> GroundingCheckResult | None:
+    if not sql_facts.forced_empty_result:
+        return None
+    return GroundingCheckResult(
+        ok=False,
+        issues=tuple(
+            SemanticGroundingIssue(
+                concept=concept.concept,
+                concept_id=concept.concept_id,
+                concept_type=concept.concept_type,
+                failure_kind="omitted",
+                sql_mapping=sql_facts.forced_empty_reason,
+                explanation=(
+                    "The SQL is forced to return an empty result, which does not ground "
+                    "the unsupported requested concept."
+                ),
+            )
+            for concept in unsupported_concepts
+        ),
+    )
+
+
+def _is_forced_false_expression(expression: exp.Expression) -> bool:
+    if isinstance(expression, exp.Paren):
+        return _is_forced_false_expression(expression.this)
+    if isinstance(expression, exp.Boolean):
+        return expression.this is False
+    if isinstance(expression, exp.EQ):
+        left = expression.args.get("this")
+        right = expression.args.get("expression")
+        if _is_literal(left) and _is_literal(right):
+            return left.this != right.this
+    if isinstance(expression, exp.And):
+        left = expression.args.get("this")
+        right = expression.args.get("expression")
+        return (
+            isinstance(left, exp.Expression)
+            and _is_forced_false_expression(left)
+        ) or (
+            isinstance(right, exp.Expression)
+            and _is_forced_false_expression(right)
+        )
+    if isinstance(expression, exp.Or):
+        left = expression.args.get("this")
+        right = expression.args.get("expression")
+        return (
+            isinstance(left, exp.Expression)
+            and isinstance(right, exp.Expression)
+            and _is_forced_false_expression(left)
+            and _is_forced_false_expression(right)
+        )
+    return False
+
+
+def _is_literal(value: object) -> bool:
+    return isinstance(value, exp.Literal)
+
+
+def _is_zero_literal(value: object) -> bool:
+    return isinstance(value, exp.Literal) and not value.is_string and value.this == "0"

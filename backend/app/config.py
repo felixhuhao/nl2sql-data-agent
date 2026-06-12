@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-pro"
     deepseek_timeout: float = 30.0
     semantic_guard_mode: str = "off"
-    semantic_guard_timeout: float = 8.0
+    semantic_guard_timeout: float = 30.0
     sql_default_ranking_limit: int = Field(default=DEFAULT_RANKING_LIMIT, ge=1, le=500)
     sql_default_browse_limit: int = Field(default=DEFAULT_BROWSE_LIMIT, ge=1, le=500)
     vector_enabled: str | bool = "auto"

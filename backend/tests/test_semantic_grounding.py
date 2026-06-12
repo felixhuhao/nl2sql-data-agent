@@ -1,3 +1,5 @@
+import pytest
+
 from backend.app.agent.semantic_grounding import (
     ConceptExtractionRequest,
     ConceptExtractionResult,
@@ -8,6 +10,7 @@ from backend.app.agent.semantic_grounding import (
     SemanticGroundingIssue,
     SemanticRefutationAuditor,
     SemanticVerifierUnavailable,
+    analyze_sql_semantic_facts,
     parse_concept_extraction_content,
     parse_grounding_check_content,
     semantic_guard_node,
@@ -35,6 +38,7 @@ def test_parse_concept_extraction_content_accepts_structured_json():
     assert result.concepts == (
         RequiredConcept(
             concept="删除率",
+            concept_id="c1",
             concept_type="metric",
             supported=False,
             evidence=(),
@@ -72,6 +76,20 @@ def test_parse_grounding_check_content_accepts_substitution_and_omission():
     assert [issue.failure_kind for issue in result.issues] == ["substituted", "omitted"]
     assert result.issues[0].sql_mapping == "order_status = 'refunded'"
     assert result.issues[1].sql_mapping is None
+
+
+def test_parse_grounding_check_content_requires_issue_identifier():
+    with pytest.raises(ValueError, match="concept_id or concept"):
+        parse_grounding_check_content(
+            """
+            {
+              "ok": false,
+              "issues": [
+                { "failure_kind": "omitted" }
+              ]
+            }
+            """
+        )
 
 
 def test_refutation_auditor_confirms_absent_requested_concept():
@@ -130,6 +148,37 @@ def test_semantic_guard_warn_mode_records_visible_warning():
     assert state.grounding_warnings[0]["failure_kind"] == "substituted"
     assert state.grounding_warnings[0]["refutation_confirmed"] is True
     assert state.completed_steps == ["semantic_guard"]
+
+
+def test_semantic_guard_normalizes_issue_from_concept_id():
+    state = AgentState(question="查看删除率趋势", sql="SELECT 1")
+    verifier = _FakeSemanticVerifier(
+        concepts=[RequiredConcept(concept="删除率", concept_type="metric", supported=False)],
+        checks=[
+            GroundingCheckResult(
+                ok=False,
+                issues=(
+                    SemanticGroundingIssue(
+                        concept="",
+                        concept_id="c1",
+                        failure_kind="omitted",
+                        explanation="No mapping.",
+                    ),
+                ),
+            )
+        ],
+    )
+
+    semantic_guard_node(
+        state,
+        verifier=verifier,
+        auditor=_FakeAuditor(RefutationAuditResult(confirmed=True, reason="No evidence.")),
+        mode="warn",
+    )
+
+    assert state.grounding_warnings[0]["concept"] == "删除率"
+    assert state.grounding_warnings[0]["concept_id"] == "c1"
+    assert state.grounding_warnings[0]["concept_type"] == "metric"
 
 
 def test_semantic_guard_caches_extraction_across_candidates():
@@ -203,6 +252,38 @@ def test_semantic_guard_fail_open_on_verifier_unavailable():
         "issues": [],
     }
     assert state.completed_steps == []
+
+
+def test_semantic_guard_marks_forced_empty_sql_as_omission_without_grounding_call():
+    state = AgentState(question="删除的订单", sql="SELECT order_id FROM fact_orders WHERE FALSE")
+    verifier = _FakeSemanticVerifier(
+        concepts=[RequiredConcept(concept="删除的订单", concept_type="filter", supported=False)],
+        checks=[],
+    )
+
+    semantic_guard_node(
+        state,
+        verifier=verifier,
+        auditor=_FakeAuditor(RefutationAuditResult(confirmed=True, reason="No evidence.")),
+        mode="warn",
+    )
+
+    assert verifier.extraction_calls == 1
+    assert verifier.check_calls == 0
+    assert state.semantic_guard_result is not None
+    assert state.semantic_guard_result["sql_facts"]["forced_empty_result"] is True
+    assert state.grounding_warnings[0]["concept"] == "删除的订单"
+    assert state.grounding_warnings[0]["failure_kind"] == "omitted"
+    assert state.grounding_warnings[0]["sql_mapping"].startswith("WHERE")
+
+
+def test_analyze_sql_semantic_facts_detects_forced_empty_queries():
+    assert analyze_sql_semantic_facts("SELECT * FROM fact_orders WHERE 1 = 0").forced_empty_result is True
+    assert analyze_sql_semantic_facts("SELECT * FROM fact_orders LIMIT 0").forced_empty_result is True
+    assert (
+        analyze_sql_semantic_facts("SELECT * FROM fact_orders WHERE 1 = 0 OR 2 = 2").forced_empty_result
+        is False
+    )
 
 
 class _FakeSemanticVerifier:

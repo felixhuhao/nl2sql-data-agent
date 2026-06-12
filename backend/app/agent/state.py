@@ -15,10 +15,13 @@ class SemanticGuardResult(TypedDict, total=False):
     verifier_unavailable: bool
     reason: str
     issues: list[dict]
+    sql_facts: dict
 
 
 class GroundingWarningPayload(TypedDict, total=False):
     concept: str
+    concept_id: str
+    concept_type: str
     failure_kind: str
     sql_mapping: str | None
     supported: bool

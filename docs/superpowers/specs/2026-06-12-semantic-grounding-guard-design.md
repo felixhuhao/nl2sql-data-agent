@@ -86,13 +86,17 @@ generate_sql ──► │ sql_guard ──► semantic_guard ──► execute 
 
 A **fresh** LLM critic (not the generator marking its own homework), split into two responsibilities with distinct interfaces so the question-invariant part can be cached across repair candidates:
 
-**Stage A — extraction + support (question-invariant, cached).** Input: `{question, full datasource metadata}`. **Not** the focused `schema_context` — support judgments that may justify a block must be made against the *complete* metadata (all tables, columns, aliases, metrics, sample values, verified queries), not the ranked top-K retrieval subset. Output: the list of business concepts the question requires, each marked supported / unsupported with the evidence (or absence) behind it. Runs once per query; cached on state.
+**Stage A — extraction + support (question-invariant, cached).** Input: `{question, full datasource metadata}`. **Not** the focused `schema_context` — support judgments that may justify a block must be made against the *complete* metadata (all tables, columns, aliases, metrics, sample values, verified queries), not the ranked top-K retrieval subset. Output: the list of business concepts the question requires, each with a stable `concept_id`, `concept_type`, supported / unsupported status, and evidence (or absence) behind it. Runs once per query; cached on state.
 
 > Start from the **question**. List the business entities, filters, status values, and named metrics the question requires. For each, decide from the full schema metadata whether schema evidence supports it.
 
-**Stage B — grounding check (per candidate).** Input: `{required concepts from Stage A, candidate sql}`. For each *unsupported* concept, decide how the SQL handled it. Runs on every candidate (initial and repaired).
+**Support semantics policy.** A concept is supported when the full metadata provides evidence for the business meaning through names, labels, descriptions, aliases, Metric Definitions, Verified Queries, SQL Generation Guidance, or sample values. Qualified entity requests preserve the qualifier/status/filter as a required concept: a supported base entity (`orders`) does not make an unsupported qualifier (`deleted`) supported. Value-derived metrics such as rates, shares, counts, and trends do **not** require an exact pre-defined Metric Definition when both the base column and the requested value meaning are documented (e.g. `order_status.refunded` documented as `已退款/退款` can support a refund-rate calculation). Analytical operations (rank correlation, YoY/MoM, moving average, TopN, share/ratio over supported measures) need compatible supported measures/dimensions, not same-named columns.
+
+**Stage B — grounding check (per candidate).** Input: `{unsupported required concepts from Stage A, deterministic SQL facts, candidate sql}`. For each *unsupported* concept, decide how the SQL handled it. Runs on every candidate (initial and repaired). Findings reference Stage-A `concept_id`s rather than re-extracting or renaming concepts, so concept identity is preserved by contract rather than prompt prose.
 
 > For each unsupported concept, flag whether the SQL **substituted** a proxy for it OR **omitted** it entirely (e.g. the question asks for "deleted orders" but the SQL filters nothing). Do NOT flag analytical operations (rank correlation, YoY, moving average, TopN, share) — those require compatible measures/dimensions, not same-named columns.
+
+**Deterministic SQL facts.** Before Stage B, the guard extracts general SQL facts that are not business interpretation, such as `forced_empty_result` for `WHERE FALSE`, `1=0`, `LIMIT 0`, or equivalent forced-empty predicates. These facts are supplied to Stage B and may produce an omission warning for already-extracted unsupported concepts; they never extract a concept from the question.
 
 The split can collapse to a single combined call on the first candidate and reuse the cached Stage-A result for repaired candidates; what matters is that the cached interface (question→concepts) and the per-candidate interface (concepts+sql→findings) are distinct.
 
@@ -108,14 +112,18 @@ Returns structured output:
   "ok": false,
   "issues": [
     {
+      "concept_id": "c1",
       "concept": "删除率",
+      "concept_type": "metric",
       "failure_kind": "substituted",
       "sql_mapping": "order_status = 'refunded'",
       "supported": false,
       "explanation": "Schema documents 'refunded' but defines no deleted/deletion concept; the mapping is invented."
     },
     {
+      "concept_id": "c2",
       "concept": "删除的订单",
+      "concept_type": "filter",
       "failure_kind": "omitted",
       "sql_mapping": null,
       "supported": false,
@@ -228,7 +236,7 @@ The API response model (chat result / SSE final event) is extended to include `g
 2. **Phase 2 — earned enforcement.** From the eval corpus, promote **only** the deterministic refutation patterns the data proves safe (high agreement, no false confirmations). A hard block then requires the double gate: verifier `ok:false` **and** a proven deterministic refutation confirmed. Findings without a proven refutation pattern stay warn-only.
 3. **Phase 3 (later, optional) — clarify.** Replace warnings with an interactive disambiguation turn ("删除率 在当前 schema 中没有直接对应。你是指 退款率 / 取消率 / 都不是?"). Higher build cost (mid-workflow suspend/resume); deferred until value is proven.
 
-A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible.
+A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible. The verifier uses a separate `semantic_guard_timeout` budget; the initial default is 30 seconds because Stage A reads full datasource metadata and is cached across repaired candidates.
 
 ---
 
@@ -257,5 +265,4 @@ A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollo
 
 1. **Overlay→datasource binding.** How an overlay is explicitly bound to a datasource (manifest field, per-datasource overlay path, or registry entry), so the audit consults an overlay only when it describes the active datasource. Until this lands, overlay evidence is used only for the datasource it actually describes.
 2. **Eval-corpus promotion criteria — per refutation pattern, not a global verifier score.** Promotion to the `enforce` block path is decided for each individual refutation pattern on its own evidence (agreement with the verifier, zero false confirmations over N cases), never by a single aggregate verifier precision number. A high overall verifier score must not auto-promote a pattern that has not itself been proven safe.
-3. Where `semantic_guard_mode` (`off` / `warn` / `enforce`) lives in `Settings`, and its default for tests vs. production.
-4. Verifier timeout budget and which provider it uses (same as generation vs. a cheaper/faster model).
+3. Whether enforce-mode production should use the same provider/model as generation or a cheaper/faster verifier model.
