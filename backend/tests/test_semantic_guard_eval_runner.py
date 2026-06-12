@@ -50,6 +50,18 @@ def test_select_case_ids_preserves_requested_order_and_rejects_unknown():
         runner._select_case_ids(cases, ["missing"])
 
 
+def test_filter_promotion_patterns_selects_matching_cases():
+    cases = [
+        {"id": "a", "promotion_pattern": "concept_absent_full_metadata"},
+        {"id": "b", "promotion_pattern": "other"},
+        {"id": "c"},
+    ]
+
+    assert runner._filter_promotion_patterns(cases, ["concept_absent_full_metadata"]) == [cases[0]]
+    with pytest.raises(ValueError, match="unknown semantic guard promotion patterns"):
+        runner._filter_promotion_patterns(cases, ["missing"])
+
+
 def test_run_case_with_retries_returns_later_pass(monkeypatch):
     attempts = []
 
@@ -97,6 +109,7 @@ def test_render_report_includes_warning_distribution():
         case_id="unsupported",
         question="查看删除率趋势",
         tags=["unsupported"],
+        promotion_pattern="concept_absent_full_metadata",
         passed=True,
         warning_count=1,
         expected_warning=True,
@@ -113,6 +126,7 @@ def test_render_report_includes_warning_distribution():
 
     assert "# Semantic Guard Eval Report" in report
     assert "- Verifier-only cases: 0" in report
+    assert "concept_absent_full_metadata" in report
     assert "substituted=1" in report
     assert "删除率=1" in report
 
@@ -182,3 +196,42 @@ def test_validate_expected_required_concepts_flags_wrong_support_status():
 
     assert result.passed is False
     assert "supported=False" in result.messages[0]
+
+
+def test_promotion_pattern_stats_tracks_false_confirmed_warning():
+    results = [
+        runner.SemanticEvalResult(
+            case_id="unsupported",
+            question="删除率",
+            tags=[],
+            promotion_pattern="concept_absent_full_metadata",
+            expected_warning=True,
+            warning_count=1,
+            warnings=[{"refutation_confirmed": True}],
+        ),
+        runner.SemanticEvalResult(
+            case_id="positive",
+            question="退货率",
+            tags=[],
+            case_type="verifier_only",
+            promotion_pattern="concept_absent_full_metadata",
+            required_concepts=[{"concept": "退货率", "supported": True}],
+        ),
+        runner.SemanticEvalResult(
+            case_id="false_positive",
+            question="退款率",
+            tags=[],
+            promotion_pattern="concept_absent_full_metadata",
+            expected_warning=False,
+            warning_count=1,
+            warnings=[{"refutation_confirmed": True}],
+        ),
+    ]
+
+    stats = runner._promotion_pattern_stats(results)["concept_absent_full_metadata"]
+
+    assert stats["cases"] == 3
+    assert stats["confirmed_warning_cases"] == 2
+    assert stats["false_confirmed_warning_cases"] == 1
+    assert stats["verifier_positive_cases"] == 1
+    assert stats["verifier_positive_passed"] == 1

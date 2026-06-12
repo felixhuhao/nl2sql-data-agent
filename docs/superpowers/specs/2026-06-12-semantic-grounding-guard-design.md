@@ -238,6 +238,18 @@ The API response model (chat result / SSE final event) is extended to include `g
 
 A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible. The verifier uses a separate `semantic_guard_timeout` budget; the initial default is 30 seconds because Stage A reads full datasource metadata and is cached across repaired candidates.
 
+### Phase 2 Promotion Criteria
+
+Promotion is decided per named `promotion_pattern`, never from an aggregate verifier score. The first candidate pattern is `concept_absent_full_metadata`: the LLM flags an unsupported concept and the deterministic refutation audit confirms the concept is absent across full datasource metadata. A pattern can enter the `enforce` double gate only when a fresh pattern-scoped eval run satisfies all of these:
+
+- At least 20 total eval cases tagged with the pattern.
+- At least 10 unsupported workflow cases with expected warnings, covering both `substituted` and `omitted` findings.
+- At least 5 positive-schema verifier-only cases where a schema truly supports adjacent concepts such as returned/cancelled/deleted/shipped, and every one passes.
+- At least 3 negative-schema verifier-only cases where related-but-different metadata is present and every one is correctly unsupported.
+- `false_confirmed_warning_cases == 0`: no expected-no-warning case may produce a confirmed refutation.
+- `verifier_unavailable_cases == 0` in the promotion run. Availability is tracked separately from semantic correctness; retry behavior may be measured, but an outage does not become a deterministic block.
+- The implementation still requires the double gate: LLM verifier finding **and** promoted deterministic refutation. Unpromoted patterns remain warn-only, even in `enforce` mode.
+
 ---
 
 ## Testing
@@ -264,5 +276,4 @@ A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollo
 ## Open questions for the plan
 
 1. **Overlay→datasource binding.** How an overlay is explicitly bound to a datasource (manifest field, per-datasource overlay path, or registry entry), so the audit consults an overlay only when it describes the active datasource. Until this lands, overlay evidence is used only for the datasource it actually describes.
-2. **Eval-corpus promotion criteria — per refutation pattern, not a global verifier score.** Promotion to the `enforce` block path is decided for each individual refutation pattern on its own evidence (agreement with the verifier, zero false confirmations over N cases), never by a single aggregate verifier precision number. A high overall verifier score must not auto-promote a pattern that has not itself been proven safe.
-3. Whether enforce-mode production should use the same provider/model as generation or a cheaper/faster verifier model.
+2. Whether enforce-mode production should use the same provider/model as generation or a cheaper/faster verifier model.

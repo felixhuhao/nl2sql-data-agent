@@ -42,6 +42,7 @@ class SemanticEvalResult:
     question: str
     tags: list[str]
     case_type: str = "workflow"
+    promotion_pattern: str | None = None
     datasource_name: str = DEFAULT_DATASOURCE
     datasource_dialect: str = "duckdb"
     datasource_display_name: str = "DuckDB (本地)"
@@ -96,6 +97,12 @@ def main() -> int:
         default=None,
         help="Run a specific case id. Can be passed more than once.",
     )
+    parser.add_argument(
+        "--promotion-pattern",
+        action="append",
+        default=None,
+        help="Run cases for a specific promotion pattern. Can be passed more than once.",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected case N times.")
     parser.add_argument(
         "--retries",
@@ -109,6 +116,8 @@ def main() -> int:
         cases = _load_cases(Path(args.cases_path))
         if args.case_id:
             cases = _select_case_ids(cases, args.case_id)
+        if args.promotion_pattern:
+            cases = _filter_promotion_patterns(cases, args.promotion_pattern)
         if args.limit is not None:
             cases = cases[: args.limit]
         cases = _repeat_cases(cases, repeat=args.repeat)
@@ -169,6 +178,15 @@ def _select_case_ids(cases: list[dict[str, Any]], case_ids: list[str]) -> list[d
     return [by_id[case_id] for case_id in case_ids]
 
 
+def _filter_promotion_patterns(cases: list[dict[str, Any]], patterns: list[str]) -> list[dict[str, Any]]:
+    selected_patterns = set(patterns)
+    selected = [case for case in cases if case.get("promotion_pattern") in selected_patterns]
+    missing = sorted(selected_patterns - {str(case.get("promotion_pattern")) for case in selected})
+    if missing:
+        raise ValueError(f"unknown semantic guard promotion patterns: {missing}")
+    return selected
+
+
 def _available_datasources() -> dict[str, DatasourceRef]:
     manager = get_datasource_manager()
     return {
@@ -197,6 +215,7 @@ def _run_case(
         question=str(case["question"]),
         tags=list(case.get("tags") or []),
         case_type=str(case.get("type") or "workflow"),
+        promotion_pattern=_optional_string(case.get("promotion_pattern")),
         datasource_name=datasource_name,
         datasource_dialect=datasource.dialect if datasource else "unknown",
         datasource_display_name=datasource.display_name if datasource else datasource_name,
@@ -426,6 +445,7 @@ def _print_results(results: list[SemanticEvalResult], *, report_path: Path) -> N
         print(
             f"[{status}] {result.case_id} "
             f"type={result.case_type} "
+            f"pattern={result.promotion_pattern or '-'} "
             f"warnings={result.warning_count} expected={result.expected_warning} "
             f"rows={result.row_count if result.row_count is not None else '-'} "
             f"elapsed={_format_elapsed(result.elapsed_ms)}"
@@ -460,6 +480,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         for result in results
         for warning in result.warnings
     )
+    promotion_stats = _promotion_pattern_stats(results)
     lines = [
         "# Semantic Guard Eval Report",
         "",
@@ -480,11 +501,42 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         f"- Failure kinds: {_format_distribution(warning_kinds)}",
         f"- Concepts: {_format_distribution(warning_concepts)}",
         "",
-        "## Case Results",
+        "## Promotion Pattern Readiness",
         "",
-        "| Case | Status | Type | Expected Warning | Warnings | Confirmed | Rows | Elapsed | Required Concepts | Warning Concepts | Kinds | SQL |",
-        "|------|--------|------|------------------|----------|-----------|------|---------|-------------------|------------------|-------|-----|",
+        "| Pattern | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier Unavailable |",
+        "|---------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|----------------------|",
     ]
+    if promotion_stats:
+        for pattern, stats in promotion_stats.items():
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _md_cell(pattern),
+                        str(stats["cases"]),
+                        f"{stats['passed']}/{stats['cases']}",
+                        str(stats["expected_warning_cases"]),
+                        str(stats["actual_warning_cases"]),
+                        str(stats["confirmed_warning_cases"]),
+                        str(stats["false_confirmed_warning_cases"]),
+                        f"{stats['verifier_positive_passed']}/{stats['verifier_positive_cases']}",
+                        str(stats["verifier_unavailable_cases"]),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("| n/a | 0 | 0/0 | 0 | 0 | 0 | 0 | 0/0 | 0 |")
+
+    lines.append("")
+    lines.extend(
+        [
+            "## Case Results",
+            "",
+            "| Case | Status | Type | Pattern | Expected Warning | Warnings | Confirmed | Rows | Elapsed | Required Concepts | Warning Concepts | Kinds | SQL |",
+            "|------|--------|------|---------|------------------|----------|-----------|------|---------|-------------------|------------------|-------|-----|",
+        ]
+    )
     for result in results:
         lines.append(
             "| "
@@ -493,6 +545,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
                     _md_cell(result.case_id),
                     "PASS" if result.passed else "FAIL",
                     _md_cell(result.case_type),
+                    _md_cell(result.promotion_pattern or "-"),
                     str(result.expected_warning),
                     str(result.warning_count),
                     str(sum(1 for warning in result.warnings if warning.get("refutation_confirmed"))),
@@ -518,6 +571,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
                 [
                     f"- Question: {result.question}",
                     f"- Type: {result.case_type}",
+                    f"- Promotion pattern: {result.promotion_pattern or '-'}",
                     f"- Expected warning: {result.expected_warning}",
                     f"- Warning count: {result.warning_count}",
                     f"- Verifier unavailable: {result.verifier_unavailable}",
@@ -554,6 +608,48 @@ def _summary(results: list[SemanticEvalResult]) -> dict[str, Any]:
     }
 
 
+def _promotion_pattern_stats(results: list[SemanticEvalResult]) -> dict[str, dict[str, int]]:
+    stats: dict[str, dict[str, int]] = {}
+    for result in results:
+        if not result.promotion_pattern:
+            continue
+        pattern_stats = stats.setdefault(
+            result.promotion_pattern,
+            {
+                "cases": 0,
+                "passed": 0,
+                "expected_warning_cases": 0,
+                "actual_warning_cases": 0,
+                "confirmed_warning_cases": 0,
+                "false_confirmed_warning_cases": 0,
+                "verifier_positive_cases": 0,
+                "verifier_positive_passed": 0,
+                "verifier_unavailable_cases": 0,
+            },
+        )
+        pattern_stats["cases"] += 1
+        pattern_stats["passed"] += int(result.passed)
+        pattern_stats["expected_warning_cases"] += int(result.expected_warning is True)
+        pattern_stats["actual_warning_cases"] += int(result.warning_count > 0)
+        pattern_stats["confirmed_warning_cases"] += int(
+            bool(result.warnings) and all(warning.get("refutation_confirmed") for warning in result.warnings)
+        )
+        pattern_stats["false_confirmed_warning_cases"] += int(
+            result.expected_warning is False and any(warning.get("refutation_confirmed") for warning in result.warnings)
+        )
+        if _is_verifier_positive_case(result):
+            pattern_stats["verifier_positive_cases"] += 1
+            pattern_stats["verifier_positive_passed"] += int(result.passed)
+        pattern_stats["verifier_unavailable_cases"] += int(result.verifier_unavailable)
+    return stats
+
+
+def _is_verifier_positive_case(result: SemanticEvalResult) -> bool:
+    return result.case_type == "verifier_only" and any(
+        bool(concept.get("supported")) for concept in result.required_concepts
+    )
+
+
 def _format_distribution(counter: Counter[str]) -> str:
     if not counter:
         return "-"
@@ -585,6 +681,12 @@ def _format_required_concepts(concepts: list[dict[str, Any]]) -> str:
         supported = bool(concept.get("supported"))
         formatted.append(f"{name} ({concept_type}, supported={supported})")
     return ", ".join(formatted)
+
+
+def _optional_string(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _md_cell(value: object) -> str:

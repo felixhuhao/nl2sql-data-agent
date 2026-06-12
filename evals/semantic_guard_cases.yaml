@@ -76,6 +76,7 @@ cases:
   - id: unsupported_deletion_rate
     question: 查看删除率趋势
     tags: [unsupported, substituted, deletion]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [删除率]
@@ -85,6 +86,7 @@ cases:
   - id: unsupported_deleted_orders
     question: 删除的订单
     tags: [unsupported, omitted, deletion]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [删除的订单]
@@ -94,6 +96,7 @@ cases:
   - id: unsupported_cancel_rate
     question: 查看取消率趋势
     tags: [unsupported, adjacent_status, cancellation]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [取消率]
@@ -102,6 +105,7 @@ cases:
   - id: unsupported_cancelled_orders
     question: 已取消订单
     tags: [unsupported, adjacent_status, cancellation]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [已取消订单]
@@ -110,6 +114,7 @@ cases:
   - id: unsupported_return_rate
     question: 查看退货率趋势
     tags: [unsupported, adjacent_status, return]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [退货率]
@@ -118,6 +123,7 @@ cases:
   - id: unsupported_returned_orders
     question: 退货订单
     tags: [unsupported, adjacent_status, return]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [退货订单]
@@ -126,6 +132,7 @@ cases:
   - id: unsupported_complaint_rate
     question: 查看客诉率趋势
     tags: [unsupported, complaint]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [客诉率]
@@ -134,6 +141,7 @@ cases:
   - id: unsupported_complaint_orders
     question: 有客诉的订单
     tags: [unsupported, complaint]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [客诉]
@@ -142,6 +150,7 @@ cases:
   - id: unsupported_shipped_orders
     question: 已发货订单
     tags: [unsupported, shipping]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [已发货订单]
@@ -150,6 +159,7 @@ cases:
   - id: unsupported_unpaid_orders
     question: 未支付订单
     tags: [unsupported, payment_status]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [未支付订单]
@@ -158,6 +168,7 @@ cases:
   - id: unsupported_fraud_orders
     question: 风控拦截订单
     tags: [unsupported, fraud]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [风控拦截]
@@ -166,6 +177,7 @@ cases:
   - id: unsupported_chargeback_rate
     question: 查看拒付率趋势
     tags: [unsupported, chargeback]
+    promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [拒付率]
@@ -175,6 +187,7 @@ cases:
     type: verifier_only
     question: 查看退货率趋势
     tags: [verifier_only, positive_schema, return]
+    promotion_pattern: concept_absent_full_metadata
     full_schema_context: |-
       # Schema Context
       ## Tables
@@ -193,6 +206,7 @@ cases:
     type: verifier_only
     question: 退货订单
     tags: [verifier_only, positive_schema, return]
+    promotion_pattern: concept_absent_full_metadata
     full_schema_context: |-
       # Schema Context
       ## Tables
@@ -208,6 +222,7 @@ cases:
     type: verifier_only
     question: 查看取消率趋势
     tags: [verifier_only, positive_schema, cancellation]
+    promotion_pattern: concept_absent_full_metadata
     full_schema_context: |-
       # Schema Context
       ## Tables
@@ -226,6 +241,7 @@ cases:
     type: verifier_only
     question: 删除的订单
     tags: [verifier_only, positive_schema, deletion]
+    promotion_pattern: concept_absent_full_metadata
     full_schema_context: |-
       # Schema Context
       ## Tables
@@ -242,6 +258,7 @@ cases:
     type: verifier_only
     question: 已发货订单
     tags: [verifier_only, positive_schema, fulfillment]
+    promotion_pattern: concept_absent_full_metadata
     full_schema_context: |-
       # Schema Context
       ## Tables
@@ -257,6 +274,7 @@ cases:
     type: verifier_only
     question: 查看退货率趋势
     tags: [verifier_only, negative_schema, return, refund]
+    promotion_pattern: concept_absent_full_metadata
     full_schema_context: |-
       # Schema Context
       ## Tables
