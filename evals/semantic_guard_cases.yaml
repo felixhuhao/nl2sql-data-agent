@@ -162,7 +162,7 @@ cases:
     promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
-      concepts: [未支付订单]
+      concepts: [未支付]
       refutation_confirmed: true
 
   - id: unsupported_fraud_orders
@@ -287,4 +287,20 @@ cases:
     expected:
       required_concepts:
         - concept: 退货率
+          supported: false
+
+  - id: verifier_refund_does_not_support_returned_orders
+    type: verifier_only
+    question: 退货订单
+    tags: [verifier_only, negative_schema, return, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+    expected:
+      required_concepts:
+        - concept: 退货
           supported: false
