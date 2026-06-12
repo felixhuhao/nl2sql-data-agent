@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.agent.nodes import generate_sql_node, olap_intent_detect_node
 from backend.app.agent.repair import iter_sql_repair_events
-from backend.app.agent.semantic_grounding import SemanticRefutationAuditor
+from backend.app.agent.semantic_grounding import ConceptExtractionRequest, SemanticRefutationAuditor
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
 from backend.app.connectors.registry import get_datasource_manager
@@ -41,6 +41,7 @@ class SemanticEvalResult:
     case_id: str
     question: str
     tags: list[str]
+    case_type: str = "workflow"
     datasource_name: str = DEFAULT_DATASOURCE
     datasource_dialect: str = "duckdb"
     datasource_display_name: str = "DuckDB (本地)"
@@ -195,12 +196,16 @@ def _run_case(
         case_id=str(case["id"]),
         question=str(case["question"]),
         tags=list(case.get("tags") or []),
+        case_type=str(case.get("type") or "workflow"),
         datasource_name=datasource_name,
         datasource_dialect=datasource.dialect if datasource else "unknown",
         datasource_display_name=datasource.display_name if datasource else datasource_name,
     )
     started_at = time.perf_counter()
     try:
+        if result.case_type == "verifier_only":
+            _run_verifier_only_case(result, case, verifier=semantic_verifier)
+            return result
         if datasource is None:
             result.fail(f"datasource unavailable: {datasource_name}")
             return result
@@ -253,6 +258,33 @@ def _run_case(
         return result
     finally:
         result.elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+
+
+def _run_verifier_only_case(
+    result: SemanticEvalResult,
+    case: dict[str, Any],
+    *,
+    verifier: DeepSeekProvider,
+) -> None:
+    full_schema_context = case.get("full_schema_context")
+    if not isinstance(full_schema_context, str) or not full_schema_context.strip():
+        result.fail("verifier_only case requires full_schema_context")
+        return
+    try:
+        extraction = verifier.extract_required_concepts(
+            ConceptExtractionRequest(
+                question=result.question,
+                full_schema_context=full_schema_context,
+                datasource_name=result.datasource_name,
+                datasource_dialect=result.datasource_dialect,
+            )
+        )
+    except Exception as exc:
+        result.verifier_unavailable = True
+        result.fail(f"semantic verifier unavailable: {exc}")
+        return
+    result.required_concepts = [concept.model_dump() for concept in extraction.concepts]
+    _validate_expected_required_concepts(result, case.get("expected") or {})
 
 
 def _run_case_with_retries(
@@ -340,11 +372,60 @@ def _validate_expected_semantic(result: SemanticEvalResult, expected: dict[str, 
             )
 
 
+def _validate_expected_required_concepts(result: SemanticEvalResult, expected: dict[str, Any]) -> None:
+    for expectation in expected.get("required_concepts") or []:
+        if not isinstance(expectation, dict):
+            continue
+        expected_name = str(expectation.get("concept") or expectation.get("name") or "").strip()
+        if not expected_name:
+            continue
+        actual = _find_required_concept(result.required_concepts, expected_name)
+        if actual is None:
+            result.fail(
+                f"missing required concept {expected_name!r}; "
+                f"actual={[concept.get('concept') for concept in result.required_concepts]}"
+            )
+            continue
+
+        expected_supported = expectation.get("supported")
+        if expected_supported is not None and bool(actual.get("supported")) != bool(expected_supported):
+            result.fail(
+                f"expected concept {expected_name!r} supported={expected_supported}, "
+                f"got {actual.get('supported')} ({actual.get('explanation') or '-'})"
+            )
+
+        expected_type = expectation.get("concept_type")
+        if expected_type and actual.get("concept_type") != expected_type:
+            result.fail(
+                f"expected concept {expected_name!r} type={expected_type}, "
+                f"got {actual.get('concept_type')}"
+            )
+
+
+def _find_required_concept(concepts: list[dict[str, Any]], expected_name: str) -> dict[str, Any] | None:
+    normalized_expected = _normalize_concept_name(expected_name)
+    for concept in concepts:
+        actual_name = str(concept.get("concept") or "")
+        normalized_actual = _normalize_concept_name(actual_name)
+        if (
+            normalized_expected == normalized_actual
+            or normalized_expected in normalized_actual
+            or normalized_actual in normalized_expected
+        ):
+            return concept
+    return None
+
+
+def _normalize_concept_name(value: str) -> str:
+    return "".join(value.casefold().split())
+
+
 def _print_results(results: list[SemanticEvalResult], *, report_path: Path) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
         print(
             f"[{status}] {result.case_id} "
+            f"type={result.case_type} "
             f"warnings={result.warning_count} expected={result.expected_warning} "
             f"rows={result.row_count if result.row_count is not None else '-'} "
             f"elapsed={_format_elapsed(result.elapsed_ms)}"
@@ -387,6 +468,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         f"- Semantic mode: {semantic_mode}",
         f"- Cases: {summary['total_cases']}",
         f"- Passed: {summary['passed_cases']}/{summary['total_cases']}",
+        f"- Verifier-only cases: {summary['verifier_only_cases']}",
         f"- Warning cases: {summary['warning_cases']}",
         f"- Expected-warning cases: {summary['expected_warning_cases']}",
         f"- Confirmed warning cases: {summary['confirmed_warning_cases']}",
@@ -400,8 +482,8 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         "",
         "## Case Results",
         "",
-        "| Case | Status | Expected Warning | Warnings | Confirmed | Rows | Elapsed | Required Concepts | Warning Concepts | Kinds | SQL |",
-        "|------|--------|------------------|----------|-----------|------|---------|-------------------|------------------|-------|-----|",
+        "| Case | Status | Type | Expected Warning | Warnings | Confirmed | Rows | Elapsed | Required Concepts | Warning Concepts | Kinds | SQL |",
+        "|------|--------|------|------------------|----------|-----------|------|---------|-------------------|------------------|-------|-----|",
     ]
     for result in results:
         lines.append(
@@ -410,6 +492,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
                 [
                     _md_cell(result.case_id),
                     "PASS" if result.passed else "FAIL",
+                    _md_cell(result.case_type),
                     str(result.expected_warning),
                     str(result.warning_count),
                     str(sum(1 for warning in result.warnings if warning.get("refutation_confirmed"))),
@@ -434,6 +517,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
             lines.extend(
                 [
                     f"- Question: {result.question}",
+                    f"- Type: {result.case_type}",
                     f"- Expected warning: {result.expected_warning}",
                     f"- Warning count: {result.warning_count}",
                     f"- Verifier unavailable: {result.verifier_unavailable}",
@@ -457,6 +541,7 @@ def _summary(results: list[SemanticEvalResult]) -> dict[str, Any]:
     return {
         "total_cases": len(results),
         "passed_cases": sum(1 for result in results if result.passed),
+        "verifier_only_cases": sum(1 for result in results if result.case_type == "verifier_only"),
         "warning_cases": sum(1 for result in results if result.warning_count > 0),
         "expected_warning_cases": sum(1 for result in results if result.expected_warning is True),
         "confirmed_warning_cases": sum(

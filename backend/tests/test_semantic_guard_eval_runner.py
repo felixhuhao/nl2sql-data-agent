@@ -112,6 +112,7 @@ def test_render_report_includes_warning_distribution():
     report = runner._render_report([result], semantic_mode="warn")
 
     assert "# Semantic Guard Eval Report" in report
+    assert "- Verifier-only cases: 0" in report
     assert "substituted=1" in report
     assert "删除率=1" in report
 
@@ -126,3 +127,58 @@ def test_format_required_concepts_includes_support_status():
             }
         ]
     ) == "退货率 (metric, supported=False)"
+
+
+def test_validate_expected_required_concepts_checks_support_status():
+    result = runner.SemanticEvalResult(
+        case_id="verifier",
+        question="查看退货率趋势",
+        tags=["verifier_only"],
+        required_concepts=[
+            {
+                "concept": "退货率",
+                "concept_type": "metric",
+                "supported": False,
+                "explanation": "Only refund is documented.",
+            }
+        ],
+    )
+
+    runner._validate_expected_required_concepts(
+        result,
+        {
+            "required_concepts": [
+                {
+                    "concept": "退货率",
+                    "concept_type": "metric",
+                    "supported": False,
+                }
+            ]
+        },
+    )
+
+    assert result.passed is True
+
+
+def test_validate_expected_required_concepts_flags_wrong_support_status():
+    result = runner.SemanticEvalResult(
+        case_id="verifier",
+        question="查看退货率趋势",
+        tags=["verifier_only"],
+        required_concepts=[
+            {
+                "concept": "退货率",
+                "concept_type": "metric",
+                "supported": True,
+                "explanation": "Refund was treated as return.",
+            }
+        ],
+    )
+
+    runner._validate_expected_required_concepts(
+        result,
+        {"required_concepts": [{"concept": "退货率", "supported": False}]},
+    )
+
+    assert result.passed is False
+    assert "supported=False" in result.messages[0]

@@ -112,7 +112,7 @@ Phase 1 semantic grounding uses a separate warn-only eval runner:
 backend/.venv/bin/python scripts/run_semantic_guard_eval.py --semantic-mode warn --retries 1
 ```
 
-The case file pairs supported no-warning questions with unsupported adjacent-substitution / omission questions. The runner records generated SQL, warning count, warning concepts, failure kinds, refutation confirmation, verifier availability, and writes `evals/reports/semantic_guard_latest.md` (ignored by git like other generated reports). These results are evidence for Phase 2 promotion; they do not enable `enforce` mode by themselves.
+The case file pairs supported no-warning questions with unsupported adjacent-substitution / omission questions. It also includes `type: verifier_only` cases with synthetic full-schema metadata, used to test Stage A support decisions when a schema truly contains returned/cancelled/deleted-style fields or values. The runner records generated SQL, warning count, warning concepts, required concepts, failure kinds, refutation confirmation, verifier availability, and writes `evals/reports/semantic_guard_latest.md` (ignored by git like other generated reports). These results are evidence for Phase 2 promotion; they do not enable `enforce` mode by themselves.
 
 ## 报告内容
 

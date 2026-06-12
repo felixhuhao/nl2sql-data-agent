@@ -170,3 +170,103 @@ cases:
       warning: true
       concepts: [拒付率]
       refutation_confirmed: true
+
+  - id: verifier_supported_return_rate
+    type: verifier_only
+    question: 查看退货率趋势
+    tags: [verifier_only, positive_schema, return]
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，returned=已退货/退货
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 退货率
+          supported: true
+
+  - id: verifier_supported_returned_orders
+    type: verifier_only
+    question: 退货订单
+    tags: [verifier_only, positive_schema, return]
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，returned=已退货/退货
+    expected:
+      required_concepts:
+        - concept: 退货订单
+          supported: true
+
+  - id: verifier_supported_cancel_rate
+    type: verifier_only
+    question: 查看取消率趋势
+    tags: [verifier_only, positive_schema, cancellation]
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，cancelled=已取消/取消
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 取消率
+          supported: true
+
+  - id: verifier_supported_deleted_orders
+    type: verifier_only
+    question: 删除的订单
+    tags: [verifier_only, positive_schema, deletion]
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - is_deleted (BOOLEAN) [dimension] - 是否删除订单；true=已删除，false=未删除
+        - deleted_at (TIMESTAMP) [dimension] - 删除时间，非空表示订单已删除
+    expected:
+      required_concepts:
+        - concept: 删除的订单
+          supported: true
+
+  - id: verifier_supported_shipped_orders
+    type: verifier_only
+    question: 已发货订单
+    tags: [verifier_only, positive_schema, fulfillment]
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - fulfillment_status (VARCHAR) [dimension] - 履约状态；取值含义：pending=待发货，shipped=已发货，delivered=已送达
+    expected:
+      required_concepts:
+        - concept: 已发货订单
+          supported: true
+
+  - id: verifier_refund_does_not_support_return_rate
+    type: verifier_only
+    question: 查看退货率趋势
+    tags: [verifier_only, negative_schema, return, refund]
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 退货率
+          supported: false
