@@ -1,3 +1,5 @@
+import re
+
 from backend.app.core.llm_provider import SQLGenerationRequest
 
 
@@ -103,6 +105,9 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
                 "Add the missing filter from the error reason to the WHERE clause while preserving the user's requested follow-up change.",
             ]
         )
+    scope_context = _scope_repair_context(request)
+    if scope_context:
+        lines.extend(["", *scope_context])
     lines.extend(
         [
             "",
@@ -166,6 +171,51 @@ def _repair_return_instruction(request: SQLGenerationRequest) -> str:
             "Do not return JSON.",
         ]
     )
+
+
+def _scope_repair_context(request: SQLGenerationRequest) -> list[str]:
+    if request.repair is None or request.repair.error_kind != "scope_guard":
+        return []
+
+    lines = [
+        "Scope repair context:",
+        "The guard rejected a table or column reference. Repair by using allowed schema context and SQL Generation Guidance, not by applying a hardcoded string substitution.",
+    ]
+    table_name, column_name = _rejected_column_reference(request.repair.error_reason)
+    if table_name and column_name:
+        lines.append(f"Rejected column reference: {table_name}.{column_name}")
+        table_excerpt = _table_schema_excerpt(request.schema_context, table_name)
+        if table_excerpt:
+            lines.extend([f"Allowed columns for {table_name}:", *table_excerpt])
+    return lines
+
+
+def _rejected_column_reference(error_reason: str) -> tuple[str | None, str | None]:
+    match = re.search(
+        r"\bColumn\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+is\s+not\s+allowed\b",
+        error_reason,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def _table_schema_excerpt(schema_context: str, table_name: str, *, max_lines: int = 12) -> list[str]:
+    table_pattern = re.compile(rf"^-\s+{re.escape(table_name)}\b")
+    lines = schema_context.splitlines()
+    for index, line in enumerate(lines):
+        if table_pattern.match(line):
+            excerpt = [line]
+            for next_line in lines[index + 1 :]:
+                if next_line.startswith("## ") or (next_line.startswith("- ") and not next_line.startswith("  - ")):
+                    break
+                if next_line.startswith("  - "):
+                    excerpt.append(next_line)
+                if len(excerpt) >= max_lines:
+                    break
+            return excerpt
+    return []
 
 
 def _schema_context_guide() -> list[str]:

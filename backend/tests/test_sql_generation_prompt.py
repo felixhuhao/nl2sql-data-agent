@@ -287,6 +287,12 @@ def test_sql_generation_repair_prompt_guides_product_name_repair():
     assert "dim_products.product_name" in repair_message
     assert "dim_products.name AS product_name" not in repair_message
     assert "dim_products.name AS product_name" in messages[1]["content"]
+    assert "Scope repair context:" in repair_message
+    assert "Rejected column reference: dim_products.product_name" in repair_message
+    assert "Allowed columns for dim_products:" in repair_message
+    assert "- dim_products: 商品维表" in repair_message
+    assert "  - name (VARCHAR) - 商品名称" in repair_message
+    assert "hardcoded string substitution" in repair_message
     assert "schema-specific SQL generation guidance" in repair_message
     assert "avoid replacing names with *_key columns" in repair_message
 

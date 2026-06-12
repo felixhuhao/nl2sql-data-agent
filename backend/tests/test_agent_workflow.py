@@ -591,12 +591,25 @@ def test_missing_carried_filters_allows_time_filters_to_change_on_time_followup(
     assert missing_carried_filters(state) == []
 
 
-def test_repair_sql_node_deterministically_repairs_product_name_alias():
-    class ShouldNotCallProvider:
-        name = "unused"
+def test_repair_sql_node_uses_provider_for_product_name_scope_repair():
+    captured_requests = []
+
+    class RepairProvider:
+        name = "repair-provider"
 
         def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
-            raise AssertionError("deterministic repair should not call provider")
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="""
+SELECT p.name AS product_name, SUM(fi.item_amount) AS sales_amount
+FROM fact_order_items fi
+JOIN dim_products p ON fi.product_key = p.product_key
+GROUP BY p.name
+ORDER BY sales_amount DESC
+LIMIT 10
+""",
+                provider=self.name,
+            )
 
     original_sql = """
 SELECT p.product_name, SUM(fi.item_amount) AS sales_amount
@@ -619,23 +632,31 @@ LIMIT 10
         sql=original_sql,
     )
 
-    repair_sql_node(state, provider=ShouldNotCallProvider(), repair_context=repair_context)
+    repair_sql_node(state, provider=RepairProvider(), repair_context=repair_context)
 
     assert "p.name AS product_name" in state.sql
     assert "GROUP BY p.name" in state.sql
     assert "p.product_name" not in state.sql
     assert "SELECT p.product_key" not in state.sql
     assert "GROUP BY p.product_key" not in state.sql
-    assert state.provider == "deterministic-repair"
+    assert state.provider == "repair-provider"
+    assert captured_requests[0].repair == repair_context
+    assert captured_requests[0].schema_context == "# Schema Context"
     assert state.repair_history[0]["repaired_sql"] == state.sql
 
 
-def test_repair_sql_node_deterministic_product_name_repair_does_not_depend_on_error_text():
-    class ShouldNotCallProvider:
-        name = "unused"
+def test_repair_sql_node_uses_provider_even_when_scope_error_text_is_generic():
+    captured_requests = []
+
+    class RepairProvider:
+        name = "repair-provider"
 
         def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
-            raise AssertionError("deterministic repair should not call provider")
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="SELECT p.name AS product_name FROM dim_products p",
+                provider=self.name,
+            )
 
     original_sql = """
 SELECT p.product_name, SUM(fi.item_amount) AS sales_amount
@@ -658,11 +679,12 @@ LIMIT 10
         sql=original_sql,
     )
 
-    repair_sql_node(state, provider=ShouldNotCallProvider(), repair_context=repair_context)
+    repair_sql_node(state, provider=RepairProvider(), repair_context=repair_context)
 
     assert "p.name AS product_name" in state.sql
     assert "p.product_name" not in state.sql
-    assert state.provider == "deterministic-repair"
+    assert state.provider == "repair-provider"
+    assert captured_requests[0].repair == repair_context
 
 
 def test_sql_guard_node_requires_sql():
