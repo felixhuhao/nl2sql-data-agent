@@ -8,12 +8,12 @@
 
 ## Problem
 
-After SQL generation, the model sometimes answers an **unsupported business concept** by silently substituting a nearby *available* concept, changing the meaning of the result without telling anyone.
+After SQL generation, the model sometimes answers an **unsupported business concept** by silently substituting a nearby *available* concept, or by dropping the concept entirely — in both cases changing the meaning of the result without telling anyone.
 
 Observed cases:
 
-- **Case 25** — `查看删除率趋势` ("deletion rate trend"). Schema has no deleted/deletion concept. Model emitted `countIf(fo.order_status = 'refunded') / count(*) AS deletion_rate`, silently turning *deletion rate* into *refund rate*.
-- **Case 37** — `删除的订单` ("deleted orders") became generic orders with no deleted filter at all.
+- **Case 25 (substitution)** — `查看删除率趋势` ("deletion rate trend"). Schema has no deleted/deletion concept. Model emitted `countIf(fo.order_status = 'refunded') / count(*) AS deletion_rate`, silently turning *deletion rate* into *refund rate*.
+- **Case 37 (omission)** — `删除的订单` ("deleted orders") became generic orders with no deleted filter at all.
 
 Both pass every existing guard:
 
@@ -26,10 +26,21 @@ This is a **semantic** failure wearing a **syntactic** disguise. It needs a new 
 
 The overlay ([`ecommerce.yml`](../../../backend/app/metadata/semantic_overlays/ecommerce.yml)) documents `order_status` sample values as `paid`, `completed`, `refunded` — and **nothing for `deleted`**. So:
 
-1. `删除` (deleted) has **zero evidence** across every channel (column name, description, display name, sample value, metric) → a clean unsupported signal.
+1. `删除` (deleted) has **zero evidence** across every channel (column name, description, display name, sample value, metric).
 2. `refunded` **is** documented — which is *exactly why* the model grabbed it as a proxy.
 
-A naive "is every column/value in the SQL grounded?" check **would pass** Case 25, because `refunded` is genuinely grounded. The ungrounded thing is not the value — it is the **mapping from the question's concept (`删除率`) to that value**. Therefore the check must be **question-aware**, evaluating `{question, schema_context, sql}` together. An allow-list / SQL-only shortcut cannot work.
+A naive "is every column/value in the SQL grounded?" check **would pass** Case 25, because `refunded` is genuinely grounded. The ungrounded thing is not the value — it is the **mapping from the question's concept (`删除率`) to that value**. And Case 37 has *no mapping in the SQL at all*. So the check must be **question-aware**: it has to start from what the question asks and reason about both substituted and omitted concepts, looking at `{question, schema_context, sql}` together. An allow-list / SQL-only shortcut cannot work.
+
+---
+
+## Design philosophy: notice vs. prove
+
+Two responsibilities, deliberately separated:
+
+- **The LLM verifier *notices* the semantic mismatch.** Identifying that "删除率" was answered with a refund proxy, or silently dropped, is an interpretive judgment. Doing this deterministically would require a hand-written concept parser — a token/pattern list mapping phrases to concepts — which is precisely the brittle, schema-independent keyword hardcoding the audit spent 15 findings removing. **We do not build that.** Interpretation stays with the LLM.
+- **The deterministic layer supplies *court-admissible evidence*.** Given a concept the verifier flagged, it checks schema-derived facts: is this concept absent from *every* evidence channel of the active datasource? Is the proxied value provably impossible (`SELECT DISTINCT` returns nothing)? This is not interpretation; it is corroboration. It can only **refute** a mapping (confirm it is unsafe); it can **never assert support**.
+
+A hard block requires both: the LLM says unsupported *and* the deterministic audit confirms the refutation. The LLM provides the suspicion; the deterministic layer provides the proof. This keeps the mechanism non-brittle (no speculative concept parser, no keyword patches) and makes every block explainable.
 
 ---
 
@@ -38,19 +49,19 @@ A naive "is every column/value in the SQL grounded?" check **would pass** Case 2
 ### In scope
 
 - Detect when a **business entity, filter, status value, or named metric** the question requires is unsupported by schema evidence — whether the SQL **substitutes** a proxy for it (Case 25) or silently **omits** it (Case 37).
-- Respond with a confidence-banded action: block, warn, or pass.
-- Eval-first rollout (warn-only first, enable blocking once precision is measured).
+- Respond with a graded action: warn (visible) or, once earned, hard-block.
+- Eval-first rollout: warn-only first, enforcement only after evidence justifies it.
 
 ### Out of scope (must NOT be flagged)
 
-- **Analytical operations** — rank correlation, YoY/MoM, moving average, TopN, share/ratio of supported measures. These need *compatible measures/dimensions*, not same-named columns. (Case 36, rank correlation over `unit_price`/`quantity`, must stay valid.)
+- **Analytical operations** — rank correlation, YoY/MoM, moving average, TopN, share/ratio of supported measures. These need *compatible measures/dimensions*, not same-named columns. (Case 36, rank correlation over `unit_price`/`quantity`, must stay valid.) This is an instruction to the verifier, not a deterministic rule.
 - Any special-case keyword rule for `删除率`, `refunded`, or specific status values. The audit explicitly forbids this; the mechanism must be general and evidence-based.
 
 ---
 
 ## Architecture
 
-A new node, `semantic_guard_node`, runs **inside the repair loop** ([`iter_sql_repair_events`](../../../backend/app/agent/repair.py)), on **every** SQL candidate — initial and repaired — after it passes syntax/scope (`sql_guard`) and before `execute_node`. It mirrors the existing [`sql_guard_node`](../../../backend/app/agent/nodes.py) pattern: read state, set `stopped_at`/`error` on a hard block, or attach an annotation on a soft warning.
+A new node, `semantic_guard_node`, runs **inside the repair loop** ([`iter_sql_repair_events`](../../../backend/app/agent/repair.py)), on **every** SQL candidate — initial and repaired — after it passes syntax/scope (`sql_guard`) and before `execute_node`. It mirrors the existing [`sql_guard_node`](../../../backend/app/agent/nodes.py) pattern: read state, set `stopped_at`/`error` on a hard block, or attach a visible warning on a soft finding.
 
 ```
                  ┌──────────────── repair loop ────────────────┐
@@ -59,46 +70,28 @@ generate_sql ──► │ sql_guard ──► semantic_guard ──► execute 
                  │    └─► repair ◄────┘ (non-repairable)└─► repair │
                  └──────────────────────────────────────────────┘
                                     │
-   semantic_guard ─ Stage 1: deterministic evidence lookup → confidence band
-                  └ Stage 2 (medium band only): question-aware LLM verifier
+   semantic_guard ─ LLM verifier: concept extraction + grounding judgment (primary, interpretive)
+                  └ deterministic refutation audit: corroborates a block, never interprets
 ```
 
 **Placement rationale.** The original draft placed this between `generate_sql` and `sql_guard`, i.e. in the once-only pre-repair workflow. That is wrong: [`iter_sql_repair_events`](../../../backend/app/agent/repair.py) re-runs `sql_guard_node` at the top of every loop iteration and loops back after each `repair_sql_node`, so **repaired** SQL would re-hit `sql_guard` but bypass a pre-loop semantic guard entirely. Running inside the loop after `sql_guard` passes guarantees every candidate that could reach execution is grounded. Running *after* `sql_guard` (not before) means we only spend the semantic check on syntactically valid, in-scope SQL.
 
-**A semantic block is non-repairable.** Unlike `scope_guard`/`syntax_guard` (in `REPAIRABLE_GUARD_STAGES`), a high-unsupported block means the requested concept genuinely has no schema evidence — re-prompting the model would only produce another substitution. So `semantic_guard` adds a stage to `NON_REPAIRABLE_GUARD_STAGES` (alongside `operation_guard`): on a hard block it stops the loop and returns the error, it does not trigger `repair_sql_node`.
+**A semantic block is non-repairable.** Unlike `scope_guard`/`syntax_guard` (in `REPAIRABLE_GUARD_STAGES`), a confirmed-unsupported block means the requested concept genuinely has no schema evidence — re-prompting the model would only produce another substitution. So `semantic_guard` adds a stage to `NON_REPAIRABLE_GUARD_STAGES` (alongside `operation_guard`): on a hard block it stops the loop and returns the error, it does not trigger `repair_sql_node`.
 
-### Stage 1 — Deterministic evidence lookup (cheap, always runs)
+**Cost across repairs.** The check can fire up to `MAX_REPAIRS + 1` times (3×) per query. The question's required concepts do not change across repairs — only whether the SQL grounds them does. So the verifier's concept extraction is computed once and cached on state; only the SQL-grounding comparison re-runs per candidate. This keeps the per-repair LLM cost from tripling.
 
-Input: `{question, schema_context, sql, datasource_name}`.
+---
 
-**Evidence must be datasource-scoped.** The current overlay is global: [`_overlay_path`](../../../backend/app/metadata/semantic_overlay.py) resolves a single configured path (`ecommerce.yml`) with no datasource parameter. Using that overlay as evidence for a *different* datasource would supply false evidence (e.g. e-commerce status values for an unrelated schema). So Stage 1 builds evidence in this priority:
-
-1. **Primary — the datasource's own metadata/schema context** (`state.schema_context`): labels, descriptions, aliases, sample values, Metric Definitions, Verified Queries, SQL Generation Guidance. This is always correct for the active datasource.
-2. **Secondary — a semantic overlay only when it is explicitly bound to this datasource.** Until overlay→datasource binding exists, the overlay is consulted only for the datasource it actually describes (the demo e-commerce one) and ignored otherwise. Wiring per-datasource overlay binding is tracked as an open question.
-
-Concretely, for the concept(s) the question asks about, check presence across every channel available *for the active datasource*: `table_semantics` (display name, description, domain), `column_semantics` / `table_column_semantics`, `dimension_columns` / `metric_columns`, `sample_value_fallbacks`, and the schema-context channels above.
-
-**The unit of analysis is each required business concept in the question, not each mapping in the SQL.** This is essential: the failure has two shapes, and a SQL-mapping-driven check only sees the first.
-
-- **Substitution** (Case 25): the concept is unsupported and the SQL grounds it in a *proxy* (`删除率` → `order_status = 'refunded'`). Visible in the SQL.
-- **Omission** (Case 37): the concept is unsupported and the SQL *silently drops* it (`删除的订单` → unfiltered orders, no deleted predicate at all). **Invisible** in the SQL — there is no mapping to inspect. Only checkable by starting from the question.
-
-So Stage 1 first identifies the question's required business concepts (entities, filters, status values, named metrics), checks each for schema evidence, and only then asks whether the SQL substituted or omitted it. Output: a **confidence band**, not a boolean.
-
-| Band | Condition | Action |
-|------|-----------|--------|
-| **grounded** | Every required business concept matches evidence in some channel | Pass untouched |
-| **analytical** | Request is an analytical operation over supported measures/dimensions | Pass untouched (skip Stage 2) |
-| **high-unsupported** | A required business concept has **no match in any channel** — whether the SQL substituted a proxy *or* omitted it entirely | Block (Stage 2 skipped — already conclusive) |
-| **medium** | Concept has only weak/adjacent evidence (e.g. absent itself but the SQL grounds in a documented adjacent value), or concept extraction is uncertain | Send to Stage 2 |
-
-Concept extraction from the question is itself fuzzy. Stage 1 does **not** need perfect concept parsing — it needs to decide a band conservatively. When it cannot confidently place a query in `grounded` or `high-unsupported`, it falls to `medium` and defers to Stage 2.
-
-### Stage 2 — Question-aware LLM verifier (medium band only)
+## Component 1 — Semantic verifier (LLM, primary)
 
 A **fresh** LLM call (not the generator marking its own homework) that sees only `{question, schema_context, sql}` and is instructed adversarially:
 
 > Start from the **question**. List the business entities, filters, status values, and named metrics the question requires. For each, decide whether schema evidence supports it. Then check the SQL: if a required concept is unsupported, flag it whether the SQL **substituted** a proxy for it OR **omitted** it entirely (e.g. the question asks for "deleted orders" but the SQL filters nothing). Do NOT flag analytical operations (rank correlation, YoY, moving average, TopN, share) — those require compatible measures/dimensions, not same-named columns.
+
+The verifier must catch **both** failure shapes — this is essential, because a SQL-mapping-driven check only sees the first:
+
+- **Substitution** (Case 25): unsupported concept grounded in a *proxy* (`删除率` → `order_status = 'refunded'`). Visible in the SQL.
+- **Omission** (Case 37): unsupported concept *silently dropped* (`删除的订单` → unfiltered orders). **Invisible** in the SQL — only catchable by starting from the question.
 
 Returns structured output:
 
@@ -110,7 +103,6 @@ Returns structured output:
       "concept": "删除率",
       "failure_kind": "substituted",
       "sql_mapping": "order_status = 'refunded'",
-      "evidence": [],
       "supported": false,
       "explanation": "Schema documents 'refunded' but defines no deleted/deletion concept; the mapping is invented."
     },
@@ -118,7 +110,6 @@ Returns structured output:
       "concept": "删除的订单",
       "failure_kind": "omitted",
       "sql_mapping": null,
-      "evidence": [],
       "supported": false,
       "explanation": "Question requires a 'deleted' filter, but the SQL applies no such predicate; the concept is silently dropped."
     }
@@ -130,55 +121,79 @@ Returns structured output:
 
 Why a separate call and not structured self-report from the generator (rejected Option 2): the model that substitutes `refunded` for `删除` is the same model that, asked to self-report in the same forward pass, will rationalize `supported: true`. A fresh critic has no investment in defending the SQL. It also avoids re-touching the SQL/JSON output contract stabilized in audit Findings 3/11/13.
 
-#### Verifier failure handling (fail open, never a new reliability cliff)
+### Verifier outage handling (fail open, never a new reliability cliff)
 
-The second LLM call must not become a new failure mode that the audit's reliability work would regret. It runs under a bounded timeout and a single attempt (no internal retry loop). On **timeout, provider error, empty response, or unparseable output**, Stage 2 is treated as **inconclusive → fail open**: the candidate passes to `execute`, and a `verifier_unavailable` note is attached to the visible warnings (see Banded response) so the degraded check is observable, not silent.
+The call runs under a bounded timeout and a single attempt (no internal retry loop). On **timeout, provider error, empty response, or unparseable output**, the verifier result is **inconclusive**. There is no deterministic interpreter to fall back on (by design — see philosophy), so a verifier outage means *the semantic check did not run*:
 
-Crucially, **failing open here does not weaken the hard block.** The `high-unsupported` block is decided entirely by deterministic Stage 1 and never depends on the verifier — so `enforce` mode still blocks unsupported concepts even when the LLM verifier is down. Only the medium-band warning degrades. Behavior by mode:
+- **Phase 1 (warn-only):** skip the warning, log `verifier_unavailable`. No user-facing impact beyond a missing advisory.
+- **Phase 2 (enforce):** a hard block *requires* an LLM flag, so no flag means **no hard block**. Optionally surface a `semantic verifier unavailable` advisory in `grounding_warnings` (mode-dependent), so the degraded check is observable rather than silent.
 
-| `semantic_guard_mode` | Stage 1 high-unsupported | Stage 2 medium-band result | Stage 2 unavailable |
-|---|---|---|---|
-| `off` | pass | pass | pass |
-| `warn` | warn (visible) | warn if `ok:false` | pass + `verifier_unavailable` note |
-| `enforce` | **block** | warn if `ok:false` (medium stays warn-only) | pass + `verifier_unavailable` note |
+The deliberate consequence: enforcement never blocks on the deterministic layer alone. Determinism corroborates; it never originates a block.
 
 ---
 
-## Banded response
+## Component 2 — Deterministic refutation audit (corroboration only)
 
-| Band / verifier result | Behavior | Rollout phase |
-|---|---|---|
-| grounded / analytical | Pass | always |
-| medium, verifier `ok: true` | Pass | always |
-| medium, verifier `ok: false` | **Warn** — visible `grounding_warnings` in the response payload + UI banner; query still runs | phase 1 → later: clarify |
-| medium, verifier unavailable | Pass + `verifier_unavailable` note in `grounding_warnings` | always |
-| high-unsupported | **Block** (non-repairable) — `stopped_at="semantic_guard"`, clear `error` message | phase 2 |
+Runs over the concepts the verifier flagged. Its sole job is to answer, from schema-derived facts: **can this flagged mapping be proven unsafe?** It does not parse the question, does not decide what the question "means," and **cannot assert that any concept *is* supported** — only the verifier and the schema evidence together can refute.
 
-### Block message (high-unsupported)
+For each flagged concept, the audit confirms a refutation when the concept has **no match in any evidence channel of the active datasource**, and (for a substituted status/enum value) the proxied value is provably impossible:
+
+- `table_semantics` (display name, description, domain)
+- `column_semantics` / `table_column_semantics`
+- `dimension_columns` / `metric_columns`
+- `sample_value_fallbacks`
+- schema-context channels: labels, descriptions, aliases, Metric Definitions, Verified Queries, SQL Generation Guidance
+
+**Evidence must be datasource-scoped.** The current overlay is global: [`_overlay_path`](../../../backend/app/metadata/semantic_overlay.py) resolves a single configured path (`ecommerce.yml`) with no datasource parameter. Using that overlay as evidence for a *different* datasource would supply false evidence. So the audit draws evidence in this priority:
+
+1. **Primary — the datasource's own metadata/schema context** (`state.schema_context`). Always correct for the active datasource.
+2. **Secondary — a semantic overlay only when it is explicitly bound to this datasource.** Until overlay→datasource binding exists, the overlay is consulted only for the datasource it actually describes and ignored otherwise. (Open question.)
+
+**`SELECT DISTINCT` confirmation.** `sample_value_fallbacks` is, by name, a *fallback* list — not guaranteed exhaustive. Absence there is a signal, not proof. Before the audit confirms a refutation against a missing *status/enum value*, it runs a cheap `SELECT DISTINCT <column> LIMIT N` against the real column. If the value genuinely does not exist, the refutation is confirmed; if it does exist, the audit cannot refute (and the verifier finding stays a warning, never a block). Concept-level absence — no column/metric/description at all, as with `删除率` — needs no probe; there is no column to query.
+
+**The audit can only refute.** A "no evidence found" result confirms a refutation. A "found something" result does **not** clear the verifier's finding — it only means the deterministic layer abstains, leaving the finding as a warning. Determinism is never the reason a query passes.
+
+---
+
+## Decision logic
+
+| `semantic_guard_mode` | verifier `ok:true` | verifier `ok:false`, refutation **confirmed** | verifier `ok:false`, refutation **not confirmed** | verifier unavailable |
+|---|---|---|---|---|
+| `off` | pass | pass | pass | pass |
+| `warn` | pass | **warn** (visible) | **warn** (visible) | skip + log `verifier_unavailable` |
+| `enforce` | pass | **block** (non-repairable) | **warn** (visible) | no block; optional `verifier_unavailable` advisory |
+
+**Hard block condition (the only path to a block):**
+
+```
+semantic_guard_mode == "enforce"
+AND verifier.ok == false
+AND deterministic_refutation.confirmed == true
+```
+
+**Medium / uncertain stays warn-only forever** unless a deterministic refutation pattern has been proven for it. A verifier finding the audit cannot corroborate never escalates to a block on its own, in any mode. Enforcement is earned per pattern, from eval evidence — never granted by default.
+
+### Block message (confirmed unsupported)
 
 ```
 当前 schema 中没有"删除/删除率"对应的字段、状态值或指标，无法安全生成 SQL。
 ```
 
-The message names the unsupported concept and states no safe SQL exists — it does not invent a proxy.
+Names the unsupported concept and states no safe SQL exists — it does not invent a proxy.
 
-### Warn annotation (medium, unsupported) — must be *visible*
+### Warnings must be *visible*
 
-A warning that only lives in [`explainability`](../../../backend/app/agent/explainability.py) is too easy to miss — the analyst would see numbers that silently mean something other than what they asked, which is the exact failure we are trying to prevent. So the warning is a **first-class, visible part of the final response payload**, not buried in explainability:
+A warning that only lives in [`explainability`](../../../backend/app/agent/explainability.py) is too easy to miss — the analyst would see numbers that silently mean something other than what they asked, the exact failure we are preventing. So warnings are a **first-class, visible part of the response payload**:
 
-- A dedicated `grounding_warnings` field on `AgentState`, populated by `semantic_guard_node` (each entry: concept, `failure_kind`, the proxy/omission, and a plain-language caveat).
-- This field is included in the **API response payload** (chat result / SSE final event) alongside the result, not only inside `explainability`.
-- The **UI surfaces it prominently** next to the result table (e.g. a warning banner: "结果可能不准确：'删除率' 在当前数据中没有定义，已用近似口径/未过滤"), so it cannot be overlooked.
+- A dedicated, typed `grounding_warnings` field on `AgentState`, populated by `semantic_guard_node` (each entry: concept, `failure_kind`, the proxy/omission, refutation status, and a plain-language caveat).
+- Included in the **API response payload** (chat result / SSE final event) alongside the result, not only inside `explainability`.
+- The **UI surfaces it prominently** next to the result table (e.g. a banner: "结果可能不准确：'删除率' 在当前数据中没有定义，已用近似口径/未过滤"), so it cannot be overlooked.
 
-Explainability may *additionally* carry the detailed evidence trail, but visibility does not depend on the user opening explainability.
-
-### Fail-closed safety check
-
-`sample_value_fallbacks` is, by name, a *fallback* list — not guaranteed exhaustive. Absence of a value there is a **signal, not proof** of non-existence. Before a **high-unsupported block** fires on a missing *status/enum value*, run a cheap `SELECT DISTINCT <column> LIMIT N` against the real column to confirm the value genuinely does not exist. This prevents blocking a value that exists in data but was never enumerated in the overlay. (Concept-level absence — no column/metric/description at all, as with `删除率` — does not need this check; there is no column to probe.)
+Explainability may *additionally* carry the detailed evidence trail, but visibility does not depend on the user opening it.
 
 ### Datasets without an overlay
 
-Overlays are per-dataset (`ecommerce.yml` is the demo). For datasets lacking one, Stage 1 degrades gracefully to schema-context metadata only; more queries fall to the `medium` band and lean on Stage 2. No dataset is left unprotected; coverage is just weaker without curated evidence.
+Overlays are per-dataset (`ecommerce.yml` is the demo). For datasets lacking one, the refutation audit draws on schema-context metadata only. Fewer refutations will be confirmable, so more findings stay warnings rather than blocks — a safe degradation, not a gap: no dataset is left unprotected, coverage is just weaker without curated evidence.
 
 ---
 
@@ -187,7 +202,8 @@ Overlays are per-dataset (`ecommerce.yml` is the demo). For datasets lacking one
 New `AgentState` fields (additive to [`state.py`](../../../backend/app/agent/state.py)):
 
 - existing `error` / `stopped_at` reused for hard blocks (consistent with `sql_guard`); `semantic_guard` is added to `NON_REPAIRABLE_GUARD_STAGES` in [`repair.py`](../../../backend/app/agent/repair.py).
-- a dedicated, typed `grounding_warnings: list[...]` field (not just an `explainability` key) so warnings are carried explicitly into the response payload and UI. Each entry: concept, `failure_kind` (`substituted` / `omitted` / `verifier_unavailable`), the proxy or omission, and a plain-language caveat.
+- a dedicated, typed `grounding_warnings: list[...]` field (not just an `explainability` key) carried into the response payload and UI. Each entry: concept, `failure_kind` (`substituted` / `omitted` / `verifier_unavailable`), the proxy or omission, refutation status, and a plain-language caveat.
+- a cached `required_concepts` (or equivalent) so the verifier's extraction is computed once and reused across repair iterations.
 
 The API response model (chat result / SSE final event) is extended to include `grounding_warnings`. No change to the SQL/JSON *generation* output contract. No change to `generate_sql` prompts (the guard is a separate node; a *light* prompt rule — "do not invent proxy metrics/filters from adjacent values" — may be added as a cheap first line of defense, but the guard does not depend on it).
 
@@ -195,21 +211,20 @@ The API response model (chat result / SSE final event) is extended to include `g
 
 ## Rollout (eval-first)
 
-1. **Phase 1 — warn-only.** Ship Stage 1 + Stage 2 in warn-only mode: every band that would block instead emits a visible `grounding_warnings` entry. Nothing is blocked. Add eval cases (unsupported concept *substituted* and *omitted*, adjacent-value substitution, plus *negative* cases like rank correlation and legitimate refund-rate questions) and measure verifier precision/recall.
-2. **Phase 2 — enable blocking.** Once precision on the high-unsupported band is acceptable, flip that band to fail-closed (with the distinct-values safety check). Medium band stays warn-only.
-3. **Phase 3 (later, optional) — clarify.** Replace medium-band warnings with an interactive disambiguation turn ("删除率 在当前 schema 中没有直接对应。你是指 退款率 / 取消率 / 都不是?"). Higher build cost (mid-workflow suspend/resume); deferred until value is proven.
+1. **Phase 1 — verifier-first, warn-only.** The LLM verifier does *all* extraction and grounding judgment. The deterministic refutation audit runs **observation-only**: it computes whether it *would* confirm each finding and logs the result alongside the verifier output, but it never bands or blocks. Nothing is blocked; verifier `ok:false` produces a visible warning. No hand-written concept rules exist. The logged `{question, sql, verifier finding, would-confirm}` tuples become an **eval corpus** measuring verifier precision/recall and how often the deterministic audit agrees.
+2. **Phase 2 — earned enforcement.** From the eval corpus, promote **only** the deterministic refutation patterns the data proves safe (high agreement, no false confirmations). A hard block then requires the double gate: verifier `ok:false` **and** a proven deterministic refutation confirmed. Findings without a proven refutation pattern stay warn-only.
+3. **Phase 3 (later, optional) — clarify.** Replace warnings with an interactive disambiguation turn ("删除率 在当前 schema 中没有直接对应。你是指 退款率 / 取消率 / 都不是?"). Higher build cost (mid-workflow suspend/resume); deferred until value is proven.
 
-A setting (e.g. `semantic_guard_mode = off | warn | enforce`) gates the phases so rollout is reversible.
+A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible.
 
 ---
 
 ## Testing
 
-- **Unit (Stage 1):** band assignment for grounded / analytical / high-unsupported / medium inputs, using fixture overlays. Assert `删除率` (substituted) → high-unsupported, `删除的订单` (omitted, no filter in SQL) → high-unsupported, rank correlation → analytical, `销售额` → grounded.
-- **Unit (Stage 1) datasource scoping:** an overlay describing datasource A must NOT supply evidence when the active datasource is B.
-- **Unit (Stage 2):** verifier prompt/parse with a mock provider; assert `ok:false` for both `failure_kind: substituted` and `failure_kind: omitted`, `ok:true` for grounded. Assert fail-open (`verifier_unavailable`) on timeout/error/unparseable output.
-- **Node integration:** `semantic_guard_node` sets `stopped_at`/`error` on block; emits visible `grounding_warnings` on warn; passes through on grounded.
-- **Repair-loop integration:** a **repaired** candidate is still semantically guarded (the original-draft bypass must not regress); a high-unsupported block is non-repairable (does not trigger `repair_sql_node`).
+- **Unit (verifier):** prompt/parse with a mock provider. Assert `ok:false` for both `failure_kind: substituted` (Case 25) and `failure_kind: omitted` (Case 37, no filter in SQL), `ok:true` for a grounded question. Assert outage handling (`verifier_unavailable`) on timeout/error/unparseable output.
+- **Unit (refutation audit):** given a flagged concept, confirms refutation when absent across all channels; **abstains** (does not confirm) when any evidence exists; never emits a "supported" verdict. Datasource scoping: an overlay describing datasource A must NOT supply evidence when the active datasource is B. `SELECT DISTINCT` path: confirms when the value is absent in data, abstains when present.
+- **Decision logic:** the matrix above — block only when `enforce ∧ ok:false ∧ refutation confirmed`; warn when refutation not confirmed in any mode; verifier-unavailable never blocks.
+- **Repair-loop integration:** a **repaired** candidate is still semantically guarded (the original-draft bypass must not regress); a confirmed-unsupported block is non-repairable (does not trigger `repair_sql_node`); concept extraction is cached, not recomputed per iteration.
 - **Negative regression:** Case 36 rank correlation and a legitimate `退款率` question must NOT be flagged.
 - **Workflow:** blocked query never reaches `execute`; `grounding_warnings` appears in the response payload.
 - **Eval cases:** add unsupported-concept (substituted + omitted) and adjacent-substitution cases to the manual/eval suite per audit "Future Hardening" item 4.
@@ -220,13 +235,14 @@ A setting (e.g. `semantic_guard_mode = off | warn | enforce`) gates the phases s
 
 - **Option 1 — prompt-only rule.** "Do not create proxy metrics from adjacent status values." Cheap, near-free to add, but weak as the *sole* mechanism — no enforcement, no measurement. Kept only as an optional light first-line rule, not the guard.
 - **Option 2 — generator self-reports `concept_mappings` in the same call.** Rejected: self-report bias (the generator defends its own substitution) and it re-touches the just-stabilized output contract.
-- **Single-band boolean instead of confidence bands.** Rejected: forces one failure behavior for an unproven verifier. Banding lets high-confidence cases fail closed while uncertain cases warn, and supports eval-first rollout.
+- **Deterministic-first concept extraction / confidence banding.** Rejected: extracting "what the question requires" with token/pattern lists is the keyword-rule trap the audit removed. Interpretation stays with the LLM; determinism is scoped to corroborating refutation.
+- **Single-band boolean / block on verifier alone.** Rejected: blocking on an unproven verifier with no corroboration maximizes false-positive blocks. The double gate makes blocks explainable and earned.
 
 ---
 
 ## Open questions for the plan
 
-1. **Overlay→datasource binding.** How an overlay is explicitly bound to a datasource (manifest field, per-datasource overlay path, or registry entry), so Stage 1 can consult an overlay only when it describes the active datasource. Until this lands, overlay evidence is used only for the datasource it actually describes.
-2. **Concept-extraction approach in Stage 1** — lexical/alias overlap vs. embedding similarity vs. letting Stage 2 do all concept parsing for the medium band. Affects how reliably *omitted* concepts (Case 37) are caught deterministically vs. via the verifier.
+1. **Overlay→datasource binding.** How an overlay is explicitly bound to a datasource (manifest field, per-datasource overlay path, or registry entry), so the audit consults an overlay only when it describes the active datasource. Until this lands, overlay evidence is used only for the datasource it actually describes.
+2. **Eval-corpus promotion criteria.** What agreement/precision threshold qualifies a deterministic refutation pattern for promotion to the `enforce` block path in Phase 2.
 3. Where `semantic_guard_mode` (`off` / `warn` / `enforce`) lives in `Settings`, and its default for tests vs. production.
 4. Verifier timeout budget and which provider it uses (same as generation vs. a cheaper/faster model).
