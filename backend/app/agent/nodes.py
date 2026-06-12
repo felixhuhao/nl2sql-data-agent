@@ -11,6 +11,7 @@ from backend.app.agent.explainability import build_query_explainability
 from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
 from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
+from backend.app.config import get_settings
 from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.llm_provider import (
     LLMProvider,
@@ -261,6 +262,7 @@ def generate_sql_node(
     if state.schema_context is None:
         raise ValueError("schema_context is required before SQL generation.")
 
+    default_ranking_limit, default_browse_limit = _sql_generation_defaults()
     result = provider.generate_sql(
         SQLGenerationRequest(
             question=state.question,
@@ -272,6 +274,8 @@ def generate_sql_node(
             prior_sql=state.conversation_context.normalized_sql if state.conversation_context else None,
             prior_summary=conversation_context_prompt(state.conversation_context) if state.conversation_context else None,
             carried_filters=list(state.conversation_context.active_filters) if state.conversation_context else [],
+            default_ranking_limit=default_ranking_limit,
+            default_browse_limit=default_browse_limit,
         )
     )
     state.sql = normalize_generated_sql(result.sql)
@@ -293,6 +297,7 @@ def repair_sql_node(
 
     deterministic_sql = _deterministic_scope_repair(repair_context)
     if deterministic_sql is None:
+        default_ranking_limit, default_browse_limit = _sql_generation_defaults()
         result = provider.generate_sql(
             SQLGenerationRequest(
                 question=state.question,
@@ -305,6 +310,8 @@ def repair_sql_node(
                 prior_sql=state.conversation_context.normalized_sql if state.conversation_context else None,
                 prior_summary=conversation_context_prompt(state.conversation_context) if state.conversation_context else None,
                 carried_filters=list(state.conversation_context.active_filters) if state.conversation_context else [],
+                default_ranking_limit=default_ranking_limit,
+                default_browse_limit=default_browse_limit,
             )
         )
         repaired_sql = result.sql
@@ -335,6 +342,12 @@ def repair_sql_node(
     )
     state.completed_steps.append("repair_sql")
     return state
+
+
+def _sql_generation_defaults() -> tuple[int, int]:
+    # get_settings() is lru-cached; keep config lookup centralized for generation and repair paths.
+    settings = get_settings()
+    return settings.sql_default_ranking_limit, settings.sql_default_browse_limit
 
 
 def _deterministic_scope_repair(repair_context: SQLRepairContext) -> str | None:

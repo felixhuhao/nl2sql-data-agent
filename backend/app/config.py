@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_RANKING_LIMIT = 10
+DEFAULT_BROWSE_LIMIT = 20
 
 
 class Settings(BaseSettings):
@@ -20,6 +22,8 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
     deepseek_timeout: float = 30.0
+    sql_default_ranking_limit: int = Field(default=DEFAULT_RANKING_LIMIT, ge=1, le=500)
+    sql_default_browse_limit: int = Field(default=DEFAULT_BROWSE_LIMIT, ge=1, le=500)
     vector_enabled: str | bool = "auto"
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from backend.app.config import DEFAULT_BROWSE_LIMIT, DEFAULT_RANKING_LIMIT
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import list_verified_queries
 
@@ -32,6 +33,8 @@ class SQLGenerationRequest:
     prior_sql: str | None = None
     prior_summary: str | None = None
     carried_filters: list[Any] = field(default_factory=list)
+    default_ranking_limit: int = DEFAULT_RANKING_LIMIT
+    default_browse_limit: int = DEFAULT_BROWSE_LIMIT
 
 
 @dataclass(frozen=True)
@@ -70,7 +73,10 @@ class MockLLMProvider:
             )
 
         return SQLGenerationResult(
-            sql="SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 20",
+            sql=(
+                "SELECT order_id, payment_amount FROM fact_orders "
+                f"ORDER BY order_id LIMIT {request.default_browse_limit}"
+            ),
             provider=self.name,
         )
 

@@ -39,7 +39,11 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
         return [
             {
                 "role": "system",
-                "content": _system_prompt(request.datasource_dialect),
+                "content": _system_prompt(
+                    request.datasource_dialect,
+                    default_ranking_limit=request.default_ranking_limit,
+                    default_browse_limit=request.default_browse_limit,
+                ),
             },
             user_message,
             {
@@ -55,7 +59,11 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
     return [
         {
             "role": "system",
-            "content": _system_prompt(request.datasource_dialect),
+            "content": _system_prompt(
+                request.datasource_dialect,
+                default_ranking_limit=request.default_ranking_limit,
+                default_browse_limit=request.default_browse_limit,
+            ),
         },
         user_message,
     ]
@@ -162,7 +170,6 @@ def _repair_return_instruction(request: SQLGenerationRequest) -> str:
 
 def _schema_context_guide() -> list[str]:
     return [
-        "Schema context reading guide:",
         "- The Analysis Space section lists the only allowed datasource, operations, tables, and metrics.",
         "- In the Tables section, lines like '- table_name: ...' define available tables; indented lines like '- column_name (TYPE) [tags] - ...' define columns for the most recent table.",
         "- Join Relationships use 'source_table.source_column -> target_table.target_column' to describe allowed join paths and cardinality.",
@@ -173,9 +180,8 @@ def _schema_context_guide() -> list[str]:
     ]
 
 
-def _few_shot_examples() -> list[str]:
+def _few_shot_examples(default_ranking_limit: int, default_browse_limit: int) -> list[str]:
     return [
-        "Few-shot examples:",
         "These examples are illustrative only; do not copy example table, column, or metric names unless they appear in the current schema context.",
         "",
         "Example 1 - OUTPUT_FORMAT=sql with a metric alias:",
@@ -186,7 +192,7 @@ def _few_shot_examples() -> list[str]:
         "FROM example_events AS e",
         "GROUP BY e.category",
         "ORDER BY total_value DESC",
-        "LIMIT 10",
+        f"LIMIT {default_ranking_limit}",
         "",
         "Example 2 - OUTPUT_FORMAT=json for a conversation follow-up:",
         (
@@ -198,7 +204,8 @@ def _few_shot_examples() -> list[str]:
         (
             '{"sql": "SELECT e.category AS category, SUM(e.event_value) AS total_value '
             "FROM example_events AS e WHERE e.status = 'completed' GROUP BY e.category "
-            'ORDER BY total_value DESC LIMIT 10", "is_follow_up": true, "change_kind": "filter"}'
+            f'ORDER BY total_value DESC LIMIT {default_ranking_limit}", '
+            '"is_follow_up": true, "change_kind": "filter"}'
         ),
         "",
         "Example 3 - repair when OUTPUT_FORMAT=sql:",
@@ -208,18 +215,33 @@ def _few_shot_examples() -> list[str]:
         "SELECT e.category AS category",
         "FROM example_events AS e",
         "ORDER BY e.category",
-        "LIMIT 20",
+        f"LIMIT {default_browse_limit}",
         "If a repair prompt uses OUTPUT_FORMAT=json, return the corrected standalone SQL in the JSON sql field.",
     ]
 
 
-def _system_prompt(dialect: str = "duckdb") -> str:
+def _system_prompt(
+    dialect: str = "duckdb",
+    *,
+    default_ranking_limit: int,
+    default_browse_limit: int,
+) -> str:
     dialect_lines = DIALECT_INSTRUCTIONS.get(dialect, DIALECT_INSTRUCTIONS["duckdb"])
     return "\n".join(
         [
+            "## Role",
             "You generate SQL for a governed NL2SQL data agent.",
-            "Follow the Output format section exactly. For OUTPUT_FORMAT=sql return only SQL; for OUTPUT_FORMAT=json return only the requested JSON object. Do not include markdown, comments, prose, or explanation.",
+            "",
+            "## Output Contract",
+            "Follow the Output format section in the user or repair message exactly.",
+            "For OUTPUT_FORMAT=sql return only SQL.",
+            "For OUTPUT_FORMAT=json return only the requested JSON object.",
+            "Do not include markdown, comments, prose, or explanation.",
+            "",
+            "## Dialect Rules",
             *dialect_lines,
+            "",
+            "## Core SQL Rules",
             "Only generate a single SELECT statement.",
             "Use only tables and columns present in the provided schema context.",
             "Use only assets inside the Analysis Space.",
@@ -227,15 +249,22 @@ def _system_prompt(dialect: str = "duckdb") -> str:
             "Alias every computed projection with a stable snake_case name.",
             "When using a Metric Layer expression, use the metric name from the schema context as the SELECT alias.",
             "For human-readable dimensions, prefer descriptive name/label columns from the schema and do not substitute surrogate *_key columns unless the user asks for IDs or keys.",
-            "For ranking questions without an explicit count, return the top 10 rows with ORDER BY and LIMIT 10.",
-            "For plain list, sample, or browse-data questions without an explicit count, return representative business columns and LIMIT 20.",
-            "For open-ended browse-data questions, prefer identifiers and primary business measures from the schema context; avoid date/time columns unless the user asks for time.",
             "For dimension value lists, ORDER BY the displayed name/label column for deterministic results.",
-            "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
             "Follow schema-specific SQL generation guidance in the schema context when present.",
             "",
+            "## Default Limits",
+            f"- Ranking, top, bottom, highest, or lowest questions without an explicit count: use ORDER BY and LIMIT {default_ranking_limit}.",
+            f"- Plain list, sample, or browse-data questions without an explicit count: LIMIT {default_browse_limit}.",
+            "- For open-ended browse-data questions, prefer identifiers and primary business measures from the schema context; avoid date/time columns unless the user asks for time.",
+            "- Treat these as configurable SQL generation defaults, not schema facts.",
+            "",
+            "## Safety Rules",
+            "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
+            "",
+            "## Schema Context Reading Guide",
             *_schema_context_guide(),
             "",
-            *_few_shot_examples(),
+            "## Few-Shot Examples",
+            *_few_shot_examples(default_ranking_limit, default_browse_limit),
         ]
     )

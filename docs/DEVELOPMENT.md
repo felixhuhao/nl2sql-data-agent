@@ -41,6 +41,8 @@ LLM_PROVIDER=auto
 DUCKDB_PATH=/home/hao/.local/share/nl2sql_pro/ecommerce.duckdb
 SQLITE_PATH=/home/hao/.local/share/nl2sql_pro/metadata.sqlite
 DATASET_CURRENT_DATE=2025-12-31
+SQL_DEFAULT_RANKING_LIMIT=10
+SQL_DEFAULT_BROWSE_LIMIT=20
 ```
 
 DeepSeek:

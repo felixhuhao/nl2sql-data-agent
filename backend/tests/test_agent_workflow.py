@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 import backend.app.agent.nodes as nodes_module
@@ -254,8 +256,13 @@ def test_iter_pre_repair_workflow_runs_shared_step_sequence(monkeypatch):
     assert state.sql == "SELECT payment_amount FROM fact_orders"
 
 
-def test_generate_sql_node_passes_olap_context_to_provider():
+def test_generate_sql_node_passes_olap_context_to_provider(monkeypatch):
     captured_requests = []
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(sql_default_ranking_limit=15, sql_default_browse_limit=25),
+    )
 
     class CapturingProvider:
         name = "capturing"
@@ -278,6 +285,8 @@ def test_generate_sql_node_passes_olap_context_to_provider():
 
     assert captured_requests[0].olap_intents == ["topn", "yoy_mom"]
     assert captured_requests[0].olap_hint == "TopN guidance"
+    assert captured_requests[0].default_ranking_limit == 15
+    assert captured_requests[0].default_browse_limit == 25
 
 
 def test_generate_sql_node_requires_schema_context():

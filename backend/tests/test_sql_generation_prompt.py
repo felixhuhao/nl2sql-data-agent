@@ -17,7 +17,15 @@ def test_sql_generation_prompt_contains_core_constraints():
     )
 
     system_prompt = messages[0]["content"]
-    assert "Follow the Output format section exactly" in system_prompt
+    assert "## Role" in system_prompt
+    assert "## Output Contract" in system_prompt
+    assert "## Dialect Rules" in system_prompt
+    assert "## Core SQL Rules" in system_prompt
+    assert "## Default Limits" in system_prompt
+    assert "## Safety Rules" in system_prompt
+    assert "## Schema Context Reading Guide" in system_prompt
+    assert "## Few-Shot Examples" in system_prompt
+    assert "Follow the Output format section in the user or repair message exactly" in system_prompt
     assert "Return SQL only unless" not in system_prompt
     assert "DuckDB SQL dialect" in system_prompt
     assert "single SELECT statement" in system_prompt
@@ -26,9 +34,11 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Alias every computed projection" in system_prompt
     assert "use the metric name from the schema context as the SELECT alias" in system_prompt
     assert "do not substitute surrogate *_key columns" in system_prompt
+    assert "LIMIT 10" in system_prompt
+    assert "LIMIT 20" in system_prompt
+    assert "configurable SQL generation defaults" in system_prompt
     assert "INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD" in system_prompt
     assert "read_csv, read_json, or read_parquet" in system_prompt
-    assert "Schema context reading guide:" in system_prompt
     assert "The Analysis Space section lists the only allowed datasource" in system_prompt
     assert "lines like '- table_name: ...' define available tables" in system_prompt
     assert "indented lines like '- column_name (TYPE) [tags] - ...' define columns" in system_prompt
@@ -38,7 +48,6 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Verified Queries are vetted examples" in system_prompt
     assert "same metric, dimensions, filters, and time range" in system_prompt
     assert "do not carry over filters or time ranges from the example" in system_prompt
-    assert "Few-shot examples:" in system_prompt
     assert "illustrative only" in system_prompt
     assert "Example 1 - OUTPUT_FORMAT=sql" in system_prompt
     assert "Example 2 - OUTPUT_FORMAT=json" in system_prompt
@@ -84,7 +93,7 @@ def test_sql_generation_prompt_schema_context_guide_is_schema_neutral():
     )
 
     system_prompt = messages[0]["content"]
-    guide = system_prompt.split("Schema context reading guide:", maxsplit=1)[1].split("Few-shot examples:", maxsplit=1)[0]
+    guide = system_prompt.split("## Schema Context Reading Guide", maxsplit=1)[1].split("## Few-Shot Examples", maxsplit=1)[0]
     assert "table_name" in guide
     assert "column_name" in guide
     assert "metric_name" in guide
@@ -92,6 +101,23 @@ def test_sql_generation_prompt_schema_context_guide_is_schema_neutral():
     assert "fact_orders" not in guide
     assert "dim_products" not in guide
     assert "fact_order_items" not in guide
+
+
+def test_sql_generation_prompt_uses_request_default_limits():
+    messages = build_sql_generation_messages(
+        SQLGenerationRequest(
+            question="List records",
+            schema_context="# Schema Context",
+            default_ranking_limit=15,
+            default_browse_limit=25,
+        )
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "LIMIT 15" in system_prompt
+    assert "LIMIT 25" in system_prompt
+    assert "LIMIT 10" not in system_prompt
+    assert "LIMIT 20" not in system_prompt
 
 
 def test_sql_generation_prompt_uses_clickhouse_dialect_instructions():

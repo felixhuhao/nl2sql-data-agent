@@ -1,4 +1,5 @@
 from backend.app.dataspace.verified_queries import list_verified_queries
+from backend.app.config import DEFAULT_BROWSE_LIMIT
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 
 
@@ -108,7 +109,10 @@ def test_mock_provider_does_not_generate_write_sql_from_keywords():
 
         assert result.provider == "mock"
         assert result.matched_query_id is None
-        assert result.sql == "SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 20"
+        assert (
+            result.sql
+            == f"SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT {DEFAULT_BROWSE_LIMIT}"
+        )
 
 
 def test_mock_provider_returns_fallback_select():
@@ -123,7 +127,26 @@ def test_mock_provider_returns_fallback_select():
 
     assert result.provider == "mock"
     assert result.matched_query_id is None
-    assert result.sql == "SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 20"
+    assert (
+        result.sql
+        == f"SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT {DEFAULT_BROWSE_LIMIT}"
+    )
+
+
+def test_mock_provider_uses_configured_browse_limit_for_fallback_select():
+    provider = _provider()
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="随便查几条订单",
+            schema_context="# Schema Context",
+            default_browse_limit=25,
+        )
+    )
+
+    assert result.provider == "mock"
+    assert result.matched_query_id is None
+    assert result.sql == "SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 25"
 
 
 def _provider() -> MockLLMProvider:
