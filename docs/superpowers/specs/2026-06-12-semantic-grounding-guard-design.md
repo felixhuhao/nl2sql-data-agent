@@ -178,7 +178,7 @@ The unsafe thing is the **absence of evidence for the requested concept**, not a
 
 ## Decision logic
 
-| `semantic_guard_mode` | verifier `ok:true` | verifier `ok:false`, refutation **confirmed** | verifier `ok:false`, refutation **not confirmed** | verifier unavailable |
+| `semantic_guard_mode` | verifier `ok:true` | verifier `ok:false`, promoted refutation **confirmed** | verifier `ok:false`, unpromoted / unconfirmed refutation | verifier unavailable |
 |---|---|---|---|---|
 | `off` | pass | pass | pass | pass |
 | `warn` | pass | **warn** (visible) | **warn** (visible) | skip + log `verifier_unavailable` |
@@ -190,6 +190,7 @@ The unsafe thing is the **absence of evidence for the requested concept**, not a
 semantic_guard_mode == "enforce"
 AND verifier.ok == false
 AND deterministic_refutation.confirmed == true
+AND deterministic_refutation.pattern IN semantic_guard_promoted_refutation_patterns
 ```
 
 **Medium / uncertain stays warn-only forever** unless a deterministic refutation pattern has been proven for it. A verifier finding the audit cannot corroborate never escalates to a block on its own, in any mode. Enforcement is earned per pattern, from eval evidence — never granted by default.
@@ -236,7 +237,7 @@ The API response model (chat result / SSE final event) is extended to include `g
 2. **Phase 2 — earned enforcement.** From the eval corpus, promote **only** the deterministic refutation patterns the data proves safe (high agreement, no false confirmations). A hard block then requires the double gate: verifier `ok:false` **and** a proven deterministic refutation confirmed. Findings without a proven refutation pattern stay warn-only.
 3. **Phase 3 (later, optional) — clarify.** Replace warnings with an interactive disambiguation turn ("删除率 在当前 schema 中没有直接对应。你是指 退款率 / 取消率 / 都不是?"). Higher build cost (mid-workflow suspend/resume); deferred until value is proven.
 
-A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible. The verifier uses a separate `semantic_guard_timeout` budget; the initial default is 30 seconds because Stage A reads full datasource metadata and is cached across repaired candidates.
+A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible. `semantic_guard_promoted_refutation_patterns` is a comma-separated allow-list of deterministic patterns that may hard-block in `enforce`; it is empty by default. The verifier uses a separate `semantic_guard_timeout` budget; the initial default is 30 seconds because Stage A reads full datasource metadata and is cached across repaired candidates.
 
 ### Phase 2 Promotion Criteria
 

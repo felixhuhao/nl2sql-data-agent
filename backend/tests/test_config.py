@@ -9,6 +9,7 @@ from backend.app.config import (
     embedding_model_name,
     effective_llm_provider_name,
     llm_provider_mode,
+    semantic_guard_promoted_refutation_patterns,
     vector_config_allows_attempt,
     vector_enabled_mode,
 )
@@ -22,6 +23,7 @@ def _clear_config_env(monkeypatch):
         "EMBEDDING_MODEL",
         "SQL_DEFAULT_RANKING_LIMIT",
         "SQL_DEFAULT_BROWSE_LIMIT",
+        "SEMANTIC_GUARD_PROMOTED_REFUTATION_PATTERNS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -64,6 +66,20 @@ def test_sql_generation_limits_default_and_can_be_overridden(monkeypatch):
 
     assert custom_settings.sql_default_ranking_limit == 15
     assert custom_settings.sql_default_browse_limit == 25
+
+
+def test_semantic_guard_promoted_patterns_default_empty_and_parse_csv(monkeypatch):
+    _clear_config_env(monkeypatch)
+
+    assert semantic_guard_promoted_refutation_patterns(Settings(_env_file=None)) == frozenset()
+    assert semantic_guard_promoted_refutation_patterns(
+        SimpleNamespace(
+            semantic_guard_promoted_refutation_patterns=(
+                "concept_absent_full_metadata, value_absent_after_distinct, "
+                "concept_absent_full_metadata"
+            )
+        )
+    ) == frozenset({"concept_absent_full_metadata", "value_absent_after_distinct"})
 
 
 def test_vector_enabled_defaults_to_auto(monkeypatch):

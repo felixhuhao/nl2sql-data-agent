@@ -212,10 +212,18 @@ def test_promotion_pattern_stats_tracks_false_confirmed_warning():
         runner.SemanticEvalResult(
             case_id="positive",
             question="退货率",
-            tags=[],
+            tags=["positive_schema"],
             case_type="verifier_only",
             promotion_pattern="concept_absent_full_metadata",
             required_concepts=[{"concept": "退货率", "supported": True}],
+        ),
+        runner.SemanticEvalResult(
+            case_id="negative",
+            question="退货率",
+            tags=["negative_schema"],
+            case_type="verifier_only",
+            promotion_pattern="concept_absent_full_metadata",
+            required_concepts=[{"concept": "退货率", "supported": False}],
         ),
         runner.SemanticEvalResult(
             case_id="false_positive",
@@ -230,8 +238,10 @@ def test_promotion_pattern_stats_tracks_false_confirmed_warning():
 
     stats = runner._promotion_pattern_stats(results)["concept_absent_full_metadata"]
 
-    assert stats["cases"] == 3
+    assert stats["cases"] == 4
     assert stats["confirmed_warning_cases"] == 2
     assert stats["false_confirmed_warning_cases"] == 1
     assert stats["verifier_positive_cases"] == 1
     assert stats["verifier_positive_passed"] == 1
+    assert stats["verifier_negative_cases"] == 1
+    assert stats["verifier_negative_passed"] == 1
