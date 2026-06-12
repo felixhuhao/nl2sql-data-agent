@@ -54,19 +54,17 @@ confirmed_relationships:
         encoding="utf-8",
     )
 
-    data = semantic_overlay._load_overlay(str(manifest))
+    overlay = semantic_overlay.load_semantic_overlay(manifest)
 
-    assert semantic_overlay._table_semantics(data)["fact_events"] == (
+    assert overlay.table_semantics["fact_events"] == (
         "Event facts",
         "Event stream",
         "product",
     )
-    assert semantic_overlay._table_column_semantics(data)[("fact_events", "event_count")] == (
-        "Events counted from stream"
-    )
-    assert semantic_overlay._string_set(data, "metric_columns") == {"event_count"}
-    assert semantic_overlay._sample_value_fallbacks(data)["event_type"] == ["signup"]
-    assert semantic_overlay._confirmed_relationships(data) == [
+    assert overlay.table_column_semantics[("fact_events", "event_count")] == "Events counted from stream"
+    assert overlay.metric_columns == {"event_count"}
+    assert overlay.sample_value_fallbacks["event_type"] == ["signup"]
+    assert overlay.confirmed_relationships == [
         (
             "fact_events",
             "product_id",
@@ -76,3 +74,56 @@ confirmed_relationships:
             "Events attach to products",
         )
     ]
+
+
+def test_semantic_overlay_loader_normalizes_path_cache_keys(tmp_path):
+    manifest = tmp_path / "overlay.yml"
+    manifest.write_text("tables: {}\n", encoding="utf-8")
+    semantic_overlay._load_overlay_by_path.cache_clear()
+
+    data_from_str = semantic_overlay._load_overlay(str(manifest))
+    data_from_path = semantic_overlay._load_overlay(manifest)
+
+    assert data_from_path is data_from_str
+
+
+def test_lazy_mapping_resolves_factory_once_for_common_dict_operations():
+    calls = 0
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return {"fact_events": ("Event facts", "Event stream", "product")}
+
+    mapping = semantic_overlay._LazyMapping(factory)
+
+    assert len(mapping) == 1
+    assert list(mapping) == ["fact_events"]
+    assert mapping["fact_events"] == ("Event facts", "Event stream", "product")
+    assert calls == 1
+
+
+def test_lazy_sequence_contains_uses_single_resolved_value():
+    calls = 0
+    relationship = ("fact_events", "product_id", "dim_products", "product_id", "many_to_one", "Products")
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return [relationship]
+
+    sequence = semantic_overlay._LazySequence(factory)
+
+    assert relationship in sequence
+    assert relationship in sequence
+    assert calls == 1
+
+
+def test_lazy_value_can_be_reset_for_reload_paths():
+    values = [{"first": 1}, {"second": 2}]
+
+    lazy = semantic_overlay._LazyMapping(lambda: values.pop(0))
+
+    assert list(lazy) == ["first"]
+    lazy._reset()
+    assert list(lazy) == ["second"]
