@@ -59,7 +59,7 @@ columns:
   total_amount: 订单原始金额
   discount_amount: 订单优惠金额
   payment_amount: 订单实付金额，销售额口径字段
-  order_status: 订单状态
+  order_status: 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
   item_id: 订单明细 ID
   quantity: 商品数量
   unit_price: 成交单价
