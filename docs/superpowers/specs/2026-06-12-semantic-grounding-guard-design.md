@@ -29,7 +29,7 @@ The overlay ([`ecommerce.yml`](../../../backend/app/metadata/semantic_overlays/e
 1. `删除` (deleted) has **zero evidence** across every channel (column name, description, display name, sample value, metric).
 2. `refunded` **is** documented — which is *exactly why* the model grabbed it as a proxy.
 
-A naive "is every column/value in the SQL grounded?" check **would pass** Case 25, because `refunded` is genuinely grounded. The ungrounded thing is not the value — it is the **mapping from the question's concept (`删除率`) to that value**. And Case 37 has *no mapping in the SQL at all*. So the check must be **question-aware**: it has to start from what the question asks and reason about both substituted and omitted concepts, looking at `{question, schema_context, sql}` together. An allow-list / SQL-only shortcut cannot work.
+A naive "is every column/value in the SQL grounded?" check **would pass** Case 25, because `refunded` is genuinely grounded. The ungrounded thing is not the value — it is the **mapping from the question's concept (`删除率`) to that value**. And Case 37 has *no mapping in the SQL at all*. So the check must be **question-aware**: it has to start from what the question asks and reason about both substituted and omitted concepts, looking at the question, the schema, and the SQL together (and, for any judgment that may justify a block, the *full* schema metadata — not the focused retrieval subset). An allow-list / SQL-only shortcut cannot work.
 
 ---
 
@@ -78,15 +78,23 @@ generate_sql ──► │ sql_guard ──► semantic_guard ──► execute 
 
 **A semantic block is non-repairable.** Unlike `scope_guard`/`syntax_guard` (in `REPAIRABLE_GUARD_STAGES`), a confirmed-unsupported block means the requested concept genuinely has no schema evidence — re-prompting the model would only produce another substitution. So `semantic_guard` adds a stage to `NON_REPAIRABLE_GUARD_STAGES` (alongside `operation_guard`): on a hard block it stops the loop and returns the error, it does not trigger `repair_sql_node`.
 
-**Cost across repairs.** The check can fire up to `MAX_REPAIRS + 1` times (3×) per query. The question's required concepts do not change across repairs — only whether the SQL grounds them does. So the verifier's concept extraction is computed once and cached on state; only the SQL-grounding comparison re-runs per candidate. This keeps the per-repair LLM cost from tripling.
+**Cost across repairs.** The check can fire up to `MAX_REPAIRS + 1` times (3×) per query. The question's required concepts and their support status do not change across repairs — only whether a given SQL grounds them does. The verifier is therefore split into two responsibilities with distinct interfaces (see Component 1): a question-invariant **extraction + support** stage that is computed once and cached on state, and a per-candidate **grounding check** that re-runs on each SQL. Only the latter repeats across repairs.
 
 ---
 
 ## Component 1 — Semantic verifier (LLM, primary)
 
-A **fresh** LLM call (not the generator marking its own homework) that sees only `{question, schema_context, sql}` and is instructed adversarially:
+A **fresh** LLM critic (not the generator marking its own homework), split into two responsibilities with distinct interfaces so the question-invariant part can be cached across repair candidates:
 
-> Start from the **question**. List the business entities, filters, status values, and named metrics the question requires. For each, decide whether schema evidence supports it. Then check the SQL: if a required concept is unsupported, flag it whether the SQL **substituted** a proxy for it OR **omitted** it entirely (e.g. the question asks for "deleted orders" but the SQL filters nothing). Do NOT flag analytical operations (rank correlation, YoY, moving average, TopN, share) — those require compatible measures/dimensions, not same-named columns.
+**Stage A — extraction + support (question-invariant, cached).** Input: `{question, full datasource metadata}`. **Not** the focused `schema_context` — support judgments that may justify a block must be made against the *complete* metadata (all tables, columns, aliases, metrics, sample values, verified queries), not the ranked top-K retrieval subset. Output: the list of business concepts the question requires, each marked supported / unsupported with the evidence (or absence) behind it. Runs once per query; cached on state.
+
+> Start from the **question**. List the business entities, filters, status values, and named metrics the question requires. For each, decide from the full schema metadata whether schema evidence supports it.
+
+**Stage B — grounding check (per candidate).** Input: `{required concepts from Stage A, candidate sql}`. For each *unsupported* concept, decide how the SQL handled it. Runs on every candidate (initial and repaired).
+
+> For each unsupported concept, flag whether the SQL **substituted** a proxy for it OR **omitted** it entirely (e.g. the question asks for "deleted orders" but the SQL filters nothing). Do NOT flag analytical operations (rank correlation, YoY, moving average, TopN, share) — those require compatible measures/dimensions, not same-named columns.
+
+The split can collapse to a single combined call on the first candidate and reuse the cached Stage-A result for repaired candidates; what matters is that the cached interface (question→concepts) and the per-candidate interface (concepts+sql→findings) are distinct.
 
 The verifier must catch **both** failure shapes — this is essential, because a SQL-mapping-driven check only sees the first:
 
@@ -126,9 +134,12 @@ Why a separate call and not structured self-report from the generator (rejected 
 The call runs under a bounded timeout and a single attempt (no internal retry loop). On **timeout, provider error, empty response, or unparseable output**, the verifier result is **inconclusive**. There is no deterministic interpreter to fall back on (by design — see philosophy), so a verifier outage means *the semantic check did not run*:
 
 - **Phase 1 (warn-only):** skip the warning, log `verifier_unavailable`. No user-facing impact beyond a missing advisory.
-- **Phase 2 (enforce):** a hard block *requires* an LLM flag, so no flag means **no hard block**. Optionally surface a `semantic verifier unavailable` advisory in `grounding_warnings` (mode-dependent), so the degraded check is observable rather than silent.
+- **Phase 2 (enforce):** a hard block *requires* an LLM flag, so no flag means **no hard block** — the guard silently fails open. Because that is the highest-risk degraded state (enforcement is expected but not happening), its observability is **mandatory, not optional**, on three surfaces:
+  1. a `verifier_unavailable` advisory in `grounding_warnings` on the response (so the user sees the answer was *not* semantically checked);
+  2. a metric + structured log entry per occurrence (so the rate is alertable);
+  3. exposure on the service health/status endpoint (so a sustained verifier outage degrades reported health rather than passing as green).
 
-The deliberate consequence: enforcement never blocks on the deterministic layer alone. Determinism corroborates; it never originates a block.
+The deliberate consequence: enforcement never blocks on the deterministic layer alone — determinism corroborates, it never originates a block — so the fail-open window must be impossible to miss operationally.
 
 ---
 
@@ -136,20 +147,22 @@ The deliberate consequence: enforcement never blocks on the deterministic layer 
 
 Runs over the concepts the verifier flagged. Its sole job is to answer, from schema-derived facts: **can this flagged mapping be proven unsafe?** It does not parse the question, does not decide what the question "means," and **cannot assert that any concept *is* supported** — only the verifier and the schema evidence together can refute.
 
-For each flagged concept, the audit confirms a refutation when the concept has **no match in any evidence channel of the active datasource**, and (for a substituted status/enum value) the proxied value is provably impossible:
+For each flagged concept, the audit confirms a refutation when the **requested** concept has **no match in any evidence channel of the active datasource**:
 
 - `table_semantics` (display name, description, domain)
 - `column_semantics` / `table_column_semantics`
 - `dimension_columns` / `metric_columns`
 - `sample_value_fallbacks`
-- schema-context channels: labels, descriptions, aliases, Metric Definitions, Verified Queries, SQL Generation Guidance
+- channels: labels, descriptions, aliases, Metric Definitions, Verified Queries, SQL Generation Guidance
 
-**Evidence must be datasource-scoped.** The current overlay is global: [`_overlay_path`](../../../backend/app/metadata/semantic_overlay.py) resolves a single configured path (`ecommerce.yml`) with no datasource parameter. Using that overlay as evidence for a *different* datasource would supply false evidence. So the audit draws evidence in this priority:
+The unsafe thing is the **absence of evidence for the requested concept**, not anything about the proxy. In Case 25, the refutation is confirmed because nothing in the schema links `删除率`/deletion to any column, value, or metric — *not* because `refunded` is impossible (`refunded` is valid and documented; that is irrelevant to whether `删除率` is supported). The audit never tests the proxy value's validity.
 
-1. **Primary — the datasource's own metadata/schema context** (`state.schema_context`). Always correct for the active datasource.
-2. **Secondary — a semantic overlay only when it is explicitly bound to this datasource.** Until overlay→datasource binding exists, the overlay is consulted only for the datasource it actually describes and ignored otherwise. (Open question.)
+**Evidence must be full and datasource-scoped — not the focused context.** Two traps:
 
-**`SELECT DISTINCT` confirmation.** `sample_value_fallbacks` is, by name, a *fallback* list — not guaranteed exhaustive. Absence there is a signal, not proof. Before the audit confirms a refutation against a missing *status/enum value*, it runs a cheap `SELECT DISTINCT <column> LIMIT N` against the real column. If the value genuinely does not exist, the refutation is confirmed; if it does exist, the audit cannot refute (and the verifier finding stays a warning, never a block). Concept-level absence — no column/metric/description at all, as with `删除率` — needs no probe; there is no column to query.
+1. **Focused vs. full.** `state.schema_context` is the ranked, limited retrieval subset ([`build_focused_context_from_retrieval`](../../../backend/app/agent/nodes.py), top-K via `_rank(..., limit)`). "Absent from the focused context" is far too weak to justify a block — the concept may simply have fallen below the retrieval cutoff. The audit (and Stage A) therefore query the **full datasource metadata** ([`build_schema_context`](../../../backend/app/metadata/service.py) / the underlying stores), enumerating *all* tables, columns, aliases, metrics, sample values, and verified queries. A useful side effect: auditing against full metadata is exactly what catches a verifier false-positive caused by the focused context — if the LLM flagged a concept only because it was retrieval-pruned, the full-metadata audit finds the evidence and abstains, downgrading the block to (at most) a warning.
+2. **Datasource scope.** The overlay is global: [`_overlay_path`](../../../backend/app/metadata/semantic_overlay.py) resolves a single configured path (`ecommerce.yml`) with no datasource parameter. Using it as evidence for a *different* datasource would supply false evidence, so the overlay is consulted only when explicitly bound to the active datasource (open question); the datasource's own full metadata is always the primary source.
+
+**`SELECT DISTINCT` confirmation — for the *requested* value, never the proxy.** This applies only to the case where the *question itself names a value* (e.g. "status = cancelled") that is absent from `sample_value_fallbacks`. Because that fallback list is, by name, not guaranteed exhaustive, absence there is a signal, not proof. So before confirming a refutation that a *requested* value does not exist, run a cheap `SELECT DISTINCT <column> LIMIT N` on the real column: if the requested value is genuinely absent, the refutation is confirmed; if it exists, the audit abstains. The probe is never run against a substituted proxy value. Concept-level absence — no column/metric/description at all, as with `删除率` — needs no probe; there is no column to query.
 
 **The audit can only refute.** A "no evidence found" result confirms a refutation. A "found something" result does **not** clear the verifier's finding — it only means the deterministic layer abstains, leaving the finding as a warning. Determinism is never the reason a query passes.
 
@@ -161,7 +174,7 @@ For each flagged concept, the audit confirms a refutation when the concept has *
 |---|---|---|---|---|
 | `off` | pass | pass | pass | pass |
 | `warn` | pass | **warn** (visible) | **warn** (visible) | skip + log `verifier_unavailable` |
-| `enforce` | pass | **block** (non-repairable) | **warn** (visible) | no block; optional `verifier_unavailable` advisory |
+| `enforce` | pass | **block** (non-repairable) | **warn** (visible) | no block; **mandatory** `verifier_unavailable` advisory + metric/log + health degrade |
 
 **Hard block condition (the only path to a block):**
 
@@ -243,6 +256,6 @@ A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollo
 ## Open questions for the plan
 
 1. **Overlay→datasource binding.** How an overlay is explicitly bound to a datasource (manifest field, per-datasource overlay path, or registry entry), so the audit consults an overlay only when it describes the active datasource. Until this lands, overlay evidence is used only for the datasource it actually describes.
-2. **Eval-corpus promotion criteria.** What agreement/precision threshold qualifies a deterministic refutation pattern for promotion to the `enforce` block path in Phase 2.
+2. **Eval-corpus promotion criteria — per refutation pattern, not a global verifier score.** Promotion to the `enforce` block path is decided for each individual refutation pattern on its own evidence (agreement with the verifier, zero false confirmations over N cases), never by a single aggregate verifier precision number. A high overall verifier score must not auto-promote a pattern that has not itself been proven safe.
 3. Where `semantic_guard_mode` (`off` / `warn` / `enforce`) lives in `Settings`, and its default for tests vs. production.
 4. Verifier timeout budget and which provider it uses (same as generation vs. a cheaper/faster model).
