@@ -503,8 +503,8 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         "",
         "## Promotion Pattern Readiness",
         "",
-        "| Pattern | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier Unavailable |",
-        "|---------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|----------------------|",
+        "| Pattern | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier-only Negative | Verifier Unavailable |",
+        "|---------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|------------------------|----------------------|",
     ]
     if promotion_stats:
         for pattern, stats in promotion_stats.items():
@@ -520,13 +520,14 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
                         str(stats["confirmed_warning_cases"]),
                         str(stats["false_confirmed_warning_cases"]),
                         f"{stats['verifier_positive_passed']}/{stats['verifier_positive_cases']}",
+                        f"{stats['verifier_negative_passed']}/{stats['verifier_negative_cases']}",
                         str(stats["verifier_unavailable_cases"]),
                     ]
                 )
                 + " |"
             )
     else:
-        lines.append("| n/a | 0 | 0/0 | 0 | 0 | 0 | 0 | 0/0 | 0 |")
+        lines.append("| n/a | 0 | 0/0 | 0 | 0 | 0 | 0 | 0/0 | 0/0 | 0 |")
 
     lines.append("")
     lines.extend(
@@ -578,6 +579,10 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
                     f"- Required concepts: {_format_required_concepts(result.required_concepts)}",
                 ]
             )
+            if result.required_concepts:
+                lines.extend(["", "Required concept details:", "", "```json"])
+                lines.append(json.dumps(result.required_concepts, ensure_ascii=False, indent=2))
+                lines.append("```")
             for message in result.messages:
                 lines.append(f"- {message}")
             if result.semantic_guard_result is not None:
@@ -624,6 +629,8 @@ def _promotion_pattern_stats(results: list[SemanticEvalResult]) -> dict[str, dic
                 "false_confirmed_warning_cases": 0,
                 "verifier_positive_cases": 0,
                 "verifier_positive_passed": 0,
+                "verifier_negative_cases": 0,
+                "verifier_negative_passed": 0,
                 "verifier_unavailable_cases": 0,
             },
         )
@@ -640,14 +647,19 @@ def _promotion_pattern_stats(results: list[SemanticEvalResult]) -> dict[str, dic
         if _is_verifier_positive_case(result):
             pattern_stats["verifier_positive_cases"] += 1
             pattern_stats["verifier_positive_passed"] += int(result.passed)
+        if _is_verifier_negative_case(result):
+            pattern_stats["verifier_negative_cases"] += 1
+            pattern_stats["verifier_negative_passed"] += int(result.passed)
         pattern_stats["verifier_unavailable_cases"] += int(result.verifier_unavailable)
     return stats
 
 
 def _is_verifier_positive_case(result: SemanticEvalResult) -> bool:
-    return result.case_type == "verifier_only" and any(
-        bool(concept.get("supported")) for concept in result.required_concepts
-    )
+    return result.case_type == "verifier_only" and "positive_schema" in result.tags
+
+
+def _is_verifier_negative_case(result: SemanticEvalResult) -> bool:
+    return result.case_type == "verifier_only" and "negative_schema" in result.tags
 
 
 def _format_distribution(counter: Counter[str]) -> str:

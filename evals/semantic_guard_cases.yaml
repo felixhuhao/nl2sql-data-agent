@@ -126,7 +126,7 @@ cases:
     promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
-      concepts: [退货订单]
+      concepts: [退货]
       refutation_confirmed: true
 
   - id: unsupported_complaint_rate
@@ -303,4 +303,23 @@ cases:
     expected:
       required_concepts:
         - concept: 退货
+          supported: false
+
+  - id: verifier_refund_does_not_support_chargeback_rate
+    type: verifier_only
+    question: 查看拒付率趋势
+    tags: [verifier_only, negative_schema, chargeback, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 拒付率
           supported: false
