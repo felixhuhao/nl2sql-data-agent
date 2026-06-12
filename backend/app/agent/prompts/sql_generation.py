@@ -225,6 +225,7 @@ def _schema_context_guide() -> list[str]:
         "- In the Tables section, lines like '- table_name: ...' define available tables; indented lines like '- column_name (TYPE) [tags] - ...' define columns for the most recent table.",
         "- Join Relationships use 'source_table.source_column -> target_table.target_column' to describe allowed join paths and cardinality.",
         "- Metric Definitions use 'label (metric_name) = expression'; use the expression for the calculation and metric_name as the SELECT alias.",
+        "- English role words in these instructions, such as metric, dimension, product name, user name, and date/time, describe business roles; resolve them through schema labels, descriptions, tags, aliases, Metric Definitions, and SQL Generation Guidance, including Chinese text.",
         "- SQL Generation Guidance contains schema-specific rules that override generic examples when both apply.",
         "- Verified Queries are vetted examples; reuse their SQL only when the user's request clearly asks for the same metric, dimensions, filters, and time range.",
         "- If a Verified Query does not clearly match, generate fresh SQL from the schema context and do not carry over filters or time ranges from the example.",
@@ -268,6 +269,11 @@ def _few_shot_examples(default_ranking_limit: int, default_browse_limit: int) ->
         "ORDER BY e.category",
         f"LIMIT {default_browse_limit}",
         "If a repair prompt uses OUTPUT_FORMAT=json, return the corrected standalone SQL in the JSON sql field.",
+        "",
+        "Counterexamples - avoid these:",
+        "- Do not use SELECT *; choose allowed columns that answer the question.",
+        "- Do not translate SQL identifiers; use exact table, column, and metric names from the schema context.",
+        "- Do not add date filters unless the user asks for a time range or the schema context provides a matching relative-date rule.",
     ]
 
 
@@ -300,6 +306,7 @@ def _system_prompt(
             "Alias every computed projection with a stable snake_case name.",
             "When using a Metric Layer expression, use the metric name from the schema context as the SELECT alias.",
             "For human-readable dimensions, prefer descriptive name/label columns from the schema and do not substitute surrogate *_key columns unless the user asks for IDs or keys.",
+            "Treat Chinese labels, descriptions, aliases, and sample values as business meaning; generated SQL must still use exact table, column, and metric identifiers from the schema context.",
             "For dimension value lists, ORDER BY the displayed name/label column for deterministic results.",
             "Follow schema-specific SQL generation guidance in the schema context when present.",
             "",

@@ -34,6 +34,8 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Alias every computed projection" in system_prompt
     assert "use the metric name from the schema context as the SELECT alias" in system_prompt
     assert "do not substitute surrogate *_key columns" in system_prompt
+    assert "Chinese labels, descriptions, aliases, and sample values" in system_prompt
+    assert "exact table, column, and metric identifiers" in system_prompt
     assert "LIMIT 10" in system_prompt
     assert "LIMIT 20" in system_prompt
     assert "configurable SQL generation defaults" in system_prompt
@@ -44,6 +46,8 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "indented lines like '- column_name (TYPE) [tags] - ...' define columns" in system_prompt
     assert "source_table.source_column -> target_table.target_column" in system_prompt
     assert "label (metric_name) = expression" in system_prompt
+    assert "English role words in these instructions" in system_prompt
+    assert "including Chinese text" in system_prompt
     assert "SQL Generation Guidance contains schema-specific rules" in system_prompt
     assert "Verified Queries are vetted examples" in system_prompt
     assert "same metric, dimensions, filters, and time range" in system_prompt
@@ -52,6 +56,10 @@ def test_sql_generation_prompt_contains_core_constraints():
     assert "Example 1 - OUTPUT_FORMAT=sql" in system_prompt
     assert "Example 2 - OUTPUT_FORMAT=json" in system_prompt
     assert "Example 3 - repair" in system_prompt
+    assert "Counterexamples - avoid these" in system_prompt
+    assert "Do not use SELECT *" in system_prompt
+    assert "Do not translate SQL identifiers" in system_prompt
+    assert "Do not add date filters unless the user asks" in system_prompt
     assert "dim_products.name AS product_name" not in system_prompt
     assert "fact_order_items.item_amount" not in system_prompt
     assert "fact_orders.payment_amount" not in system_prompt
