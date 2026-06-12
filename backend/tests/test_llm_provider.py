@@ -96,6 +96,23 @@ def test_mock_provider_accepts_olap_context_for_topn_question():
     assert "LIMIT 10" in result.sql
 
 
+def test_mock_provider_does_not_route_verified_queries_by_keyword_bag():
+    provider = _provider()
+
+    result = provider.generate_sql(
+        SQLGenerationRequest(
+            question="最近30天销售额订单数地区渠道商品销量",
+            schema_context="# Schema Context",
+        )
+    )
+
+    assert result.matched_query_id is None
+    assert (
+        result.sql
+        == f"SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT {DEFAULT_BROWSE_LIMIT}"
+    )
+
+
 def test_mock_provider_does_not_generate_write_sql_from_keywords():
     provider = _provider()
 
