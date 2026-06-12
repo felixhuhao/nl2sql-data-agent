@@ -12,11 +12,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from backend.app.agent.state import AgentState, GroundingWarningPayload
-from backend.app.config import (
-    get_settings,
-    semantic_guard_mode,
-    semantic_guard_promoted_refutation_patterns,
-)
+from backend.app.config import get_settings, semantic_guard_mode
 from backend.app.core.llm_provider import strip_code_fence
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import build_schema_context
@@ -90,7 +86,6 @@ class GroundingCheckResult:
 class RefutationAuditResult:
     confirmed: bool
     reason: str
-    pattern: str | None = None
 
     def model_dump(self) -> dict:
         return asdict(self)
@@ -159,7 +154,6 @@ class SemanticRefutationAuditor:
         return RefutationAuditResult(
             confirmed=True,
             reason=f"Full datasource metadata contains no evidence for {concept!r}.",
-            pattern="concept_absent_full_metadata",
         )
 
 
@@ -169,7 +163,6 @@ def semantic_guard_node(
     verifier: SemanticGroundingVerifier | None = None,
     auditor: SemanticRefutationAuditor | None = None,
     mode: str | None = None,
-    promoted_refutation_patterns: frozenset[str] | set[str] | tuple[str, ...] | list[str] | None = None,
 ) -> AgentState:
     mode = _normalize_mode(mode or "off")
     if mode == "off":
@@ -177,7 +170,6 @@ def semantic_guard_node(
     if state.sql is None:
         raise ValueError("sql is required before semantic guard.")
 
-    promoted_patterns = _promoted_refutation_patterns(promoted_refutation_patterns)
     verifier = verifier or UnavailableSemanticGroundingVerifier("Semantic verifier is not configured.")
     auditor = auditor or SemanticRefutationAuditor()
     sql_facts = analyze_sql_semantic_facts(state.sql, datasource_dialect=state.datasource_dialect)
@@ -227,9 +219,9 @@ def semantic_guard_node(
         refutation = auditor.audit(issue, full_schema_context=full_context)
         state.grounding_warnings.append(_warning_from_issue(issue, refutation))
 
-    if mode == "enforce" and _has_promoted_refutation(state.grounding_warnings, promoted_patterns):
+    if mode == "enforce" and any(warning.get("refutation_confirmed") for warning in state.grounding_warnings):
         state.stopped_at = "semantic_guard"
-        state.error = _semantic_block_message(state.grounding_warnings, promoted_patterns)
+        state.error = _semantic_block_message(state.grounding_warnings)
     return state
 
 
@@ -344,38 +336,14 @@ def _warning_from_issue(issue: SemanticGroundingIssue, refutation: RefutationAud
         "supported": issue.supported,
         "explanation": issue.explanation,
         "refutation_confirmed": refutation.confirmed,
-        "refutation_pattern": refutation.pattern,
         "refutation_reason": refutation.reason,
         "message": f"The question asked for {issue.concept!r}, but the SQL {action}.{detail} {issue.explanation}".strip(),
     }
 
 
-def _semantic_block_message(warnings: list[dict], promoted_patterns: frozenset[str]) -> str:
-    concepts = ", ".join(
-        str(warning.get("concept"))
-        for warning in warnings
-        if warning.get("refutation_confirmed")
-        and str(warning.get("refutation_pattern") or "") in promoted_patterns
-    )
+def _semantic_block_message(warnings: list[dict]) -> str:
+    concepts = ", ".join(str(warning.get("concept")) for warning in warnings if warning.get("refutation_confirmed"))
     return f'当前 schema 中没有"{concepts}"对应的字段、状态值或指标，无法安全生成 SQL。'
-
-
-def _promoted_refutation_patterns(
-    patterns: frozenset[str] | set[str] | tuple[str, ...] | list[str] | None,
-) -> frozenset[str]:
-    if patterns is None:
-        return semantic_guard_promoted_refutation_patterns(get_settings())
-    return frozenset(str(pattern).strip() for pattern in patterns if str(pattern).strip())
-
-
-def _has_promoted_refutation(warnings: list[dict], promoted_patterns: frozenset[str]) -> bool:
-    if not promoted_patterns:
-        return False
-    return any(
-        warning.get("refutation_confirmed")
-        and str(warning.get("refutation_pattern") or "") in promoted_patterns
-        for warning in warnings
-    )
 
 
 def _concept_has_schema_evidence(concept: str, full_schema_context: str) -> bool:

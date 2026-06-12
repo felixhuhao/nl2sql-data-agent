@@ -688,7 +688,6 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
         "llm_provider": "deepseek",
         "semantic_guard": "off",
         "semantic_verifier": "disabled",
-        "semantic_guard_promoted_refutation_patterns": "",
     }
 
     api_response = client.get("/api/health")
@@ -698,7 +697,6 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
         "llm_provider": "deepseek",
         "semantic_guard": "off",
         "semantic_verifier": "disabled",
-        "semantic_guard_promoted_refutation_patterns": "",
     }
 
 
@@ -717,7 +715,6 @@ def test_health_endpoint_reports_mock_when_auto_lacks_deepseek_key(monkeypatch):
         "llm_provider": "mock",
         "semantic_guard": "off",
         "semantic_verifier": "disabled",
-        "semantic_guard_promoted_refutation_patterns": "",
     }
 
 

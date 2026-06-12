@@ -4,13 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.chat import router as chat_router
 from backend.app.api.datasources import router as datasources_router
 from backend.app.api.metadata import router as metadata_router
-from backend.app.config import (
-    deepseek_config_available,
-    effective_llm_provider_name,
-    get_settings,
-    semantic_guard_mode,
-    semantic_guard_promoted_refutation_patterns,
-)
+from backend.app.config import deepseek_config_available, effective_llm_provider_name, get_settings, semantic_guard_mode
 from backend.app.connectors.registry import get_datasource_manager
 
 
@@ -48,7 +42,4 @@ def health() -> dict[str, str]:
         "llm_provider": effective_llm_provider_name(),
         "semantic_guard": guard_mode,
         "semantic_verifier": verifier_status,
-        "semantic_guard_promoted_refutation_patterns": ",".join(
-            sorted(semantic_guard_promoted_refutation_patterns(settings))
-        ),
     }

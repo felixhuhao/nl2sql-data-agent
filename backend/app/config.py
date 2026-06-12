@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     deepseek_timeout: float = 30.0
     semantic_guard_mode: str = "off"
     semantic_guard_timeout: float = 30.0
-    semantic_guard_promoted_refutation_patterns: str = ""
     sql_default_ranking_limit: int = Field(default=DEFAULT_RANKING_LIMIT, ge=1, le=500)
     sql_default_browse_limit: int = Field(default=DEFAULT_BROWSE_LIMIT, ge=1, le=500)
     vector_enabled: str | bool = "auto"
@@ -91,15 +90,6 @@ def effective_llm_provider_name(settings: Any | None = None) -> str:
 def semantic_guard_mode(settings: Any | None = None) -> str:
     value = str(getattr(settings or get_settings(), "semantic_guard_mode", "off") or "off").strip().casefold()
     return value if value in {"off", "warn", "enforce"} else "off"
-
-
-def semantic_guard_promoted_refutation_patterns(settings: Any | None = None) -> frozenset[str]:
-    raw_value = getattr(settings or get_settings(), "semantic_guard_promoted_refutation_patterns", "") or ""
-    return frozenset(
-        item.strip()
-        for item in str(raw_value).split(",")
-        if item.strip()
-    )
 
 
 def vector_enabled_mode(settings: Any | None = None) -> str:
