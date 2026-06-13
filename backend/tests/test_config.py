@@ -36,7 +36,8 @@ def test_llm_provider_defaults_to_auto_without_deepseek_key(monkeypatch):
     assert effective_llm_provider_name(settings) == "mock"
 
 
-def test_llm_provider_auto_prefers_deepseek_when_key_is_configured():
+def test_llm_provider_auto_prefers_deepseek_when_key_is_configured(monkeypatch):
+    _clear_config_env(monkeypatch)
     settings = Settings(_env_file=None, deepseek_api_key="test-key")
 
     assert llm_provider_mode(settings) == "auto"
