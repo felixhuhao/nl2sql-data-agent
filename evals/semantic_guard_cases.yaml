@@ -209,7 +209,7 @@ cases:
     promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
-      concepts: [已发货订单]
+      concepts: [已发货]
       refutation_confirmed: true
 
   - id: unsupported_unpaid_orders

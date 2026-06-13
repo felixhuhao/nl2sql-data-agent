@@ -355,7 +355,11 @@ def _run_fixture_case(
     verifier: DeepSeekProvider,
     auditor: SemanticRefutationAuditor,
 ) -> None:
-    from backend.app.agent.semantic_grounding import _concept_for_issue, _warning_from_issue
+    from backend.app.agent.semantic_grounding import (
+        _concept_for_issue,
+        _normalize_grounding_result,
+        _warning_from_issue,
+    )
 
     full_context = case.get("full_schema_context")
     sql = case.get("sql")
@@ -402,12 +406,13 @@ def _run_fixture_case(
         result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
         return
 
+    normalized_grounding = _normalize_grounding_result(grounding, unsupported)
     evidence = auditor.evidence(datasource_name=result.datasource_name)
-    for issue in grounding.issues:
+    for issue in normalized_grounding.issues:
         concept = _concept_for_issue(issue, unsupported)
         refutation = auditor.audit(issue, evidence=evidence, concept=concept)
         result.warnings.append(_warning_from_issue(issue, refutation))
-    result.semantic_ok = grounding.ok
+    result.semantic_ok = normalized_grounding.ok
     result.warning_count = len(result.warnings)
     result.sql = sql
     _validate_expected_fixture(result, case.get("expected") or {})
