@@ -66,6 +66,24 @@ def test_summary_separates_completed_from_inconclusive():
     assert summary["completed_cases"] == 2
     assert summary["inconclusive_cases"] == 1
     assert summary["passed_cases"] == 1   # over completed only
+
+
+def test_retries_continue_past_inconclusive_until_completed(monkeypatch):
+    # inconclusive (passed=True) must NOT short-circuit the retry loop.
+    attempts = []
+    def fake_run_case(case, **kwargs):
+        r = runner.SemanticEvalResult(case_id=case["id"], question="q", tags=[])
+        if not attempts:           # first attempt: outage
+            r.mark_inconclusive("verifier unavailable")
+        # second attempt: a clean pass (default passed=True, not inconclusive)
+        attempts.append(1)
+        return r
+    monkeypatch.setattr(runner, "_run_case", fake_run_case)
+    result = runner._run_case_with_retries(
+        {"id": "x"}, datasources={}, generation_provider=None,
+        semantic_verifier=None, auditor=None, semantic_mode="warn", retries=1)
+    assert len(attempts) == 2
+    assert result.status == "pass"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -126,6 +144,18 @@ Change `main`'s exit so inconclusive never fails the run:
 ```python
     return 0 if all(result.passed for result in results if not result.inconclusive) else 1
 ```
+
+Fix `_run_case_with_retries` so an inconclusive result keeps retrying (it only stops on a *completed* pass), since `inconclusive` now carries `passed=True`:
+
+```python
+        if result.passed and not result.inconclusive:
+            if attempt > 1:
+                result.messages.append(f"passed after retry attempt {attempt}/{attempts}")
+            return result
+        last_result = result
+```
+
+The loop still returns `last_result` after exhausting attempts, so a case that is inconclusive on every attempt stays inconclusive (and is excluded from the correctness denominator) rather than being forced to pass or fail.
 
 - [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -q` — Expected: PASS (update `test_run_case_with_retries_returns_later_pass` only if it asserted on the old summary shape; it does not).
 
@@ -217,11 +247,28 @@ def test_promotion_requires_minimum_fixture_coverage():
 
 def test_promotion_passes_with_completed_failures_absent_and_fixtures_present():
     positive = _pattern_case("pos", case_type="verifier_only", tags=["positive_schema"],
-                             expected_warning=True, warnings=[{"refutation_confirmed": True}])
+                             expected_warning=True,
+                             warnings=[{"refutation_confirmed": True, "refutation_pattern": "p"}])
     negative = _pattern_case("neg", case_type="verifier_only", tags=["negative_schema"], expected_warning=False)
-    workflow = [_pattern_case(f"w{i}", expected_warning=True, warnings=[{"refutation_confirmed": True}]) for i in range(18)]
+    workflow = [_pattern_case(f"w{i}", expected_warning=True,
+                              warnings=[{"refutation_confirmed": True, "refutation_pattern": "p"}]) for i in range(18)]
     readiness = runner.evaluate_promotion_readiness([positive, negative, *workflow], min_completed=20)
     assert readiness["p"]["promotable"] is True
+
+
+def test_promotion_does_not_credit_mismatched_refutation_pattern():
+    # positive fixture is labeled pattern "p" but its confirmation came from a
+    # different runtime rule; it must NOT count toward "p" coverage.
+    positive = _pattern_case("pos", case_type="verifier_only", tags=["positive_schema"],
+                             expected_warning=True,
+                             warnings=[{"refutation_confirmed": True, "refutation_pattern": "value_absent_distinct_probe"}])
+    negative = _pattern_case("neg", case_type="verifier_only", tags=["negative_schema"], expected_warning=False)
+    workflow = [_pattern_case(f"w{i}", expected_warning=True,
+                              warnings=[{"refutation_confirmed": True, "refutation_pattern": "p"}]) for i in range(18)]
+    readiness = runner.evaluate_promotion_readiness([positive, negative, *workflow], min_completed=20)
+    assert readiness["p"]["positive_fixtures_matched"] == 0
+    assert readiness["p"]["promotable"] is False
+    assert "fixture coverage" in readiness["p"]["reason"]
 
 
 def test_write_promoted_patterns_lists_only_promotable(tmp_path):
@@ -268,8 +315,14 @@ def evaluate_promotion_readiness(
             r for r in completed
             if r.expected_warning is False and any(w.get("refutation_confirmed") for w in r.warnings)
         ]
-        positive = [r for r in completed if _is_verifier_positive_case(r)]
         negative = [r for r in completed if _is_verifier_negative_case(r)]
+        # A positive fixture only counts as evidence for THIS pattern when it
+        # produced a confirmed warning whose refutation_pattern matches the
+        # pattern under evaluation. A confirmation credited to a different rule
+        # (e.g. value_absent_distinct_probe under a concept_absent label) does
+        # not count toward concept_absent's coverage.
+        positive = [r for r in completed if _is_verifier_positive_case(r)]
+        positive_valid = [r for r in positive if _confirmed_under_pattern(r, pattern)]
 
         if len(completed) < min_completed:
             promotable, reason = False, f"insufficient completed observations ({len(completed)}/{min_completed})"
@@ -278,9 +331,10 @@ def evaluate_promotion_readiness(
         elif failed_completed:
             # any completed case that did not pass blocks promotion, fixture or not.
             promotable, reason = False, f"{len(failed_completed)} completed case(s) failed"
-        elif len(positive) < min_positive or len(negative) < min_negative:
+        elif len(positive_valid) < min_positive or len(negative) < min_negative:
             promotable, reason = False, (
-                f"insufficient fixture coverage (+{len(positive)}/{min_positive}, -{len(negative)}/{min_negative})"
+                f"insufficient pattern-matched fixture coverage "
+                f"(+{len(positive_valid)}/{min_positive}, -{len(negative)}/{min_negative})"
             )
         else:
             promotable, reason = True, "all completed checks passed"
@@ -293,9 +347,17 @@ def evaluate_promotion_readiness(
             "inconclusive": len(pattern_results) - len(completed),
             "false_confirmed": len(false_confirmed),
             "positive_fixtures": len(positive),
+            "positive_fixtures_matched": len(positive_valid),
             "negative_fixtures": len(negative),
         }
     return readiness
+
+
+def _confirmed_under_pattern(result: SemanticEvalResult, pattern: str) -> bool:
+    return any(
+        warning.get("refutation_confirmed") and warning.get("refutation_pattern") == pattern
+        for warning in result.warnings
+    )
 
 
 def write_promoted_patterns(readiness: dict[str, dict[str, Any]], *, path: Path) -> None:
@@ -444,6 +506,16 @@ Expected: FAIL (`_run_fixture_case` undefined).
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
+Define an availability-error tuple at module scope (only these are "inconclusive"; everything else is a real bug that must fail):
+
+```python
+import httpx
+from backend.app.agent.semantic_grounding import SemanticVerifierUnavailable
+
+_VERIFIER_AVAILABILITY_ERRORS = (SemanticVerifierUnavailable, httpx.HTTPError)
+```
+
+```python
 def _run_fixture_case(result, case, *, verifier, auditor) -> None:
     from backend.app.agent.semantic_grounding import (
         ConceptExtractionRequest, GroundingCheckRequest, analyze_sql_semantic_facts,
@@ -455,29 +527,42 @@ def _run_fixture_case(result, case, *, verifier, auditor) -> None:
     if not isinstance(full_context, str) or not full_context.strip() or not isinstance(sql, str) or not sql.strip():
         result.fail("fixture case requires full_schema_context and sql")
         return
+
+    # Only the verifier (provider) calls may be inconclusive; local refutation
+    # code runs outside the availability catch so its bugs fail the eval loudly.
     try:
         extraction = verifier.extract_required_concepts(ConceptExtractionRequest(
             question=result.question, full_schema_context=full_context,
             datasource_name=result.datasource_name, datasource_dialect=result.datasource_dialect))
-        unsupported = tuple(c for c in extraction.concepts if not c.supported)
-        if not unsupported:
-            result.semantic_ok = True
-        else:
-            facts = analyze_sql_semantic_facts(sql, datasource_dialect=result.datasource_dialect)
-            grounding = verifier.check_grounding(GroundingCheckRequest(
-                question=result.question, sql=sql, concepts=unsupported, sql_facts=facts,
-                datasource_name=result.datasource_name, datasource_dialect=result.datasource_dialect))
-            evidence = auditor.evidence(datasource_name=result.datasource_name)
-            for issue in grounding.issues:
-                concept = _concept_for_issue(issue, unsupported)  # same id+name fallback as runtime
-                refutation = auditor.audit(issue, evidence=evidence, concept=concept)
-                result.warnings.append(_warning_from_issue(issue, refutation))
-            result.semantic_ok = grounding.ok
-    except Exception as exc:
-        # Availability is not a semantic verdict: an outage is inconclusive, never a fail.
+    except _VERIFIER_AVAILABILITY_ERRORS as exc:
         result.verifier_unavailable = True
         result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
         return
+
+    unsupported = tuple(c for c in extraction.concepts if not c.supported)
+    if not unsupported:
+        result.semantic_ok = True
+        result.warning_count = 0
+        _validate_expected_fixture(result, case.get("expected") or {})
+        return
+
+    facts = analyze_sql_semantic_facts(sql, datasource_dialect=result.datasource_dialect)
+    try:
+        grounding = verifier.check_grounding(GroundingCheckRequest(
+            question=result.question, sql=sql, concepts=unsupported, sql_facts=facts,
+            datasource_name=result.datasource_name, datasource_dialect=result.datasource_dialect))
+    except _VERIFIER_AVAILABILITY_ERRORS as exc:
+        result.verifier_unavailable = True
+        result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
+        return
+
+    # Local, deterministic — NOT wrapped in the availability catch.
+    evidence = auditor.evidence(datasource_name=result.datasource_name)
+    for issue in grounding.issues:
+        concept = _concept_for_issue(issue, unsupported)  # same id+name fallback as runtime
+        refutation = auditor.audit(issue, evidence=evidence, concept=concept)
+        result.warnings.append(_warning_from_issue(issue, refutation))
+    result.semantic_ok = grounding.ok
     result.warning_count = len(result.warnings)
     _validate_expected_fixture(result, case.get("expected") or {})
 
@@ -494,13 +579,20 @@ def _validate_expected_fixture(result, expected) -> None:
         actual = bool(result.warnings) and all(w.get("refutation_confirmed") for w in result.warnings)
         if actual != bool(expected["refutation_confirmed"]):
             result.fail(f"expected refutation_confirmed={expected['refutation_confirmed']}, got {actual}")
+    # A fixture may pin which deterministic rule must have confirmed it; a
+    # confirmation credited to a different rule is a real failure, not a pass.
+    expected_pattern = expected.get("refutation_pattern")
+    if expected_pattern is not None:
+        actual_patterns = {w.get("refutation_pattern") for w in result.warnings if w.get("refutation_confirmed")}
+        if actual_patterns != {expected_pattern}:
+            result.fail(f"expected refutation_pattern={expected_pattern!r}, got {sorted(p for p in actual_patterns if p)}")
 ```
 
 Dispatch in `_run_case`: after the `verifier_only` branch, add `if result.case_type == "fixture": _run_fixture_case(result, case, verifier=semantic_verifier, auditor=auditor); return result`.
 
 Two consistency edits to existing code:
 
-1. **`_run_verifier_only_case` outage is also inconclusive.** Its except handler currently does `result.verifier_unavailable = True; result.fail(...)`. Change the `fail(...)` to `mark_inconclusive(...)` for the same reason (an outage must not count as a semantic failure). Add a regression test asserting a raising fake verifier yields `status == "inconclusive"` for a `verifier_only` case.
+1. **`_run_verifier_only_case` outage is also inconclusive — and narrowly caught.** Its except handler currently does `except Exception ...: result.verifier_unavailable = True; result.fail(...)`. Change it to `except _VERIFIER_AVAILABILITY_ERRORS as exc: result.verifier_unavailable = True; result.mark_inconclusive(...)`, for the same two reasons: an outage must not count as a semantic failure, and a broad `except Exception` would hide local bugs as availability. Add a regression test asserting a fake verifier raising `SemanticVerifierUnavailable` yields `status == "inconclusive"` for a `verifier_only` case.
 2. **Pinned-SQL fixtures count as schema coverage.** Broaden the predicates so the fixture tier satisfies the Task 2 coverage gate:
 
 ```python
@@ -572,16 +664,19 @@ from backend.app.config import PROJECT_ROOT
 _DEFAULT_PATH = PROJECT_ROOT / "evals" / "promoted_patterns.json"
 
 
-def load_promoted_patterns(*, path: Path = _DEFAULT_PATH) -> frozenset[str]:
+def load_promoted_patterns(*, path: Path | None = None) -> frozenset[str]:
+    # Resolve the module-level default at call time so tests can monkeypatch
+    # promoted_patterns._DEFAULT_PATH and have runtime callers pick it up.
+    resolved = Path(path) if path is not None else _DEFAULT_PATH
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return frozenset()
     promoted = data.get("promoted") if isinstance(data, dict) else None
     return frozenset(str(p) for p in promoted) if isinstance(promoted, list) else frozenset()
 
 
-def is_pattern_promoted(pattern: str | None, *, path: Path = _DEFAULT_PATH) -> bool:
+def is_pattern_promoted(pattern: str | None, *, path: Path | None = None) -> bool:
     return bool(pattern) and pattern in load_promoted_patterns(path=path)
 ```
 
@@ -638,8 +733,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - **Requirement coverage:** three-way verdict (Task 1), per-pattern gate + artifact (Task 2), availability-as-separate-SLO + chronic ids (Task 3), pinned-SQL fixtures (Task 4), non-gating smoke tier + promoted-pattern-gated enforce / "no broad enforce rollout" (Task 5).
 - **Decoupling invariant:** `inconclusive` is never in the correctness denominator (Tasks 1-3); the gate computes over completed only; availability never gates.
-- **Promotion gates (all must pass, Task 2):** ≥ `min_completed` completed observations; `false_confirmed == 0` (airtight deterministic refutation, the double-gate philosophy); **zero failed completed cases** (fixture or not); and **minimum positive/negative fixture coverage present** (not merely "no failures") — so a pattern cannot promote on absence of evidence.
-- **Availability never pollutes the verdict:** every verifier-outage path (`_run_fixture_case`, `_run_verifier_only_case`) calls `mark_inconclusive`, never `fail`, so an outage is excluded from the correctness denominator rather than counted as a semantic failure.
+- **Promotion gates (all must pass, Task 2):** ≥ `min_completed` completed observations; `false_confirmed == 0` (airtight deterministic refutation, the double-gate philosophy); **zero failed completed cases** (fixture or not); and **minimum positive/negative fixture coverage present and pattern-matched** — a positive fixture only counts when its confirmation's `refutation_pattern` equals the pattern under evaluation (`_confirmed_under_pattern`), so a pattern can never promote on absence of evidence *or* on evidence credited to a different runtime rule.
+- **Availability never pollutes the verdict, and never blocks retries:** every verifier-outage path (`_run_fixture_case`, `_run_verifier_only_case`) catches only `_VERIFIER_AVAILABILITY_ERRORS` and calls `mark_inconclusive`, never `fail` — local refutation/auditor bugs surface as real failures. Because `inconclusive` carries `passed=True`, `_run_case_with_retries` stops only on `passed and not inconclusive`, so a transient outage retries instead of short-circuiting.
 - **Block scoping:** runtime `enforce` blocks on, and names, only promoted+confirmed warnings (Task 5).
 - **Pure-function testability:** Tasks 1-3 and the gate are unit-tested with synthetic `SemanticEvalResult` lists; Task 4 uses fake verifier/auditor — no task needs a live provider to pass.
 - **Risk:** `_run_fixture_case` reuses `_warning_from_issue` from `semantic_grounding` to keep warning shape identical to runtime; if that helper's signature changes, the fixture path must follow.
