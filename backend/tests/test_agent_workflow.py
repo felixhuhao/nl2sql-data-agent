@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 import backend.app.agent.nodes as nodes_module
@@ -5,6 +7,7 @@ from backend.app.agent.conversation import (
     ConversationContext,
     FilterPredicate,
     build_conversation_context,
+    conversation_context_prompt,
     missing_carried_filters,
 )
 from backend.app.agent.nodes import (
@@ -76,7 +79,12 @@ def test_datasource_selected_node_sets_datasource_metadata(monkeypatch):
     ("question", "expected_error"),
     [
         ("删除2024年的订单数据", "DELETE intent is not allowed."),
+        ("DELETE FROM fact_orders WHERE order_id = 1", "DELETE intent is not allowed."),
+        ("创建一张临时订单表", "CREATE intent is not allowed."),
+        ("DROP fact_orders", "DROP intent is not allowed."),
+        ("load extension httpfs", "COPY/LOAD intent is not allowed."),
         ("从外部 CSV 读取订单数据", "EXTERNAL_FILE_READ intent is not allowed."),
+        ("read_csv('/tmp/orders.csv')", "EXTERNAL_FILE_READ intent is not allowed."),
     ],
 )
 def test_intent_guard_node_rejects_blocked_questions(question: str, expected_error: str):
@@ -89,7 +97,24 @@ def test_intent_guard_node_rejects_blocked_questions(question: str, expected_err
     assert state.completed_steps == ["intent_guard"]
 
 
-@pytest.mark.parametrize("question", ["改成最近90天", "改为订单数", "换成最近90天"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "改成最近90天",
+        "改为订单数",
+        "换成最近90天",
+        "create a chart for sales by region",
+        "build a table of sales by region",
+        "load dashboard for channel sales",
+        "copy this chart configuration",
+        "查看删除率趋势",
+        "按订单查看删除率",
+        "查看删除的订单",
+        "查询已删除订单数量",
+        "更新后的销售趋势",
+        "创建销售额可视化",
+    ],
+)
 def test_intent_guard_node_allows_followup_rewording(question: str):
     state = AgentState(question=question)
 
@@ -158,6 +183,23 @@ def test_build_context_node_unions_prior_assets(monkeypatch):
             "source": "conversation_context",
         }
     ]
+
+
+def test_conversation_context_prompt_scopes_carried_filters_to_followups():
+    context = ConversationContext(
+        question="只看华东销售额",
+        normalized_sql="SELECT 1",
+        datasource_name="duckdb_ecommerce",
+        active_filters=[
+            FilterPredicate(column="dim_regions.region_group", op="=", value="华东"),
+        ],
+    )
+
+    prompt = conversation_context_prompt(context)
+
+    assert "If the new question is a follow-up, preserve these filters" in prompt
+    assert "If the new question is standalone, do not carry over these filters" in prompt
+    assert "- dim_regions.region_group = 华东" in prompt
 
 
 def test_build_context_node_retrieves_when_missing_retrieval_result(monkeypatch):
@@ -232,8 +274,13 @@ def test_iter_pre_repair_workflow_runs_shared_step_sequence(monkeypatch):
     assert state.sql == "SELECT payment_amount FROM fact_orders"
 
 
-def test_generate_sql_node_passes_olap_context_to_provider():
+def test_generate_sql_node_passes_olap_context_to_provider(monkeypatch):
     captured_requests = []
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(sql_default_ranking_limit=15, sql_default_browse_limit=25),
+    )
 
     class CapturingProvider:
         name = "capturing"
@@ -256,6 +303,8 @@ def test_generate_sql_node_passes_olap_context_to_provider():
 
     assert captured_requests[0].olap_intents == ["topn", "yoy_mom"]
     assert captured_requests[0].olap_hint == "TopN guidance"
+    assert captured_requests[0].default_ranking_limit == 15
+    assert captured_requests[0].default_browse_limit == 25
 
 
 def test_generate_sql_node_requires_schema_context():
@@ -560,12 +609,25 @@ def test_missing_carried_filters_allows_time_filters_to_change_on_time_followup(
     assert missing_carried_filters(state) == []
 
 
-def test_repair_sql_node_deterministically_repairs_product_name_alias():
-    class ShouldNotCallProvider:
-        name = "unused"
+def test_repair_sql_node_uses_provider_for_product_name_scope_repair():
+    captured_requests = []
+
+    class RepairProvider:
+        name = "repair-provider"
 
         def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
-            raise AssertionError("deterministic repair should not call provider")
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="""
+SELECT p.name AS product_name, SUM(fi.item_amount) AS sales_amount
+FROM fact_order_items fi
+JOIN dim_products p ON fi.product_key = p.product_key
+GROUP BY p.name
+ORDER BY sales_amount DESC
+LIMIT 10
+""",
+                provider=self.name,
+            )
 
     original_sql = """
 SELECT p.product_name, SUM(fi.item_amount) AS sales_amount
@@ -588,23 +650,31 @@ LIMIT 10
         sql=original_sql,
     )
 
-    repair_sql_node(state, provider=ShouldNotCallProvider(), repair_context=repair_context)
+    repair_sql_node(state, provider=RepairProvider(), repair_context=repair_context)
 
     assert "p.name AS product_name" in state.sql
     assert "GROUP BY p.name" in state.sql
     assert "p.product_name" not in state.sql
     assert "SELECT p.product_key" not in state.sql
     assert "GROUP BY p.product_key" not in state.sql
-    assert state.provider == "deterministic-repair"
+    assert state.provider == "repair-provider"
+    assert captured_requests[0].repair == repair_context
+    assert captured_requests[0].schema_context == "# Schema Context"
     assert state.repair_history[0]["repaired_sql"] == state.sql
 
 
-def test_repair_sql_node_deterministic_product_name_repair_does_not_depend_on_error_text():
-    class ShouldNotCallProvider:
-        name = "unused"
+def test_repair_sql_node_uses_provider_even_when_scope_error_text_is_generic():
+    captured_requests = []
+
+    class RepairProvider:
+        name = "repair-provider"
 
         def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
-            raise AssertionError("deterministic repair should not call provider")
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="SELECT p.name AS product_name FROM dim_products p",
+                provider=self.name,
+            )
 
     original_sql = """
 SELECT p.product_name, SUM(fi.item_amount) AS sales_amount
@@ -627,11 +697,12 @@ LIMIT 10
         sql=original_sql,
     )
 
-    repair_sql_node(state, provider=ShouldNotCallProvider(), repair_context=repair_context)
+    repair_sql_node(state, provider=RepairProvider(), repair_context=repair_context)
 
     assert "p.name AS product_name" in state.sql
     assert "p.product_name" not in state.sql
-    assert state.provider == "deterministic-repair"
+    assert state.provider == "repair-provider"
+    assert captured_requests[0].repair == repair_context
 
 
 def test_sql_guard_node_requires_sql():

@@ -9,7 +9,7 @@ This repository currently represents the **V1 baseline**: a runnable and validat
 ## Highlights
 
 - **Semantic metadata layer**: DB-backed tables, columns, metrics, aliases, verified queries, relationships, and analysis spaces.
-- **Focused context retrieval**: rule retrieval, optional Qdrant vector retrieval, value recall, and context compression before SQL generation.
+- **Focused context retrieval**: rule retrieval, bundled Qdrant vector retrieval, value recall, and context compression before SQL generation.
 - **Guarded execution**: SQLGlot-based SELECT-only guard, table and column scope checks, dangerous function/command blocking, fanout detection, and automatic LIMIT.
 - **Multi-source OLAP support**: DuckDB for local analytics and ClickHouse for OLAP warehouse behavior, with dialect-aware prompts, guard rules, and EXPLAIN hints.
 - **Multi-turn follow-up**: preserves dimensions, filters, metrics, and time windows across follow-up questions such as "只看华东", "换成订单数", and "改成最近90天".
@@ -99,10 +99,10 @@ More screenshots:
 
 ## Quick Start
 
-The fastest path is Docker Compose. It starts ClickHouse, backend, and frontend; the backend entrypoint generates DuckDB data, seeds ClickHouse, and syncs metadata for both datasources.
+The fastest path is Docker Compose. It starts ClickHouse, Qdrant, backend, and frontend; the backend entrypoint generates DuckDB data, seeds ClickHouse, and syncs metadata for both datasources.
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 Open:
@@ -112,13 +112,7 @@ Frontend: http://127.0.0.1:5174/
 Backend:  http://127.0.0.1:8000/api/health
 ```
 
-The default Compose stack uses `LLM_PROVIDER=mock`, so it does not require an API key. For local development, DeepSeek, vector retrieval, and MCP client setup, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-
-Optional Qdrant service:
-
-```bash
-docker compose --profile vector up -d qdrant
-```
+The default Compose stack uses `LLM_PROVIDER=auto`: it uses DeepSeek when `DEEPSEEK_API_KEY` is configured and falls back to mock otherwise. Qdrant is bundled into the stack and persisted in a Docker volume. Vector embeddings use the default MiniLM sentence-transformers model with CPU-only PyTorch; CUDA and external model mounts are not required. For local development, DeepSeek, vector retrieval, and MCP client setup, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Try These Questions
 
@@ -218,7 +212,7 @@ Setup details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#mcp-tools).
 | SQL safety | SQLGlot AST parsing and normalization |
 | Metadata | SQLite, SQLAlchemy |
 | OLAP engines | DuckDB, ClickHouse |
-| Vector retrieval | Qdrant, sentence-transformers, BGE-M3 compatible embeddings |
+| Vector retrieval | Qdrant, sentence-transformers MiniLM embeddings, CPU-only PyTorch |
 | Eval | Pytest, smoke eval runner, result-equivalence checks |
 | Tooling | MCP stdio servers |
 | Packaging | Docker Compose |

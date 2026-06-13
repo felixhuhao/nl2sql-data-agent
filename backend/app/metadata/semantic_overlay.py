@@ -1,120 +1,258 @@
+from __future__ import annotations
+
 import json
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-# Demo-only business semantics. Physical tables and columns still come from DB introspection.
-TABLE_SEMANTICS = {
-    "dim_date": ("日期维表", "日期、周、月、季度、年份维度", "time"),
-    "dim_users": ("用户维表", "用户基础属性和注册信息", "user"),
-    "dim_products": ("商品维表", "商品品类、品牌和价格信息", "product"),
-    "dim_regions": ("区域维表", "省份、城市和大区信息", "region"),
-    "dim_channels": ("渠道维表", "订单来源渠道信息", "channel"),
-    "fact_orders": ("订单事实表", "订单支付金额、折扣和状态", "sales"),
-    "fact_order_items": ("订单明细事实表", "订单商品明细、数量和明细金额", "sales"),
-}
+from backend.app.config import PROJECT_ROOT, get_settings
 
-COLUMN_SEMANTICS = {
-    "date_key": "日期键，格式 YYYYMMDD",
-    "date_value": "日期",
-    "year": "年份",
-    "quarter": "季度",
-    "month": "月份",
-    "week": "周序号",
-    "day_of_week": "星期",
-    "user_key": "用户代理键",
-    "user_id": "用户业务 ID",
-    "name": "名称",
-    "gender": "性别",
-    "age_group": "年龄段",
-    "register_date": "注册日期",
-    "city": "城市",
-    "product_key": "商品代理键",
-    "product_id": "商品业务 ID",
-    "category": "一级品类",
-    "sub_category": "二级品类",
-    "brand": "品牌",
-    "price": "标价",
-    "region_key": "区域代理键",
-    "province": "省份",
-    "region_group": "大区",
-    "channel_key": "渠道代理键",
-    "channel_name": "渠道名称",
-    "channel_type": "渠道类型",
-    "order_id": "订单 ID",
-    "total_amount": "订单原始金额",
-    "discount_amount": "订单优惠金额",
-    "payment_amount": "订单实付金额，销售额口径字段",
-    "order_status": "订单状态",
-    "item_id": "订单明细 ID",
-    "quantity": "商品数量",
-    "unit_price": "成交单价",
-    "item_amount": "明细金额",
-}
 
-TABLE_COLUMN_SEMANTICS: dict[tuple[str, str], str] = {
-    ("dim_users", "name"): "用户姓名",
-    ("dim_users", "city"): "用户所在城市",
-    ("dim_products", "name"): "商品名称",
-    ("dim_regions", "city"): "城市",
-}
+DEFAULT_OVERLAY_PATH = Path(__file__).with_name("semantic_overlays") / "ecommerce.yml"
+_UNSET = object()
+TableSemantics = Mapping[str, tuple[str, str, str]]
+ColumnSemantics = Mapping[str, str]
+TableColumnSemantics = Mapping[tuple[str, str], str]
+SampleValueFallbacks = Mapping[str, list[str]]
+ConfirmedRelationships = Sequence[tuple[str, str, str, str, str, str]]
 
-DIMENSION_COLUMNS = {
-    "date_key",
-    "date_value",
-    "year",
-    "quarter",
-    "month",
-    "week",
-    "day_of_week",
-    "user_key",
-    "user_id",
-    "gender",
-    "age_group",
-    "register_date",
-    "city",
-    "product_key",
-    "product_id",
-    "category",
-    "sub_category",
-    "brand",
-    "region_key",
-    "province",
-    "region_group",
-    "channel_key",
-    "channel_name",
-    "channel_type",
-    "order_id",
-    "order_status",
-    "item_id",
-}
 
-METRIC_COLUMNS = {
-    "price",
-    "total_amount",
-    "discount_amount",
-    "payment_amount",
-    "quantity",
-    "unit_price",
-    "item_amount",
-}
+@dataclass(frozen=True)
+class SemanticOverlay:
+    table_semantics: TableSemantics
+    column_semantics: ColumnSemantics
+    table_column_semantics: TableColumnSemantics
+    dimension_columns: Set[str]
+    metric_columns: Set[str]
+    sample_value_fallbacks: SampleValueFallbacks
+    confirmed_relationships: ConfirmedRelationships
 
-SAMPLE_VALUE_FALLBACKS = {
-    "gender": ["女", "男"],
-    "age_group": ["18-24", "25-34", "35-44", "45+"],
-    "category": ["手机数码", "家用电器", "服饰鞋包", "食品生鲜", "美妆个护"],
-    "region_group": ["华东", "华北", "华南", "西南", "华中"],
-    "channel_name": ["官网", "天猫", "京东", "抖音", "小程序"],
-    "channel_type": ["自营", "平台", "内容电商"],
-    "order_status": ["paid", "completed", "refunded"],
-}
 
-CONFIRMED_RELATIONSHIPS = [
-    ("fact_orders", "user_key", "dim_users", "user_key", "many_to_one", "订单关联用户"),
-    ("fact_orders", "region_key", "dim_regions", "region_key", "many_to_one", "订单关联区域"),
-    ("fact_orders", "channel_key", "dim_channels", "channel_key", "many_to_one", "订单关联渠道"),
-    ("fact_orders", "date_key", "dim_date", "date_key", "many_to_one", "订单关联日期"),
-    ("fact_order_items", "order_id", "fact_orders", "order_id", "many_to_one", "明细关联订单"),
-    ("fact_order_items", "product_key", "dim_products", "product_key", "many_to_one", "明细关联商品"),
-    ("fact_order_items", "date_key", "dim_date", "date_key", "many_to_one", "明细关联日期"),
-]
+def _overlay_path() -> Path:
+    configured = get_settings().semantic_overlay_path
+    if configured:
+        path = configured.expanduser()
+        if path.is_absolute():
+            return path
+        return (PROJECT_ROOT / path).resolve()
+    return DEFAULT_OVERLAY_PATH
+
+
+def _resolve_overlay_path(path: str | Path | None = None) -> Path:
+    overlay_path = Path(path).expanduser() if path is not None else _overlay_path()
+    if overlay_path.is_absolute():
+        return overlay_path.resolve()
+    return (PROJECT_ROOT / overlay_path).resolve()
+
+
+def _load_overlay(path: str | Path | None = None) -> dict[str, Any]:
+    return _load_overlay_by_path(str(_resolve_overlay_path(path)))
+
+
+@lru_cache(maxsize=4)
+def _load_overlay_by_path(path: str) -> dict[str, Any]:
+    import yaml
+
+    overlay_path = Path(path)
+    with overlay_path.open(encoding="utf-8") as file:
+        data = yaml.safe_load(file) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Semantic overlay must be a mapping: {overlay_path}")
+    return data
+
+
+def _table_semantics(data: dict[str, Any]) -> dict[str, tuple[str, str, str]]:
+    tables = data.get("tables") or {}
+    return {
+        name: (
+            str(values.get("display_name") or name),
+            str(values.get("description") or ""),
+            str(values.get("domain") or ""),
+        )
+        for name, values in tables.items()
+        if isinstance(values, dict)
+    }
+
+
+def _column_semantics(data: dict[str, Any]) -> dict[str, str]:
+    columns = data.get("columns") or {}
+    return {str(name): str(description) for name, description in columns.items()}
+
+
+def _table_column_semantics(data: dict[str, Any]) -> dict[tuple[str, str], str]:
+    table_columns = data.get("table_columns") or {}
+    semantics: dict[tuple[str, str], str] = {}
+    for table_name, columns in table_columns.items():
+        if not isinstance(columns, dict):
+            continue
+        for column_name, description in columns.items():
+            semantics[(str(table_name), str(column_name))] = str(description)
+    return semantics
+
+
+def _string_set(data: dict[str, Any], key: str) -> set[str]:
+    values = data.get(key) or []
+    return {str(value) for value in values}
+
+
+def _sample_value_fallbacks(data: dict[str, Any]) -> dict[str, list[str]]:
+    fallbacks = data.get("sample_value_fallbacks") or {}
+    return {
+        str(column_name): [str(value) for value in values]
+        for column_name, values in fallbacks.items()
+        if isinstance(values, list)
+    }
+
+
+def _confirmed_relationships(data: dict[str, Any]) -> list[tuple[str, str, str, str, str, str]]:
+    relationships = data.get("confirmed_relationships") or []
+    parsed = []
+    for relationship in relationships:
+        if not isinstance(relationship, dict):
+            continue
+        parsed.append(
+            (
+                str(relationship.get("source_table") or ""),
+                str(relationship.get("source_column") or ""),
+                str(relationship.get("target_table") or ""),
+                str(relationship.get("target_column") or ""),
+                str(relationship.get("relationship_type") or ""),
+                str(relationship.get("description") or ""),
+            )
+        )
+    return parsed
+
+
+def load_semantic_overlay(path: str | Path | None = None) -> SemanticOverlay:
+    data = _load_overlay(path)
+    return SemanticOverlay(
+        table_semantics=_table_semantics(data),
+        column_semantics=_column_semantics(data),
+        table_column_semantics=_table_column_semantics(data),
+        dimension_columns=_string_set(data, "dimension_columns"),
+        metric_columns=_string_set(data, "metric_columns"),
+        sample_value_fallbacks=_sample_value_fallbacks(data),
+        confirmed_relationships=_confirmed_relationships(data),
+    )
+
+
+@lru_cache(maxsize=4)
+def _semantic_overlay(path: str | None = None) -> SemanticOverlay:
+    return load_semantic_overlay(path)
+
+
+def _default_overlay() -> SemanticOverlay:
+    return _semantic_overlay(str(_resolve_overlay_path()))
+
+
+class _LazyValue:
+    """Lazily expose overlay-backed constants while preserving constant-like identity.
+
+    Tests or reload paths that need a different overlay should call
+    _clear_semantic_overlay_caches().
+    """
+
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self._factory = factory
+        self._result: Any = _UNSET
+
+    def _get(self) -> Any:
+        if self._result is _UNSET:
+            self._result = self._factory()
+        return self._result
+
+    def _reset(self) -> None:
+        self._result = _UNSET
+
+
+class _LazyMapping(Mapping):
+    def __init__(self, factory: Callable[[], Mapping]) -> None:
+        self._value = _LazyValue(factory)
+
+    def __getitem__(self, key: object) -> object:
+        return self._value._get()[key]
+
+    def __iter__(self) -> Iterator:
+        return iter(self._value._get())
+
+    def __len__(self) -> int:
+        return len(self._value._get())
+
+    def __repr__(self) -> str:
+        return repr(self._value._get())
+
+    def _reset(self) -> None:
+        self._value._reset()
+
+
+class _LazySet(Set):
+    def __init__(self, factory: Callable[[], Set]) -> None:
+        self._value = _LazyValue(factory)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._value._get()
+
+    def __iter__(self) -> Iterator:
+        return iter(self._value._get())
+
+    def __len__(self) -> int:
+        return len(self._value._get())
+
+    def __repr__(self) -> str:
+        return repr(self._value._get())
+
+    def _reset(self) -> None:
+        self._value._reset()
+
+
+class _LazySequence(Sequence):
+    def __init__(self, factory: Callable[[], Sequence]) -> None:
+        self._value = _LazyValue(factory)
+
+    def __getitem__(self, index: int | slice) -> object:
+        return self._value._get()[index]
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._value._get()
+
+    def __len__(self) -> int:
+        return len(self._value._get())
+
+    def __repr__(self) -> str:
+        return repr(self._value._get())
+
+    def _reset(self) -> None:
+        self._value._reset()
+
+
+TABLE_SEMANTICS = _LazyMapping(lambda: _default_overlay().table_semantics)
+COLUMN_SEMANTICS = _LazyMapping(lambda: _default_overlay().column_semantics)
+TABLE_COLUMN_SEMANTICS = _LazyMapping(lambda: _default_overlay().table_column_semantics)
+DIMENSION_COLUMNS = _LazySet(lambda: _default_overlay().dimension_columns)
+METRIC_COLUMNS = _LazySet(lambda: _default_overlay().metric_columns)
+SAMPLE_VALUE_FALLBACKS = _LazyMapping(lambda: _default_overlay().sample_value_fallbacks)
+CONFIRMED_RELATIONSHIPS = _LazySequence(lambda: _default_overlay().confirmed_relationships)
+
+
+def _reset_lazy_overlays() -> None:
+    for value in (
+        TABLE_SEMANTICS,
+        COLUMN_SEMANTICS,
+        TABLE_COLUMN_SEMANTICS,
+        DIMENSION_COLUMNS,
+        METRIC_COLUMNS,
+        SAMPLE_VALUE_FALLBACKS,
+        CONFIRMED_RELATIONSHIPS,
+    ):
+        value._reset()
+
+
+def _clear_semantic_overlay_caches() -> None:
+    _load_overlay_by_path.cache_clear()
+    _semantic_overlay.cache_clear()
+    _reset_lazy_overlays()
 
 
 def sample_value_fallbacks_json(column_name: str) -> str | None:

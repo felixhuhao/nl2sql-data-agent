@@ -17,11 +17,14 @@ logger = logging.getLogger(__name__)
 _PARTS_RE = re.compile(r"Parts:\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 _JOIN_RE = re.compile(r"\b(?:[A-Za-z]*Join[A-Za-z]*|JoiningTransform)\b", re.IGNORECASE)
 _DATE_FILTER_RE = re.compile(r"\b(date_key|date_value|order_date|sale_date|created_at)\b", re.IGNORECASE)
-_FACT_TABLES = frozenset(
-    table_name
-    for table_name, (_, _, domain) in TABLE_SEMANTICS.items()
-    if table_name.startswith("fact_") and domain == "sales"
-) or frozenset({"fact_orders", "fact_order_items"})
+
+
+def _sales_fact_tables() -> frozenset[str]:
+    return frozenset(
+        table_name.casefold()
+        for table_name, (_, _, domain) in TABLE_SEMANTICS.items()
+        if table_name.startswith("fact_") and domain == "sales"
+    ) or frozenset({"fact_orders", "fact_order_items"})
 
 
 def explain_performance_node(state: AgentState) -> AgentState:
@@ -125,8 +128,9 @@ def _join_count(lines: list[str]) -> int:
 
 def _should_suggest_time_filter(sql: str, matched_tables: list[str]) -> bool:
     lower_sql = sql.casefold()
-    references_fact_table = bool(_FACT_TABLES & {table.casefold() for table in matched_tables}) or any(
-        table in lower_sql for table in _FACT_TABLES
+    fact_tables = _sales_fact_tables()
+    references_fact_table = bool(fact_tables & {table.casefold() for table in matched_tables}) or any(
+        table in lower_sql for table in fact_tables
     )
     if not references_fact_table:
         return False

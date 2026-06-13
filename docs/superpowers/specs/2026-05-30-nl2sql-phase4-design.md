@@ -4,6 +4,7 @@
 > 状态: 设计中
 > 前置: Phase 3 评测体系已完成，31/31 smoke cases 通过，约 68.4% avg context reduction
 > 范围: 向量召回、混合检索、Value Recall、召回可解释展示
+> 2026-06-13 更新: 当前实现不再要求外部 embedding 模型路径。`EMBEDDING_MODEL` 为空时使用 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`；Docker 使用 CPU-only PyTorch 并缓存模型，不需要 CUDA 或外部模型挂载。
 
 ---
 
@@ -12,8 +13,8 @@
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
 | 向量数据库 | Qdrant (server 模式) | 更接近最终部署形态; 本地和服务器都走同一套 client/server 路径; 支持 payload filter、collection 管理和后续扩展 |
-| Embedding 模型 | 必须显式配置 EMBEDDING_MODEL; 本地开发建议 D:/Models/BAAI/bge-m3; Docker 建议 /models/BAAI/bge-m3 | 不做隐式 fallback, 避免生产环境用错模型或触发意外下载 |
-| Embedding 维度 | 从模型实际输出推断并写入配置/索引元数据 | bge-m3 通常 1024 维; Qdrant collection vector size 不能硬编码 |
+| Embedding 模型 | 默认 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; `EMBEDDING_MODEL` 仅用于有意测试其他 SentenceTransformer 模型 | 简化默认开发路径; 避免外部模型挂载要求 |
+| Embedding 维度 | 从模型实际输出推断并写入配置/索引元数据 | 默认 MiniLM 为 384 维; Qdrant collection vector size 不能硬编码 |
 | 混合打分策略 | 加权融合: rule*0.6 + vec*0.3 + priority*0.1 | ROADMAP 要求不完全依赖向量; 规则得分已证明有效; 权重可配置 |
 | Value Recall | 精确/归一化值匹配优先, 向量值召回补充 | "华东"、"天猫" 这类短值用规则更稳; 向量用于模糊值、别称和错字 |
 | 回退策略 | 混合召回无命中仍走现有 fallback | 保持 Phase 2/3 安全网 |
@@ -29,13 +30,13 @@
 
 ### 1.2 Embedding 模型说明
 
-- 本地开发模型路径: D:/Models/BAAI/bge-m3, 通常 1024 维
-- Docker 模型路径: /models/BAAI/bge-m3, 通过 volume 挂载宿主机模型目录
-- 配置必须包含 `embedding_model`; `embedding_dimension` 可为空
+- 默认模型: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, 通常 384 维
+- Docker 使用 CPU-only PyTorch 加载 sentence-transformers 模型, 不需要 CUDA
+- `embedding_model` 可为空; `embedding_dimension` 可为空
 - `embedding_dimension` 由首次加载模型后推断, 不在 schema 和测试中硬编码
 - `vector_enabled=False` 时不需要模型, 也不会加载模型
-- `vector_enabled=True` 但未配置 `embedding_model` 时明确报错
-- 不做自动 fallback, 不自动下载公共模型
+- `vector_enabled=True` 且 `embedding_model` 为空时使用默认 MiniLM 模型
+- 如需有意测试其他 SentenceTransformer 模型, 设置 `EMBEDDING_MODEL` 后重建索引
 
 ---
 
@@ -257,7 +258,7 @@ business_priority:
 
 - mock 单测覆盖五类资产生成、批量 embedding、metadata 写入
 - CLI 能手动触发 rebuild, 不接 app startup
-- 真实 Qdrant + bge-m3 smoke 在 Qdrant 启动后执行
+- 真实 Qdrant + 默认 MiniLM smoke 在 Qdrant 启动后执行
 - 缺模型或模型路径错误时失败可诊断, 不污染旧索引
 
 ---
@@ -487,7 +488,7 @@ python scripts/run_smoke_eval.py --vector-compare --report-path evals/reports/ph
 
 | 风险 | 缓解 |
 |------|------|
-| Embedding 模型路径错误 | vector_enabled=True 时显式报错; Docker 用 volume 挂载 /models/BAAI/bge-m3; vector_enabled=False 绕过 |
+| Embedding 模型加载失败 | vector_enabled=True 时显式报错; 默认 Docker 路径不需要外部模型挂载; vector_enabled=False 绕过 |
 | Qdrant 服务不可用 | vector_enabled=True 时 status=error; 检索链路降级 rule-only; rebuild CLI 直接失败并显示连接错误 |
 | 向量搜索增加延迟 | 约100-500ms, 占 DeepSeek 5s 调用的不到2%; 可通过 vector_enabled 关闭 |
 | 混合权重不合理 | 权重可配置; 默认 rule=0.6 确保不比纯规则差; eval 对比验证 |

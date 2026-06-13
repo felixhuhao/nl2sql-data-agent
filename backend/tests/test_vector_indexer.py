@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from backend.app.config import DEFAULT_EMBEDDING_MODEL
 from backend.app.metadata.models import (
     Base,
     DEFAULT_DATASOURCE,
@@ -60,7 +61,7 @@ def test_rebuild_vector_index_writes_rows_and_metadata(monkeypatch):
     assert vector_store.ensured_dimensions == [3]
     assert vector_store.clear_called is True
     assert len(vector_store.rows) == 12
-    assert result.embedding_model == "D:/Models/BAAI/bge-m3"
+    assert result.embedding_model == "local/custom-embedding-model"
     assert result.embedding_dimension == 3
     assert result.asset_counts == {
         "table": 1,
@@ -69,7 +70,7 @@ def test_rebuild_vector_index_writes_rows_and_metadata(monkeypatch):
         "verified_query": 1,
         "value": 3,
     }
-    assert vector_store.metadata.embedding_model == "D:/Models/BAAI/bge-m3"
+    assert vector_store.metadata.embedding_model == "local/custom-embedding-model"
     assert vector_store.metadata.embedding_dimension == 3
     assert vector_store.metadata.asset_counts == result.asset_counts
 
@@ -81,11 +82,19 @@ def test_rebuild_vector_index_requires_vector_enabled(monkeypatch):
         indexer.rebuild_vector_index(vector_store=FakeVectorStore())
 
 
-def test_rebuild_vector_index_requires_embedding_model(monkeypatch):
+def test_rebuild_vector_index_uses_default_embedding_model_when_config_blank(monkeypatch):
+    session = _session_with_assets()
+    vector_store = FakeVectorStore()
     monkeypatch.setattr(indexer, "get_settings", lambda: _settings(embedding_model=None))
+    monkeypatch.setattr(indexer, "get_sqlite_engine", lambda: session.get_bind())
+    monkeypatch.setattr(indexer, "sqlite_session", lambda: FakeSessionScope(session))
+    monkeypatch.setattr(indexer, "get_embedding_dimension", lambda: 3)
+    monkeypatch.setattr(indexer, "embed_texts", _fake_embed_texts)
 
-    with pytest.raises(RuntimeError, match="EMBEDDING_MODEL"):
-        indexer.rebuild_vector_index(vector_store=FakeVectorStore())
+    result = indexer.rebuild_vector_index(vector_store=vector_store, batch_size=20)
+
+    assert result.embedding_model == DEFAULT_EMBEDDING_MODEL
+    assert vector_store.metadata.embedding_model == DEFAULT_EMBEDDING_MODEL
 
 
 def _asset(assets, asset_type, asset_id):
@@ -181,7 +190,7 @@ def _fake_embed_texts(texts):
     return [[float(index), float(index + 1), float(index + 2)] for index, _ in enumerate(texts)]
 
 
-def _settings(vector_enabled=True, embedding_model="D:/Models/BAAI/bge-m3"):
+def _settings(vector_enabled=True, embedding_model="local/custom-embedding-model"):
     return SimpleNamespace(
         vector_enabled=vector_enabled,
         embedding_model=embedding_model,

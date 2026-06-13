@@ -42,6 +42,8 @@ def test_hybrid_merge_adds_vector_metric_and_sources(monkeypatch):
 
     assert result["fallback_used"] is False
     assert result["metrics"][0]["name"] == "sales_amount"
+    assert result["tables"][0]["table_name"] == "fact_orders"
+    assert result["columns"][0]["column_name"] == "payment_amount"
     assert result["retrieval_meta"]["vector_used"] is True
     assert result["retrieval_meta"]["index_status"] == "ready"
     assert result["retrieval_meta"]["sources"]["metric:sales_amount"] == ["vector:0.90"]
@@ -96,6 +98,101 @@ def test_hybrid_merge_preserves_rule_hits_and_adds_vector_source(monkeypatch):
         "rule:table_name",
         "vector:0.80",
     ]
+
+
+def test_hybrid_merge_skips_disallowed_metric_dependencies(monkeypatch):
+    monkeypatch.setattr(hybrid, "search_values", lambda question, **kwargs: [])
+    monkeypatch.setattr(
+        hybrid,
+        "retrieve_vector_assets",
+        lambda question, **kwargs: VectorRetrievalResult(
+            vector_used=True,
+            index_status="ready",
+            hits={
+                "metrics": [
+                    VectorSearchHit(
+                        asset_type="metric",
+                        asset_id="stale_metric",
+                        text="过期指标",
+                        distance=0.1,
+                        score=0.9,
+                        metadata={
+                            "name": "stale_metric",
+                            "label": "过期指标",
+                            "expression": "SUM(stale_orders.amount)",
+                        },
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = hybrid.hybrid_merge(
+        _empty_rule_result(),
+        "过期指标",
+        table_limit=5,
+        column_limit=20,
+        metric_limit=5,
+        verified_query_limit=3,
+        allowed_tables={"fact_orders"},
+        allowed_columns={("fact_orders", "payment_amount")},
+    )
+
+    assert "stale_orders" not in [table["table_name"] for table in result["tables"]]
+    assert ("stale_orders", "amount") not in {
+        (column["table_name"], column["column_name"])
+        for column in result["columns"]
+    }
+
+
+def test_hybrid_merge_uses_datasource_dialect_for_verified_query_dependencies(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(hybrid, "search_values", lambda question, **kwargs: [])
+
+    def fake_tables_from_sql(sql, *, dialect="duckdb"):
+        captured["dialect"] = dialect
+        return {"fact_orders"}
+
+    monkeypatch.setattr(hybrid, "_tables_from_sql", fake_tables_from_sql)
+    monkeypatch.setattr(
+        hybrid,
+        "retrieve_vector_assets",
+        lambda question, **kwargs: VectorRetrievalResult(
+            vector_used=True,
+            index_status="ready",
+            hits={
+                "verified_queries": [
+                    VectorSearchHit(
+                        asset_type="verified_query",
+                        asset_id="recent_sales",
+                        text="最近销售额",
+                        distance=0.1,
+                        score=0.9,
+                        metadata={
+                            "query_id": "recent_sales",
+                            "question": "最近销售额",
+                            "sql": "SELECT SUM(fact_orders.payment_amount) FROM fact_orders",
+                        },
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = hybrid.hybrid_merge(
+        _empty_rule_result(),
+        "最近销售额",
+        table_limit=5,
+        column_limit=20,
+        metric_limit=5,
+        verified_query_limit=3,
+        allowed_tables={"fact_orders"},
+        allowed_columns={("fact_orders", "payment_amount")},
+        datasource_dialect="clickhouse",
+    )
+
+    assert captured["dialect"] == "clickhouse"
+    assert result["tables"][0]["table_name"] == "fact_orders"
 
 
 def test_hybrid_merge_injects_value_hits(monkeypatch):

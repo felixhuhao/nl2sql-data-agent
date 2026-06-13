@@ -5,6 +5,12 @@ from dataclasses import dataclass
 
 from backend.app.agent.conversation import missing_carried_filters
 from backend.app.agent.nodes import ScopeBuilder, SQLExecutor, execute_node, repair_sql_node, sql_guard_node
+from backend.app.agent.semantic_grounding import (
+    SemanticGroundingVerifier,
+    SemanticRefutationAuditor,
+    semantic_guard_node,
+    semantic_guard_mode_value,
+)
 from backend.app.agent.state import AgentState
 from backend.app.core.llm_provider import LLMProvider, SQLRepairContext
 from backend.app.sql_guard.models import GuardResult
@@ -20,7 +26,7 @@ REPAIRABLE_GUARD_STAGES = frozenset(
         "cost_guard",
     }
 )
-NON_REPAIRABLE_GUARD_STAGES = frozenset({"operation_guard"})
+NON_REPAIRABLE_GUARD_STAGES = frozenset({"operation_guard", "semantic_guard"})
 
 _INFRASTRUCTURE_ERROR_TOKENS = (
     "connection",
@@ -72,6 +78,8 @@ def reset_failure_state(state: AgentState) -> None:
     state.execution_error = None
     state.plan_hints = []
     state.runtime_stats = None
+    state.semantic_guard_result = None
+    state.grounding_warnings = []
 
 
 def iter_sql_repair_events(
@@ -80,9 +88,13 @@ def iter_sql_repair_events(
     provider: LLMProvider,
     scope_builder: ScopeBuilder,
     executor: SQLExecutor,
+    semantic_verifier: SemanticGroundingVerifier | None = None,
+    semantic_auditor: SemanticRefutationAuditor | None = None,
+    semantic_mode: str | None = None,
     max_repairs: int = MAX_REPAIRS,
 ) -> Iterator[RepairEvent]:
     repair_count = 0
+    active_semantic_mode = semantic_guard_mode_value(semantic_mode)
 
     while True:
         reset_failure_state(state)
@@ -127,6 +139,25 @@ def iter_sql_repair_events(
             repair_sql_node(state, provider=provider, repair_context=repair_context)
             yield RepairEvent(step="repair_sql", state=state, attempt=repair_count)
             continue
+
+        if active_semantic_mode != "off":
+            semantic_guard_node(
+                state,
+                verifier=semantic_verifier,
+                auditor=semantic_auditor,
+                mode=active_semantic_mode,
+            )
+            if state.stopped_at == "semantic_guard":
+                _mark_latest_repair(state, succeeded=False, final_stage="semantic_guard")
+                yield RepairEvent(
+                    step="error",
+                    state=state,
+                    error_stage="semantic_guard",
+                    error_kind="semantic_guard",
+                    error_reason=state.error,
+                )
+                return
+            yield RepairEvent(step="semantic_guard", state=state)
 
         try:
             execute_node(state, executor=executor)

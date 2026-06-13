@@ -4,6 +4,16 @@ from backend.app.agent.repair import (
     is_guard_repairable,
     reset_failure_state,
 )
+from backend.app.agent.semantic_grounding import (
+    ConceptExtractionRequest,
+    ConceptExtractionResult,
+    GroundingCheckRequest,
+    GroundingCheckResult,
+    RefutationAuditResult,
+    RequiredConcept,
+    SemanticGroundingIssue,
+)
+from backend.app.agent.schema_evidence import SchemaEvidence
 from backend.app.agent.state import AgentState
 from backend.app.core.llm_provider import SQLGenerationRequest, SQLGenerationResult
 from backend.app.execution.runner import QueryResult
@@ -203,6 +213,100 @@ def test_iter_sql_repair_events_does_not_repair_operation_guard():
     assert provider.repair_requests == []
 
 
+def test_iter_sql_repair_events_guards_repaired_candidate_and_caches_concepts():
+    state = AgentState(
+        question="删除的订单",
+        schema_context="# Schema Context",
+        sql="SELECT bad_column FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(["SELECT order_id FROM fact_orders"])
+    verifier = _ScriptedSemanticVerifier(
+        checks=[
+            GroundingCheckResult(
+                ok=False,
+                issues=(SemanticGroundingIssue(concept="删除的订单", failure_kind="omitted"),),
+            )
+        ]
+    )
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=lambda guard_result, datasource_name: QueryResult(
+                columns=["order_id"],
+                rows=[["O1"]],
+                row_count=1,
+            ),
+            semantic_verifier=verifier,
+            semantic_auditor=_SemanticAuditor(),
+            semantic_mode="warn",
+        )
+    )
+
+    assert [event.step for event in events] == ["sql_guard", "repair_sql", "sql_guard", "semantic_guard", "execute"]
+    assert verifier.extraction_calls == 1
+    assert verifier.check_calls == 1
+    assert state.grounding_warnings[0]["concept"] == "删除的订单"
+    assert state.repair_history[0]["succeeded"] is True
+    assert state.repair_history[0]["final_stage"] == "execute"
+
+
+def test_iter_sql_repair_events_reuses_semantic_extraction_after_execution_repair():
+    class CatalogException(Exception):
+        pass
+
+    state = AgentState(
+        question="删除的订单",
+        schema_context="# Schema Context",
+        sql="SELECT order_id FROM fact_orders",
+    )
+    provider = _ScriptedRepairProvider(["SELECT order_id FROM fact_orders LIMIT 20"])
+    verifier = _ScriptedSemanticVerifier(
+        checks=[
+            GroundingCheckResult(
+                ok=False,
+                issues=(SemanticGroundingIssue(concept="删除的订单", failure_kind="omitted"),),
+            ),
+            GroundingCheckResult(
+                ok=False,
+                issues=(SemanticGroundingIssue(concept="删除的订单", failure_kind="omitted"),),
+            ),
+        ]
+    )
+    calls = []
+
+    def executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        calls.append(guard_result.normalized_sql)
+        if len(calls) == 1:
+            raise CatalogException("Catalog Error: table missing")
+        return QueryResult(columns=["order_id"], rows=[["O1"]], row_count=1)
+
+    events = list(
+        iter_sql_repair_events(
+            state,
+            provider=provider,
+            scope_builder=_scope,
+            executor=executor,
+            semantic_verifier=verifier,
+            semantic_auditor=_SemanticAuditor(),
+            semantic_mode="warn",
+        )
+    )
+
+    assert [event.step for event in events] == [
+        "sql_guard",
+        "semantic_guard",
+        "repair_sql",
+        "sql_guard",
+        "semantic_guard",
+        "execute",
+    ]
+    assert verifier.extraction_calls == 1
+    assert verifier.check_calls == 2
+
+
 def test_iter_sql_repair_events_stops_after_max_repair_attempts():
     state = AgentState(
         question="查询订单",
@@ -252,6 +356,42 @@ class _ScriptedRepairProvider:
         if not self._repair_sqls:
             raise AssertionError("No scripted repair SQL left.")
         return SQLGenerationResult(sql=self._repair_sqls.pop(0), provider=self.name)
+
+
+class _ScriptedSemanticVerifier:
+    def __init__(self, checks: list[GroundingCheckResult]) -> None:
+        self._checks = list(checks)
+        self.extraction_calls = 0
+        self.check_calls = 0
+
+    def extract_required_concepts(self, request: ConceptExtractionRequest) -> ConceptExtractionResult:
+        self.extraction_calls += 1
+        return ConceptExtractionResult(
+            concepts=(RequiredConcept(concept="删除的订单", concept_type="filter", supported=False),)
+        )
+
+    def check_grounding(self, request: GroundingCheckRequest) -> GroundingCheckResult:
+        self.check_calls += 1
+        if not self._checks:
+            raise AssertionError("No scripted semantic checks left.")
+        return self._checks.pop(0)
+
+
+class _SemanticAuditor:
+    def full_schema_context(self, *, datasource_name: str) -> str:
+        return "# Full Schema Context"
+
+    def evidence(self, *, datasource_name: str) -> SchemaEvidence:
+        return SchemaEvidence(datasource_name=datasource_name)
+
+    def audit(
+        self,
+        issue: SemanticGroundingIssue,
+        *,
+        evidence: SchemaEvidence,
+        concept: RequiredConcept | None = None,
+    ) -> RefutationAuditResult:
+        return RefutationAuditResult(confirmed=True, reason="No evidence.")
 
 
 def _scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:

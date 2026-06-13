@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.app.config import DEFAULT_EMBEDDING_MODEL
 from backend.app.metadata.vector import embedding
 
 
@@ -88,16 +89,13 @@ def test_get_embedding_model_raises_when_vector_disabled_without_loading(monkeyp
         embedding.get_embedding_model()
 
 
-def test_get_embedding_model_requires_model_when_vector_enabled(monkeypatch):
+def test_get_embedding_model_uses_default_model_when_config_blank(monkeypatch):
+    loaded_models = []
     _patch_settings(monkeypatch, model_name=None)
-    monkeypatch.setattr(
-        embedding,
-        "_load_sentence_transformer",
-        lambda model_name: pytest.fail("missing model should not call loader"),
-    )
+    monkeypatch.setattr(embedding, "_load_sentence_transformer", lambda model_name: loaded_models.append(model_name) or FakeEmbeddingModel())
 
-    with pytest.raises(RuntimeError, match="EMBEDDING_MODEL"):
-        embedding.get_embedding_model()
+    assert isinstance(embedding.get_embedding_model(), FakeEmbeddingModel)
+    assert loaded_models == [DEFAULT_EMBEDDING_MODEL]
 
 
 def test_get_embedding_model_caches_by_model_name(monkeypatch):

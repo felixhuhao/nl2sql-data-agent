@@ -80,6 +80,7 @@ export type Relationship = {
 
 export type VectorIndexStatus = {
   vector_enabled: boolean;
+  vector_mode?: string;
   status: string;
   embedding_model?: string | null;
   embedding_dimension?: number | null;

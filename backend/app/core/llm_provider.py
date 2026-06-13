@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from backend.app.config import DEFAULT_BROWSE_LIMIT, DEFAULT_RANKING_LIMIT
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import list_verified_queries
 
@@ -32,6 +33,8 @@ class SQLGenerationRequest:
     prior_sql: str | None = None
     prior_summary: str | None = None
     carried_filters: list[Any] = field(default_factory=list)
+    default_ranking_limit: int = DEFAULT_RANKING_LIMIT
+    default_browse_limit: int = DEFAULT_BROWSE_LIMIT
 
 
 @dataclass(frozen=True)
@@ -58,10 +61,6 @@ class MockLLMProvider:
 
     def generate_sql(self, request: SQLGenerationRequest) -> SQLGenerationResult:
         question = request.question.strip()
-        unsafe_sql = _unsafe_sql_for_question(question)
-        if unsafe_sql is not None:
-            return SQLGenerationResult(sql=unsafe_sql, provider=self.name)
-
         verified_query = _match_verified_query(
             question,
             self._verified_queries_provider(datasource_name=request.datasource_name),
@@ -74,7 +73,10 @@ class MockLLMProvider:
             )
 
         return SQLGenerationResult(
-            sql="SELECT order_id, payment_amount FROM fact_orders ORDER BY order_id LIMIT 20",
+            sql=(
+                "SELECT order_id, payment_amount FROM fact_orders "
+                f"ORDER BY order_id LIMIT {request.default_browse_limit}"
+            ),
             provider=self.name,
         )
 
@@ -85,39 +87,6 @@ def _match_verified_query(question: str, verified_queries: list[dict]) -> dict |
         verified_question = _normalize_text(query["question"])
         if normalized_question == verified_question:
             return query
-        query_tags = set(query["tags"])
-        question_terms = set(_question_terms(normalized_question))
-        if "最近30天" in normalized_question and {"sales", "time_series"}.issubset(query_tags) and {
-            "销售额",
-            "订单数",
-        }.issubset(question_terms):
-            return query
-        if "最近30天" in normalized_question and {"sales", "region"}.issubset(query_tags) and {
-            "地区",
-            "销售额",
-        }.issubset(question_terms):
-            return query
-        if "最近30天" in normalized_question and {"sales", "channel"}.issubset(query_tags) and {
-            "渠道",
-            "销售额",
-        }.issubset(question_terms):
-            return query
-        if "最近30天" in normalized_question and {"product", "topn"}.issubset(query_tags) and {
-            "商品",
-            "销量",
-        }.issubset(question_terms):
-            return query
-    return None
-
-
-def _unsafe_sql_for_question(question: str) -> str | None:
-    normalized_question = _normalize_text(question)
-    if any(keyword in normalized_question for keyword in ("删除", "delete")):
-        return "DELETE FROM fact_orders WHERE order_date >= DATE '2024-01-01'"
-    if any(keyword in normalized_question for keyword in ("drop", "删表")):
-        return "DROP TABLE fact_orders"
-    if any(keyword in normalized_question for keyword in ("create", "建表", "创建")):
-        return "CREATE TABLE tmp_orders AS SELECT * FROM fact_orders"
     return None
 
 
@@ -125,20 +94,13 @@ def _normalize_text(text: str) -> str:
     return "".join(text.lower().split())
 
 
-def _question_terms(text: str) -> tuple[str, ...]:
-    return tuple(term for term in ("最近30天", "销售额", "订单数", "地区", "渠道", "商品", "销量") if term in text)
-
-
 CHANGE_KINDS = {"dimension", "filter", "metric", "time", "none"}
-SQL_START_RE = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
 
 
 def parse_sql_generation_content(
     content: str,
     *,
     expect_structured: bool,
-    fallback_is_follow_up: bool = False,
-    fallback_change_kind: str = "none",
 ) -> tuple[str, bool, str]:
     stripped = strip_code_fence(content)
     if not expect_structured:
@@ -147,9 +109,7 @@ def parse_sql_generation_content(
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
-        if SQL_START_RE.match(stripped):
-            return stripped, fallback_is_follow_up, _valid_change_kind(fallback_change_kind)
-        raise ValueError("SQL generation response did not include extractable SQL.") from None
+        raise ValueError("SQL generation response must be a JSON object.") from None
 
     if not isinstance(payload, dict):
         raise ValueError("SQL generation response must be a JSON object.")
@@ -161,24 +121,6 @@ def parse_sql_generation_content(
         bool(payload.get("is_follow_up", False)),
         _valid_change_kind(payload.get("change_kind", "none")),
     )
-
-
-def infer_followup_change_kind(question: str) -> tuple[bool, str]:
-    normalized_question = _normalize_text(question)
-    if any(token in normalized_question for token in ("只看", "筛选", "过滤", "限定", "仅看")):
-        return True, "filter"
-    if any(token in normalized_question for token in ("换成", "改成订单数", "订单数", "改为订单数")):
-        return True, "metric"
-    if any(
-        token in normalized_question for token in ("最近", "近", "本月", "上月", "今年", "去年", "时间", "日期")
-    ) and any(
-        token in normalized_question
-        for token in ("改成", "改为", "换成", "调整", "最近", "近")
-    ):
-        return True, "time"
-    if any(token in normalized_question for token in ("拆分", "分组", "按地区", "按区域", "按渠道", "按类目", "按品类")):
-        return True, "dimension"
-    return False, "none"
 
 
 def _valid_change_kind(change_kind: object) -> str:

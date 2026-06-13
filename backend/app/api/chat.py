@@ -13,11 +13,17 @@ from backend.app.agent.conversation import ConversationContext, build_conversati
 from backend.app.agent.nodes import iter_pre_repair_workflow
 from backend.app.agent.olap_intent import describe_olap_intents
 from backend.app.agent.repair import RepairEvent, iter_sql_repair_events
+from backend.app.agent.semantic_grounding import (
+    SemanticGroundingVerifier,
+    SemanticRefutationAuditor,
+    UnavailableSemanticGroundingVerifier,
+    semantic_guard_mode_value,
+)
 from backend.app.agent.state import AgentState
 from backend.app.agent.workflow import finalize_workflow
-from backend.app.config import get_settings
+from backend.app.config import deepseek_config_available, get_settings, llm_provider_mode
 from backend.app.core.deepseek_provider import DeepSeekProvider
-from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
+from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationResult
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
@@ -60,6 +66,9 @@ def iter_chat_events(
     retriever=retrieve_metadata_assets,
     scope_builder=build_default_guard_scope,
     executor=execute_guarded_sql,
+    semantic_verifier: SemanticGroundingVerifier | None = None,
+    semantic_auditor: SemanticRefutationAuditor | None = None,
+    semantic_mode: str | None = None,
     session_id: str | None = None,
     conversation_context: ConversationContext | None = None,
     store: SessionStore = session_store,
@@ -78,6 +87,8 @@ def iter_chat_events(
             yield _sse_event("session", {"session_id": active_session_id})
 
         active_provider = provider or get_default_llm_provider()
+        active_semantic_mode = semantic_guard_mode_value(semantic_mode)
+        active_semantic_verifier = semantic_verifier or get_default_semantic_verifier(active_semantic_mode)
         for step in iter_pre_repair_workflow(
             state,
             provider=active_provider,
@@ -101,6 +112,9 @@ def iter_chat_events(
             provider=active_provider,
             scope_builder=scope_builder,
             executor=executor,
+            semantic_verifier=active_semantic_verifier,
+            semantic_auditor=semantic_auditor,
+            semantic_mode=active_semantic_mode,
         ):
             if repair_event.step == "error":
                 yield _sse_event("error", _repair_error_payload(repair_event))
@@ -155,6 +169,7 @@ def iter_chat_events(
                 "runtime_stats": state.runtime_stats,
                 "is_follow_up": state.is_follow_up,
                 "change_kind": state.change_kind,
+                "grounding_warnings": state.grounding_warnings,
             },
         )
     except httpx.TimeoutException:
@@ -181,13 +196,55 @@ def iter_chat_events(
         )
 
 
+class AutoLLMProvider:
+    name = "auto"
+
+    def __init__(
+        self,
+        primary: LLMProvider | None = None,
+        fallback: LLMProvider | None = None,
+    ) -> None:
+        self._primary = primary or DeepSeekProvider()
+        self._fallback = fallback or MockLLMProvider()
+
+    def generate_sql(self, request) -> SQLGenerationResult:
+        try:
+            return self._primary.generate_sql(request)
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            logger.warning("DeepSeek provider unavailable; falling back to mock.", exc_info=True)
+            return self._fallback.generate_sql(request)
+        except ValueError as exc:
+            if "DEEPSEEK_API_KEY" not in str(exc):
+                raise
+            logger.warning("DeepSeek provider is not configured; falling back to mock.")
+            return self._fallback.generate_sql(request)
+
+
 def get_default_llm_provider() -> LLMProvider:
-    provider_name = get_settings().llm_provider.lower()
+    settings = get_settings()
+    provider_name = llm_provider_mode(settings)
     if provider_name == "mock":
         return MockLLMProvider()
     if provider_name == "deepseek":
         return DeepSeekProvider()
+    if provider_name == "auto":
+        if deepseek_config_available(settings):
+            return AutoLLMProvider()
+        return MockLLMProvider()
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider_name}")
+
+
+def get_default_semantic_verifier(mode: str | None = None) -> SemanticGroundingVerifier | None:
+    active_mode = semantic_guard_mode_value(mode)
+    if active_mode == "off":
+        return None
+    settings = get_settings()
+    provider_name = llm_provider_mode(settings)
+    if provider_name == "mock":
+        return UnavailableSemanticGroundingVerifier("LLM_PROVIDER=mock; semantic verifier is unavailable.")
+    if not deepseek_config_available(settings):
+        return UnavailableSemanticGroundingVerifier("DEEPSEEK_API_KEY is not configured.")
+    return DeepSeekProvider(timeout=settings.semantic_guard_timeout)
 
 
 def _sse_event(event: str, payload: dict) -> str:
@@ -318,6 +375,14 @@ def _repair_step_payload(event: RepairEvent) -> dict:
             "status": "completed",
             "missing_filters": [predicate.label() for predicate in event.state.missing_carried_filters],
         }
+    if event.step == "semantic_guard":
+        verifier_unavailable = bool((event.state.semantic_guard_result or {}).get("verifier_unavailable"))
+        return {
+            "step": "semantic_guard",
+            "status": "skipped" if verifier_unavailable else "completed",
+            "grounding_warnings": event.state.grounding_warnings,
+            "semantic_guard_result": event.state.semantic_guard_result,
+        }
     if event.step == "repair_sql":
         latest_repair = event.state.repair_history[-1] if event.state.repair_history else {}
         return {
@@ -338,10 +403,11 @@ def _repair_error_payload(event: RepairEvent) -> dict:
     return {
         "step": event.error_stage or event.state.stopped_at or event.step,
         "reason": event.error_reason or event.state.error or str(event.error or ""),
-        "error_kind": "blocked" if event.error_stage == "sql_guard" else "failure",
+        "error_kind": "blocked" if event.error_stage in {"sql_guard", "semantic_guard"} else "failure",
         "guard_stage": event.error_kind if event.error_stage == "sql_guard" else None,
         "explainability": event.state.explainability,
         "repair_history": event.state.repair_history,
         "missing_filters": [predicate.label() for predicate in event.state.missing_carried_filters],
+        "grounding_warnings": event.state.grounding_warnings,
         "attempted_sql": event.state.sql,
     }

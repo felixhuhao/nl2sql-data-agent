@@ -120,7 +120,8 @@ def conversation_context_prompt(context: ConversationContext | None) -> str:
         lines.extend(
             [
                 "",
-                "Preserve these filters unless the user explicitly changes filters:",
+                "If the new question is a follow-up, preserve these filters unless the user explicitly changes filters.",
+                "If the new question is standalone, do not carry over these filters:",
                 *[f"- {predicate.label()}" for predicate in context.active_filters],
             ]
         )

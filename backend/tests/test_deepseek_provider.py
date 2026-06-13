@@ -2,6 +2,12 @@ import httpx
 import pytest
 
 from backend.app.core.deepseek_provider import DeepSeekProvider
+from backend.app.agent.semantic_grounding import (
+    ConceptExtractionRequest,
+    GroundingCheckRequest,
+    RequiredConcept,
+    SQLSemanticFacts,
+)
 from backend.app.core.llm_provider import MockLLMProvider, SQLGenerationRequest
 
 
@@ -49,6 +55,7 @@ def test_deepseek_provider_posts_chat_completion_request():
     assert client.requests[0]["json"]["stream"] is False
     assert client.requests[0]["json"]["messages"][0]["role"] == "system"
     assert client.requests[0]["json"]["messages"][1]["role"] == "user"
+    assert "OUTPUT_FORMAT=sql" in client.requests[0]["json"]["messages"][1]["content"]
     timeout = client.requests[0]["timeout"]
     assert timeout.connect == 10.0
     assert timeout.read == 30.0
@@ -105,42 +112,37 @@ def test_deepseek_provider_parses_followup_json():
     assert result.sql == "SELECT COUNT(*) AS order_count FROM fact_orders"
     assert result.is_follow_up is True
     assert result.change_kind == "metric"
+    assert "OUTPUT_FORMAT=json" in client.requests[0]["json"]["messages"][1]["content"]
 
 
-def test_deepseek_provider_infers_followup_when_structured_response_is_bare_sql():
+def test_deepseek_provider_rejects_bare_sql_when_structured_response_is_required():
     client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
     provider = DeepSeekProvider(api_key="test-key", http_client=client)
 
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="换成订单数",
-            schema_context="# Schema Context",
-            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
-            prior_summary="Previous query",
+    with pytest.raises(ValueError, match="JSON object"):
+        provider.generate_sql(
+            SQLGenerationRequest(
+                question="换成订单数",
+                schema_context="# Schema Context",
+                prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+                prior_summary="Previous query",
+            )
         )
-    )
-
-    assert result.sql == "SELECT order_id FROM fact_orders"
-    assert result.is_follow_up is True
-    assert result.change_kind == "metric"
 
 
-def test_deepseek_provider_salvages_unrelated_bare_sql_to_fresh_with_prior_context():
+def test_deepseek_provider_rejects_bare_sql_for_standalone_turn_with_prior_context():
     client = FakeHTTPClient(_response("SELECT order_id FROM fact_orders"))
     provider = DeepSeekProvider(api_key="test-key", http_client=client)
 
-    result = provider.generate_sql(
-        SQLGenerationRequest(
-            question="列出订单",
-            schema_context="# Schema Context",
-            prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
-            prior_summary="Previous query",
+    with pytest.raises(ValueError, match="JSON object"):
+        provider.generate_sql(
+            SQLGenerationRequest(
+                question="列出订单",
+                schema_context="# Schema Context",
+                prior_sql="SELECT SUM(payment_amount) AS sales_amount FROM fact_orders",
+                prior_summary="Previous query",
+            )
         )
-    )
-
-    assert result.sql == "SELECT order_id FROM fact_orders"
-    assert result.is_follow_up is False
-    assert result.change_kind == "none"
 
 
 def test_deepseek_provider_rejects_missing_message_content():
@@ -156,6 +158,54 @@ def test_deepseek_provider_rejects_missing_message_content():
 
     with pytest.raises(ValueError, match="message content"):
         provider.generate_sql(_request())
+
+
+def test_deepseek_provider_extracts_required_concepts():
+    client = FakeHTTPClient(
+        _response(
+            '{"concepts":[{"concept":"删除率","concept_type":"metric","supported":false,'
+            '"evidence":[],"explanation":"No deletion concept."}]}'
+        )
+    )
+    provider = DeepSeekProvider(api_key="test-key", http_client=client, timeout=8)
+
+    result = provider.extract_required_concepts(
+        ConceptExtractionRequest(
+            question="查看删除率趋势",
+            full_schema_context="# Full Schema Context",
+        )
+    )
+
+    assert result.concepts[0].concept == "删除率"
+    assert result.concepts[0].supported is False
+    system_message = client.requests[0]["json"]["messages"][0]["content"]
+    assert "explicit business meaning" in system_message
+    assert "related documented value" in system_message
+    assert "Full datasource metadata" in client.requests[0]["json"]["messages"][1]["content"]
+    assert client.requests[0]["timeout"].read == 8.0
+
+
+def test_deepseek_provider_checks_semantic_grounding():
+    client = FakeHTTPClient(
+        _response(
+            '{"ok":false,"issues":[{"concept":"删除的订单","failure_kind":"omitted",'
+            '"sql_mapping":null,"supported":false,"explanation":"No deleted filter."}]}'
+        )
+    )
+    provider = DeepSeekProvider(api_key="test-key", http_client=client, timeout=8)
+
+    result = provider.check_grounding(
+        GroundingCheckRequest(
+            question="删除的订单",
+            sql="SELECT order_id FROM fact_orders",
+            concepts=(RequiredConcept(concept="删除的订单", concept_type="filter", supported=False),),
+            sql_facts=SQLSemanticFacts(),
+        )
+    )
+
+    assert result.ok is False
+    assert result.issues[0].failure_kind == "omitted"
+    assert "Candidate SQL" in client.requests[0]["json"]["messages"][1]["content"]
 
 
 def test_mock_provider_is_not_affected_by_deepseek_provider():

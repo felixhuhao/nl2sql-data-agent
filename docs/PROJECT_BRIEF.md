@@ -46,7 +46,7 @@ Key choices:
 
 - DuckDB and ClickHouse datasources.
 - DB-backed semantic layer: physical schema, business descriptions, metrics, aliases, verified queries, relationships, and analysis spaces.
-- Rule retrieval plus optional Qdrant vector retrieval and value recall.
+- Rule retrieval plus bundled Qdrant vector retrieval and value recall.
 - Multi-turn follow-up handling for dimension, filter, metric, and time-window changes.
 - SQLGlot-based SQL Guard with SELECT-only enforcement, scope checks, dangerous function blocking, fanout detection, and automatic LIMIT.
 - Bounded SQL repair loop.

@@ -11,6 +11,7 @@ from backend.app.metadata.models import (
     MetaAnalysisSpace,
     MetaColumn,
     MetaMetric,
+    MetaRelationship,
     MetaTable,
     MetaVerifiedQuery,
     create_metadata_schema,
@@ -33,6 +34,13 @@ def test_build_schema_context_reads_runtime_assets_from_db(monkeypatch):
     assert "- id: custom_query" in schema_context
     assert "disabled_query" not in schema_context
     assert "ignored_metric" not in schema_context
+    assert "dim_products.name AS product_name" not in schema_context
+    assert "fact_order_items.item_amount" not in schema_context
+    assert "relative_date_rules:" in schema_context
+    assert "- 最近7天 = 2025-12-25 到 2025-12-31" in schema_context
+    assert "- 最近30天 = 2025-12-02 到 2025-12-31" in schema_context
+    assert "- 本月 = 2025-12-01 到 2025-12-31" in schema_context
+    assert "relative_date_rule: 最近30天 = 2025-12-02 到 2025-12-31" not in schema_context
 
 
 def test_build_explainability_context_reads_runtime_assets_from_db(monkeypatch):
@@ -47,6 +55,18 @@ def test_build_explainability_context_reads_runtime_assets_from_db(monkeypatch):
     assert context["metrics"][0]["allowed_dimensions"] == ["date"]
     assert context["verified_queries"][0]["id"] == "custom_query"
     assert context["verified_queries"][0]["tags"] == ["custom"]
+    assert context["date_rule"]["relative_rules"]["最近7天"] == {
+        "start": "2025-12-25",
+        "end": "2025-12-31",
+    }
+    assert context["date_rule"]["relative_rules"]["最近30天"] == {
+        "start": "2025-12-02",
+        "end": "2025-12-31",
+    }
+    assert context["date_rule"]["relative_rules"]["本月"] == {
+        "start": "2025-12-01",
+        "end": "2025-12-31",
+    }
 
 
 def test_metadata_api_runtime_assets_read_from_db(monkeypatch):
@@ -132,6 +152,34 @@ def test_build_focused_context_uses_retrieved_assets_and_join_keys(monkeypatch):
     assert "  - channel_key" in focused_context
     assert "fact_orders.channel_key -> dim_channels.channel_key" in focused_context
     assert "销售额 (sales_amount) = SUM(fact_orders.payment_amount)" in focused_context
+
+
+def test_build_schema_context_injects_schema_specific_generation_guidance(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    _insert_generation_guidance_assets(engine)
+
+    schema_context = service.build_schema_context()
+
+    assert "## SQL Generation Guidance" in schema_context
+    assert "use products.name AS product_name" in schema_context
+    assert "do not invent products.product_name" in schema_context
+    assert "users.user_id and users.name AS user_name" in schema_context
+    assert "SUM(order_lines.line_amount)" in schema_context
+    assert "not SUM(orders.total_amount)" in schema_context
+    assert "available metric names: gross_sales" in schema_context
+    assert "Use a Verified Query only when" in schema_context
+
+
+def test_generation_guidance_role_matching_avoids_substring_false_positives(monkeypatch):
+    engine = _patch_service_db(monkeypatch)
+    _insert_role_false_positive_assets(engine)
+
+    schema_context = service.build_schema_context()
+    guidance = _section(schema_context, "## SQL Generation Guidance", "## Tables")
+
+    assert "keyboard" not in guidance
+    assert "paid_amount as the product display label" not in guidance
+    assert "users.user_id and users.name AS user_name" in guidance
 
 
 def test_build_focused_context_expands_dimension_match_to_fact_partner(monkeypatch):
@@ -409,3 +457,153 @@ def _insert_demo_context_assets(engine) -> None:
             )
         seed_semantics(session)
         session.commit()
+
+
+def _insert_generation_guidance_assets(engine) -> None:
+    with Session(engine) as session:
+        table_columns = {
+            "orders": ["order_id", "total_amount"],
+            "order_lines": ["order_id", "product_id", "line_amount"],
+            "products": ["product_id", "name", "category"],
+            "users": ["user_id", "name"],
+        }
+        for table_name, column_names in table_columns.items():
+            table = MetaTable(
+                table_name=table_name,
+                display_name=table_name.replace("_", " ").title(),
+                description=_guidance_table_description(table_name),
+                domain=_guidance_table_domain(table_name),
+                enabled=True,
+            )
+            session.add(table)
+            session.flush()
+            session.add_all(
+                [
+                    MetaColumn(
+                        table_id=table.id,
+                        column_name=column_name,
+                        data_type="VARCHAR",
+                        description=_guidance_column_description(column_name),
+                        is_metric=column_name.endswith("amount"),
+                    )
+                    for column_name in column_names
+                ]
+            )
+        session.add(
+            MetaRelationship(
+                source_table="order_lines",
+                source_column="order_id",
+                target_table="orders",
+                target_column="order_id",
+                relationship_type="many_to_one",
+                source="overlay",
+                confidence=1.0,
+                fanout_risk="medium",
+            )
+        )
+        session.add(
+            MetaAnalysisSpace(
+                name="custom_guidance_space",
+                datasource=DEFAULT_DATASOURCE,
+                tables=json.dumps(["orders", "order_lines", "products", "users"], ensure_ascii=False),
+                enabled_metrics=json.dumps(["gross_sales"], ensure_ascii=False),
+                allowed_operations=json.dumps(["select"], ensure_ascii=False),
+                enabled=True,
+            )
+        )
+        session.add(
+            MetaMetric(
+                name="gross_sales",
+                label="销售额",
+                expression="SUM(orders.total_amount)",
+                description="订单销售金额",
+                enabled=True,
+            )
+        )
+        session.add(
+            MetaVerifiedQuery(
+                query_id="custom_guidance_sales",
+                question="查询销售额",
+                sql="SELECT SUM(total_amount) AS gross_sales FROM orders",
+                tags=json.dumps(["sales"], ensure_ascii=False),
+                enabled=True,
+            )
+        )
+        session.commit()
+
+
+def _insert_role_false_positive_assets(engine) -> None:
+    with Session(engine) as session:
+        table_columns = {
+            "products": ["keyboard", "paid_amount", "name"],
+            "users": ["user_id", "name"],
+        }
+        for table_name, column_names in table_columns.items():
+            table = MetaTable(
+                table_name=table_name,
+                description=_guidance_table_description(table_name),
+                domain=_guidance_table_domain(table_name),
+                enabled=True,
+            )
+            session.add(table)
+            session.flush()
+            session.add_all(
+                [
+                    MetaColumn(
+                        table_id=table.id,
+                        column_name=column_name,
+                        data_type="VARCHAR",
+                        description=_guidance_column_description(column_name),
+                    )
+                    for column_name in column_names
+                ]
+            )
+        session.add(
+            MetaAnalysisSpace(
+                name="role_false_positive_space",
+                datasource=DEFAULT_DATASOURCE,
+                tables=json.dumps(["products", "users"], ensure_ascii=False),
+                enabled_metrics=json.dumps([], ensure_ascii=False),
+                allowed_operations=json.dumps(["select"], ensure_ascii=False),
+                enabled=True,
+            )
+        )
+        session.commit()
+
+
+def _guidance_table_domain(table_name: str) -> str:
+    return {
+        "products": "product",
+        "users": "user",
+        "orders": "sales",
+        "order_lines": "sales",
+    }[table_name]
+
+
+def _guidance_table_description(table_name: str) -> str:
+    return {
+        "products": "product catalog",
+        "users": "user dimension",
+        "orders": "order payment fact table",
+        "order_lines": "order line item detail table",
+    }[table_name]
+
+
+def _guidance_column_description(column_name: str) -> str:
+    return {
+        "order_id": "order identifier",
+        "total_amount": "order payment amount",
+        "product_id": "product identifier",
+        "line_amount": "line item sales amount",
+        "name": "display name",
+        "category": "product category",
+        "user_id": "user identifier",
+        "keyboard": "keyboard model",
+        "paid_amount": "paid amount",
+    }[column_name]
+
+
+def _section(text: str, start: str, end: str) -> str:
+    _, _, after_start = text.partition(start)
+    section, _, _ = after_start.partition(end)
+    return section

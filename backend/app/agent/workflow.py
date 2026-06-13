@@ -10,6 +10,7 @@ from backend.app.agent.nodes import (
 )
 from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.repair import iter_sql_repair_events
+from backend.app.agent.semantic_grounding import SemanticGroundingVerifier, SemanticRefutationAuditor
 from backend.app.agent.state import AgentState
 from backend.app.agent.conversation import ConversationContext
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
@@ -50,6 +51,9 @@ def run_query_workflow(
     executor: SQLExecutor = execute_guarded_sql,
     datasource_name: str = DEFAULT_DATASOURCE,
     conversation_context: ConversationContext | None = None,
+    semantic_verifier: SemanticGroundingVerifier | None = None,
+    semantic_auditor: SemanticRefutationAuditor | None = None,
+    semantic_mode: str | None = None,
 ) -> AgentState:
     """Synchronous workflow driver.
 
@@ -81,6 +85,9 @@ def run_query_workflow(
         provider=active_provider,
         scope_builder=scope_builder,
         executor=executor,
+        semantic_verifier=semantic_verifier,
+        semantic_auditor=semantic_auditor,
+        semantic_mode=semantic_mode,
     ):
         pass
     if last_event is not None and last_event.step == "error":

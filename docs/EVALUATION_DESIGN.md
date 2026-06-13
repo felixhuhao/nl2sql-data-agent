@@ -11,7 +11,9 @@ Eval 的目标不是给项目贴一个 pass rate，而是回答三个问题：
 核心文件：
 
 - `scripts/run_smoke_eval.py`
+- `scripts/run_semantic_guard_eval.py`
 - `evals/smoke_cases.yaml`
+- `evals/semantic_guard_cases.yaml`
 - `evals/reports/*.md`
 - `backend/tests/test_smoke_eval_runner.py`
 
@@ -101,6 +103,27 @@ Runner 记录 `error_category`，例如：
 - `explainability_mismatch`
 
 这让每次失败都有明确归因，而不是只看 pass/fail。
+
+## Semantic Guard Eval
+
+Phase 1 semantic grounding uses a separate warn-only eval runner:
+
+```bash
+backend/.venv/bin/python scripts/run_semantic_guard_eval.py --semantic-mode warn --retries 1
+```
+
+The case file pairs supported no-warning questions with unsupported adjacent-substitution / omission questions. It also includes `type: verifier_only` cases with synthetic full-schema metadata, used to test Stage A support decisions when a schema truly contains returned/cancelled/deleted-style fields or values. The runner records generated SQL, warning count, warning concepts, required concepts, failure kinds, refutation confirmation, verifier availability, and writes `evals/reports/semantic_guard_latest.md` (ignored by git like other generated reports). These results are evidence for Phase 2 promotion; they do not enable `enforce` mode by themselves.
+
+Use targeted reruns during iteration:
+
+```bash
+backend/.venv/bin/python scripts/run_semantic_guard_eval.py --case-id verifier_refund_does_not_support_return_rate
+backend/.venv/bin/python scripts/run_semantic_guard_eval.py --promotion-pattern concept_absent_full_metadata --limit 1
+```
+
+Provider outages, rate limits, or billing errors are not semantic regressions. Treat those cases as inconclusive, fix the provider issue, and rerun only the impacted `--case-id` values instead of chasing a perfect monolithic run.
+
+Full-corpus runs are reserved for checkpoint validation because workflow cases call the generator, verifier, SQL Guard, and executor.
 
 ## 报告内容
 

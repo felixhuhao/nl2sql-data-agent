@@ -8,6 +8,16 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app.agent.conversation import FilterPredicate
 import backend.app.agent.nodes as nodes_module
+from backend.app.agent.semantic_grounding import (
+    ConceptExtractionRequest,
+    ConceptExtractionResult,
+    GroundingCheckRequest,
+    GroundingCheckResult,
+    RefutationAuditResult,
+    RequiredConcept,
+    SemanticGroundingIssue,
+)
+from backend.app.agent.schema_evidence import SchemaEvidence
 from backend.app.agent.state import AgentState
 from backend.app.api.chat import WorkflowPayloadError, _workflow_step_payload, iter_chat_events
 from backend.app.api.session_store import SessionStore
@@ -666,19 +676,47 @@ def test_datasources_endpoint_lists_available_sources(monkeypatch):
 
 def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
     monkeypatch.setattr(
-        "backend.app.main.get_settings",
-        lambda: SimpleNamespace(llm_provider="deepseek"),
+        "backend.app.main.effective_llm_provider_name",
+        lambda: "deepseek",
     )
     client = TestClient(main.app)
 
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "llm_provider": "deepseek"}
+    assert response.json() == {
+        "status": "ok",
+        "llm_provider": "deepseek",
+        "semantic_guard": "off",
+        "semantic_verifier": "disabled",
+    }
 
     api_response = client.get("/api/health")
     assert api_response.status_code == 200
-    assert api_response.json() == {"status": "ok", "llm_provider": "deepseek"}
+    assert api_response.json() == {
+        "status": "ok",
+        "llm_provider": "deepseek",
+        "semantic_guard": "off",
+        "semantic_verifier": "disabled",
+    }
+
+
+def test_health_endpoint_reports_mock_when_auto_lacks_deepseek_key(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.main.effective_llm_provider_name",
+        lambda: "mock",
+    )
+    client = TestClient(main.app)
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "llm_provider": "mock",
+        "semantic_guard": "off",
+        "semantic_verifier": "disabled",
+    }
 
 
 def test_api_allows_local_vite_origin():
@@ -730,6 +768,106 @@ def test_iter_chat_events_uses_configured_deepseek_provider(monkeypatch):
     assert generate_step["data"]["provider"] == "deepseek"
 
 
+def test_iter_chat_events_auto_uses_deepseek_when_key_is_configured(monkeypatch):
+    class FakeDeepSeekProvider:
+        name = "deepseek"
+
+        def generate_sql(self, request):
+            assert request.schema_context == "# Schema Context"
+            return SQLGenerationResult(
+                sql="SELECT order_id, payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.api.chat.get_settings",
+        lambda: SimpleNamespace(llm_provider="auto", deepseek_api_key="test-key"),
+    )
+    monkeypatch.setattr("backend.app.api.chat.DeepSeekProvider", FakeDeepSeekProvider)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(
+            columns=["order_id", "payment_amount"],
+            rows=[["O00000001", 100]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单金额",
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    generate_step = next(event for event in events if event["data"].get("step") == "generate_sql")
+    assert generate_step["data"]["provider"] == "deepseek"
+
+
+def test_iter_chat_events_auto_falls_back_to_mock_when_deepseek_unavailable(monkeypatch):
+    class FailingDeepSeekProvider:
+        name = "deepseek"
+
+        def generate_sql(self, request):
+            raise httpx.ConnectError("DeepSeek is down")
+
+    monkeypatch.setattr(
+        "backend.app.api.chat.get_settings",
+        lambda: SimpleNamespace(llm_provider="auto", deepseek_api_key="test-key"),
+    )
+    monkeypatch.setattr("backend.app.api.chat.DeepSeekProvider", FailingDeepSeekProvider)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(
+            columns=["order_id", "payment_amount"],
+            rows=[["O00000001", 100]],
+            row_count=1,
+        )
+
+    events = _parse_events(
+        iter_chat_events(
+            "查询订单金额",
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+        )
+    )
+
+    generate_step = next(event for event in events if event["data"].get("step") == "generate_sql")
+    assert generate_step["data"]["provider"] == "mock"
+
+
+def test_iter_chat_events_surfaces_grounding_warnings_in_step_and_done():
+    class StaticProvider:
+        name = "static"
+
+        def generate_sql(self, request):
+            return SQLGenerationResult(sql="SELECT order_id FROM fact_orders LIMIT 20", provider=self.name)
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        return QueryResult(columns=["order_id"], rows=[["O1"]], row_count=1)
+
+    events = _parse_events(
+        iter_chat_events(
+            "删除的订单",
+            provider=StaticProvider(),
+            schema_context_builder=lambda: "# Schema Context",
+            scope_builder=_scope,
+            executor=fake_executor,
+            semantic_verifier=_ChatSemanticVerifier(),
+            semantic_auditor=_ChatSemanticAuditor(),
+            semantic_mode="warn",
+        )
+    )
+
+    semantic_step = next(event for event in events if event["data"].get("step") == "semantic_guard")
+    assert semantic_step["data"]["status"] == "completed"
+    assert semantic_step["data"]["grounding_warnings"][0]["concept"] == "删除的订单"
+    assert events[-1]["event"] == "done"
+    assert events[-1]["data"]["grounding_warnings"][0]["failure_kind"] == "omitted"
+
+
 def _parse_events(chunks) -> list[dict]:
     events = []
     for chunk in chunks:
@@ -738,6 +876,42 @@ def _parse_events(chunks) -> list[dict]:
         data = json.loads(lines[1].removeprefix("data: "))
         events.append({"event": event, "data": data})
     return events
+
+
+class _ChatSemanticVerifier:
+    def extract_required_concepts(self, request: ConceptExtractionRequest) -> ConceptExtractionResult:
+        return ConceptExtractionResult(
+            concepts=(RequiredConcept(concept="删除的订单", concept_type="filter", supported=False),)
+        )
+
+    def check_grounding(self, request: GroundingCheckRequest) -> GroundingCheckResult:
+        return GroundingCheckResult(
+            ok=False,
+            issues=(
+                SemanticGroundingIssue(
+                    concept="删除的订单",
+                    failure_kind="omitted",
+                    explanation="No deleted filter.",
+                ),
+            ),
+        )
+
+
+class _ChatSemanticAuditor:
+    def full_schema_context(self, *, datasource_name: str) -> str:
+        return "# Full Schema Context"
+
+    def evidence(self, *, datasource_name: str) -> SchemaEvidence:
+        return SchemaEvidence(datasource_name=datasource_name)
+
+    def audit(
+        self,
+        issue: SemanticGroundingIssue,
+        *,
+        evidence: SchemaEvidence,
+        concept: RequiredConcept | None = None,
+    ) -> RefutationAuditResult:
+        return RefutationAuditResult(confirmed=True, reason="No evidence.")
 
 
 def _scope(datasource_name: str = "duckdb_ecommerce") -> GuardScope:

@@ -690,8 +690,8 @@ function formatColumnFlags(column: MetadataColumn) {
               <span :class="['info-chip', vectorStatus?.status === 'ready' ? 'source-vector' : '']">
                 {{ vectorStatus?.status ?? "-" }}
               </span>
-              <span v-if="vectorStatus && !vectorStatus.vector_enabled" class="info-chip">
-                disabled
+              <span v-if="vectorStatus?.vector_mode" class="info-chip">
+                {{ vectorStatus.vector_mode }}
               </span>
             </dd>
           </div>

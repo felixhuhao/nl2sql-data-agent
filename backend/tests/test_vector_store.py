@@ -89,8 +89,8 @@ def test_metadata_round_trip_and_ready_status():
     client = FakeQdrantClient.with_collections(f"test_{name}" for name in store.ALL_TABLE_NAMES)
     vector_store = store.QdrantVectorStore(client=client, collection_prefix="test")
     metadata = store.VectorIndexMetadata(
-        embedding_model="/models/BAAI/bge-m3",
-        embedding_dimension=1024,
+        embedding_model="/models/custom-embedding-model",
+        embedding_dimension=768,
         built_at="2026-05-31T10:00:00Z",
         asset_counts={"metric": 3},
     )
@@ -99,12 +99,12 @@ def test_metadata_round_trip_and_ready_status():
 
     assert vector_store.read_metadata() == metadata
     assert vector_store.status(
-        expected_model="/models/BAAI/bge-m3",
-        expected_dimension=1024,
+        expected_model="/models/custom-embedding-model",
+        expected_dimension=768,
     ) == store.VectorIndexStatus(
         status="ready",
-        embedding_model="/models/BAAI/bge-m3",
-        embedding_dimension=1024,
+        embedding_model="/models/custom-embedding-model",
+        embedding_dimension=768,
         built_at="2026-05-31T10:00:00Z",
         asset_counts={"metric": 3},
     )

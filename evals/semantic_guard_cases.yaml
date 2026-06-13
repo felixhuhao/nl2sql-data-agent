@@ -1,0 +1,381 @@
+version: 1
+description: Phase 1 warn-only semantic grounding guard eval cases for supported concepts, adjacent substitutions, and unsupported omissions.
+cases:
+  - id: supported_recent_30d_daily_sales
+    question: 查询最近30天每日销售额和订单数
+    tags: [supported, sales, time_series]
+    expected:
+      warning: false
+
+  - id: supported_order_browse
+    question: 查看订单列表
+    tags: [supported, browse]
+    expected:
+      warning: false
+
+  - id: supported_channel_sales_share
+    question: 各渠道销售额占比
+    tags: [supported, share, channel]
+    expected:
+      warning: false
+
+  - id: supported_top_products_volume
+    question: 最近30天销量最高的10个商品
+    tags: [supported, topn, product]
+    expected:
+      warning: false
+
+  - id: supported_refund_rate
+    question: 查看退款率趋势
+    tags: [supported, status_value, derived_metric, smoke]
+    expected:
+      warning: false
+
+  - id: supported_refunded_orders
+    question: 已退款订单
+    tags: [supported, status_value, filter, smoke]
+    expected:
+      warning: false
+
+  - id: supported_completed_orders
+    question: 已完成订单
+    tags: [supported, status_value, filter]
+    expected:
+      warning: false
+
+  - id: supported_paid_orders
+    question: 已支付订单
+    tags: [supported, status_value, filter]
+    expected:
+      warning: false
+
+  - id: supported_discount_rate
+    question: 查看优惠率趋势
+    tags: [supported, derived_metric, discount]
+    expected:
+      warning: false
+
+  - id: supported_aov
+    question: 客单价
+    tags: [supported, metric]
+    expected:
+      warning: false
+
+  - id: supported_rank_correlation
+    question: price 和 quantity 的 rank correlation 是多少
+    tags: [supported, analytics, rank_correlation, smoke]
+    expected:
+      warning: false
+
+  - id: supported_moving_average
+    question: 最近30天每日销售额的7日移动平均
+    tags: [supported, analytics, moving_average]
+    expected:
+      warning: false
+
+  - id: unsupported_deletion_rate
+    question: 查看删除率趋势
+    tags: [unsupported, substituted, deletion, smoke]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [删除率]
+      failure_kinds: [substituted]
+      refutation_confirmed: true
+
+  - id: unsupported_deleted_orders
+    question: 删除的订单
+    tags: [unsupported, omitted, deletion, smoke]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [删除的订单]
+      failure_kinds: [omitted]
+      refutation_confirmed: true
+
+  - id: fixture_deletion_rate_substitution
+    type: fixture
+    question: 查看删除率趋势
+    tags: [fixture, positive_schema, deletion]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    sql: SELECT countIf(order_status = 'refunded') / count(*) AS deletion_rate FROM fact_orders
+    expected:
+      warning: true
+      refutation_confirmed: true
+      refutation_pattern: concept_absent_full_metadata
+
+  - id: fixture_deleted_orders_omission
+    type: fixture
+    question: 删除的订单
+    tags: [fixture, positive_schema, deletion]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+    sql: SELECT order_id FROM fact_orders LIMIT 20
+    expected:
+      warning: true
+      refutation_confirmed: true
+      refutation_pattern: concept_absent_full_metadata
+
+  - id: fixture_refund_rate_supported_negative
+    type: fixture
+    question: 查看退款率趋势
+    tags: [fixture, negative_schema, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    sql: SELECT countIf(order_status = 'refunded') / count(*) AS refund_rate FROM fact_orders
+    expected:
+      warning: false
+
+  - id: unsupported_cancel_rate
+    question: 查看取消率趋势
+    tags: [unsupported, adjacent_status, cancellation]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [取消率]
+      refutation_confirmed: true
+
+  - id: unsupported_cancelled_orders
+    question: 已取消订单
+    tags: [unsupported, adjacent_status, cancellation]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [已取消订单]
+      refutation_confirmed: true
+
+  - id: unsupported_return_rate
+    question: 查看退货率趋势
+    tags: [unsupported, adjacent_status, return]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [退货率]
+      refutation_confirmed: true
+
+  - id: unsupported_returned_orders
+    question: 退货订单
+    tags: [unsupported, adjacent_status, return]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [退货]
+      refutation_confirmed: true
+
+  - id: unsupported_complaint_rate
+    question: 查看客诉率趋势
+    tags: [unsupported, complaint]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [客诉率]
+      refutation_confirmed: true
+
+  - id: unsupported_complaint_orders
+    question: 有客诉的订单
+    tags: [unsupported, complaint]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [客诉]
+      refutation_confirmed: true
+
+  - id: unsupported_shipped_orders
+    question: 已发货订单
+    tags: [unsupported, shipping]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [已发货]
+      refutation_confirmed: true
+
+  - id: unsupported_unpaid_orders
+    question: 未支付订单
+    tags: [unsupported, payment_status]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [未支付]
+      refutation_confirmed: true
+
+  - id: unsupported_fraud_orders
+    question: 风控拦截订单
+    tags: [unsupported, fraud]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [风控拦截]
+      refutation_confirmed: true
+
+  - id: unsupported_chargeback_rate
+    question: 查看拒付率趋势
+    tags: [unsupported, chargeback]
+    promotion_pattern: concept_absent_full_metadata
+    expected:
+      warning: true
+      concepts: [拒付率]
+      refutation_confirmed: true
+
+  - id: verifier_supported_return_rate
+    type: verifier_only
+    question: 查看退货率趋势
+    tags: [verifier_only, positive_schema, return]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，returned=已退货/退货
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 退货率
+          supported: true
+
+  - id: verifier_supported_returned_orders
+    type: verifier_only
+    question: 退货订单
+    tags: [verifier_only, positive_schema, return]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，returned=已退货/退货
+    expected:
+      required_concepts:
+        - concept: 退货订单
+          supported: true
+
+  - id: verifier_supported_cancel_rate
+    type: verifier_only
+    question: 查看取消率趋势
+    tags: [verifier_only, positive_schema, cancellation]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，cancelled=已取消/取消
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 取消率
+          supported: true
+
+  - id: verifier_supported_deleted_orders
+    type: verifier_only
+    question: 删除的订单
+    tags: [verifier_only, positive_schema, deletion]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - is_deleted (BOOLEAN) [dimension] - 是否删除订单；true=已删除，false=未删除
+        - deleted_at (TIMESTAMP) [dimension] - 删除时间，非空表示订单已删除
+    expected:
+      required_concepts:
+        - concept: 删除的订单
+          supported: true
+
+  - id: verifier_supported_shipped_orders
+    type: verifier_only
+    question: 已发货订单
+    tags: [verifier_only, positive_schema, fulfillment]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - fulfillment_status (VARCHAR) [dimension] - 履约状态；取值含义：pending=待发货，shipped=已发货，delivered=已送达
+    expected:
+      required_concepts:
+        - concept: 已发货订单
+          supported: true
+
+  - id: verifier_refund_does_not_support_return_rate
+    type: verifier_only
+    question: 查看退货率趋势
+    tags: [verifier_only, negative_schema, return, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 退货率
+          supported: false
+
+  - id: verifier_refund_does_not_support_returned_orders
+    type: verifier_only
+    question: 退货订单
+    tags: [verifier_only, negative_schema, return, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+    expected:
+      required_concepts:
+        - concept: 退货
+          supported: false
+
+  - id: verifier_refund_does_not_support_chargeback_rate
+    type: verifier_only
+    question: 查看拒付率趋势
+    tags: [verifier_only, negative_schema, chargeback, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    expected:
+      required_concepts:
+        - concept: 拒付率
+          supported: false

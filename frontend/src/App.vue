@@ -14,6 +14,37 @@ import { listDatasources, type DatasourceInfo } from "./api/datasources";
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
+const CHART_PALETTE = ["#c8442f", "#2f6f5e", "#9c6b16", "#3d6b8a", "#7d6a9c", "#b06a3d", "#4f8a6b", "#8a5a3d"];
+echarts.registerTheme("ledger", {
+  color: CHART_PALETTE,
+  backgroundColor: "transparent",
+  textStyle: {
+    fontFamily: '"Hanken Grotesk", "Noto Sans SC", system-ui, sans-serif',
+    color: "#5c5447",
+  },
+  title: { textStyle: { color: "#2b2620" } },
+  legend: { textStyle: { color: "#5c5447" }, itemWidth: 14, itemHeight: 9 },
+  categoryAxis: {
+    axisLine: { lineStyle: { color: "rgba(43,38,32,0.22)" } },
+    axisTick: { lineStyle: { color: "rgba(43,38,32,0.22)" } },
+    axisLabel: { color: "#8c8474" },
+    splitLine: { show: false, lineStyle: { color: "rgba(43,38,32,0.08)" } },
+  },
+  valueAxis: {
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: "#8c8474" },
+    splitLine: { lineStyle: { color: "rgba(43,38,32,0.08)" } },
+  },
+  tooltip: {
+    backgroundColor: "#fffdf8",
+    borderColor: "rgba(43,38,32,0.14)",
+    borderWidth: 1,
+    textStyle: { color: "#2b2620" },
+    extraCssText: "box-shadow: 0 14px 38px -16px rgba(43,38,32,0.24); border-radius: 10px;",
+  },
+});
+
 const allWorkflowSteps = [
   { id: "datasource_selected", label: "选择数据源" },
   { id: "intent_guard", label: "意图检查" },
@@ -23,6 +54,7 @@ const allWorkflowSteps = [
   { id: "generate_sql", label: "生成 SQL" },
   { id: "sql_guard", label: "SQL Guard" },
   { id: "conversation_filter_verify", label: "保留过滤" },
+  { id: "semantic_guard", label: "语义校验" },
   { id: "repair_sql", label: "SQL 修复" },
   { id: "execute", label: "执行查询" },
   { id: "explain_plan", label: "性能解释" },
@@ -109,9 +141,20 @@ type RuntimeStats = {
   rows_read?: number;
   bytes_read?: number;
 };
+type GroundingWarning = {
+  concept?: string;
+  failure_kind?: string;
+  sql_mapping?: string | null;
+  message?: string;
+  explanation?: string;
+  refutation_confirmed?: boolean;
+  refutation_reason?: string;
+};
 type HealthPayload = {
   status?: string;
   llm_provider?: string;
+  semantic_guard?: string;
+  semantic_verifier?: string;
 };
 type QueryDatasource = Pick<DatasourceInfo, "name" | "dialect" | "display_name">;
 
@@ -140,6 +183,7 @@ const explainability = ref<Explainability | null>(null);
 const retrievalMeta = ref<RetrievalMeta | null>(null);
 const planHints = ref<string[]>([]);
 const runtimeStats = ref<RuntimeStats | null>(null);
+const groundingWarnings = ref<GroundingWarning[]>([]);
 const repairHistory = ref<RepairHistoryItem[]>([]);
 const guardResult = ref<GuardResult | null>(null);
 const chartRecommendation = ref<ChartRecommendation | null>(null);
@@ -152,6 +196,13 @@ const changeKind = ref("none");
 const chartContainer = ref<HTMLDivElement | null>(null);
 const activeView = ref<"chat" | "admin">("chat");
 const llmProvider = ref("");
+const sqlCopied = ref(false);
+const exampleQuestions = [
+  "查询最近30天每日销售额和订单数",
+  "各渠道本月销售额占比",
+  "按地区拆分销售额",
+  "销量最高的10个商品",
+];
 const sourceGroupOrder = ["table", "column", "metric", "verified_query", "other"];
 const sourceGroupLabels: Record<string, string> = {
   table: "表",
@@ -319,6 +370,7 @@ async function submitQuestion() {
   retrievalMeta.value = null;
   planHints.value = [];
   runtimeStats.value = null;
+  groundingWarnings.value = [];
   repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
@@ -369,6 +421,7 @@ function startNewConversation() {
   retrievalMeta.value = null;
   planHints.value = [];
   runtimeStats.value = null;
+  groundingWarnings.value = [];
   repairHistory.value = [];
   guardResult.value = null;
   chartRecommendation.value = null;
@@ -722,6 +775,9 @@ function handleSseChunk(chunk: string) {
       planHints.value = payload.plan_hints ?? [];
       runtimeStats.value = payload.runtime_stats ?? null;
     }
+    if (payload.grounding_warnings) {
+      groundingWarnings.value = payload.grounding_warnings;
+    }
   }
   if (event === "session") {
     sessionId.value = payload.session_id ?? sessionId.value;
@@ -739,6 +795,7 @@ function handleSseChunk(chunk: string) {
     explainability.value = payload.explainability ?? null;
     planHints.value = payload.plan_hints ?? planHints.value;
     runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
+    groundingWarnings.value = payload.grounding_warnings ?? groundingWarnings.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     sessionId.value = payload.session_id ?? sessionId.value;
@@ -754,6 +811,7 @@ function handleSseChunk(chunk: string) {
     explainability.value = payload.explainability ?? null;
     planHints.value = payload.plan_hints ?? planHints.value;
     runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
+    groundingWarnings.value = payload.grounding_warnings ?? groundingWarnings.value;
     repairHistory.value = payload.repair_history ?? repairHistory.value;
     guardResult.value = payload.explainability?.guard_result ?? guardResult.value;
     chartRecommendation.value = null;
@@ -786,14 +844,14 @@ function renderChart() {
     return;
   }
 
-  chartInstance ??= echarts.init(chartContainer.value);
+  chartInstance ??= echarts.init(chartContainer.value, "ledger");
 
   if (chartType === "pie") {
     const yIndex = yIndexes[0].index;
     const pieData = pieSeriesData(xIndex, yIndex);
     const formatPieAsPercent = shouldFormatPieAsPercent(pieData);
     chartInstance.setOption({
-      color: ["#235789", "#2e7d5b", "#b7791f", "#8a4f7d", "#5b6c8f", "#d07a3d", "#4f8f7a", "#9a6b35"],
+      color: CHART_PALETTE,
       tooltip: {
         trigger: "item",
         formatter: (params: any) => formatPieTooltip(params, formatPieAsPercent),
@@ -820,7 +878,7 @@ function renderChart() {
   if (chartType === "bar") {
     if (!isTopNRecommendation(chartRecommendation.value)) {
       chartInstance.setOption({
-        color: ["#235789", "#2e7d5b", "#b7791f"],
+        color: CHART_PALETTE,
         grid: {
           top: 28,
           right: 20,
@@ -853,7 +911,7 @@ function renderChart() {
     }
 
     chartInstance.setOption({
-      color: ["#235789", "#2e7d5b", "#b7791f"],
+      color: CHART_PALETTE,
       grid: {
         top: 28,
         right: 20,
@@ -978,6 +1036,29 @@ function disposeChart() {
   chartInstance = null;
 }
 
+function applyExample(text: string) {
+  question.value = text;
+  void nextTick(() => {
+    const field = document.getElementById("question") as HTMLTextAreaElement | null;
+    field?.focus();
+  });
+}
+
+async function copySql() {
+  if (!sql.value) {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(sql.value);
+    sqlCopied.value = true;
+    window.setTimeout(() => {
+      sqlCopied.value = false;
+    }, 1600);
+  } catch {
+    sqlCopied.value = false;
+  }
+}
+
 function switchView(view: "chat" | "admin") {
   activeView.value = view;
   if (view === "chat") {
@@ -990,9 +1071,12 @@ function switchView(view: "chat" | "admin") {
   <main class="app-shell">
     <section class="workspace">
       <header class="topbar">
-        <div>
-          <h1>掌柜问数</h1>
-          <p>NL2SQL Data Agent</p>
+        <div class="brand">
+          <span class="brand-seal" aria-hidden="true">问</span>
+          <div class="brand-text">
+            <h1>掌柜问数</h1>
+            <p>NL2SQL Data Agent</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <div class="datasource-select">
@@ -1059,7 +1143,7 @@ function switchView(view: "chat" | "admin") {
                 rows="2"
                 placeholder="输入经营分析问题"
               />
-              <button type="submit" :disabled="!canSubmit">
+              <button type="submit" :class="{ 'is-loading': isSubmitting }" :disabled="!canSubmit">
                 {{ isSubmitting ? "发送中" : "发送" }}
               </button>
             </div>
@@ -1067,7 +1151,21 @@ function switchView(view: "chat" | "admin") {
 
           <div class="result-area">
             <div v-if="!hasActivity" class="empty-state">
-              <h2>暂无查询结果</h2>
+              <span class="empty-seal" aria-hidden="true">数</span>
+              <h2>问一句，掌柜替你算账</h2>
+              <p>用自然语言提问，自动生成 SQL、执行并解释每一步证据来源。</p>
+              <div class="empty-examples">
+                <span class="empty-examples-label">试试</span>
+                <button
+                  v-for="example in exampleQuestions"
+                  :key="example"
+                  type="button"
+                  class="example-chip"
+                  @click="applyExample(example)"
+                >
+                  {{ example }}
+                </button>
+              </div>
             </div>
 
             <div v-else class="answer-stack">
@@ -1111,25 +1209,66 @@ function switchView(view: "chat" | "admin") {
                 </div>
               </section>
 
-              <section v-if="sql || summary || rows.length" class="answer-section">
-                <h2>查询信息</h2>
-                <div class="result-meta">
-                  <span v-if="isFollowUp" class="info-chip source-vector">
-                    追问 {{ followUpLabel }}
-                  </span>
-                  <span class="info-chip">数据源 {{ resultDatasource.display_name }}</span>
-                  <span class="info-chip">方言 {{ resultDatasource.dialect }}</span>
-                  <span class="info-chip">行数 {{ resultRowCount ?? rows.length }}</span>
-                  <span class="info-chip">耗时 {{ formattedElapsedMs }}</span>
+              <section
+                v-if="isSubmitting && !summary && !sql && !errorMessage"
+                class="answer-section"
+              >
+                <div class="skeleton-card" aria-hidden="true">
+                  <span class="skeleton-caption">正在生成回答</span>
+                  <span class="skeleton-line lg w-60"></span>
+                  <span class="skeleton-line w-90"></span>
+                  <span class="skeleton-line w-80"></span>
                 </div>
               </section>
 
-              <section v-if="sql" class="answer-section">
-                <h2>SQL</h2>
-                <pre>{{ sql }}</pre>
+              <section v-if="sql || summary || rows.length" class="answer-section">
+                <h2>查询信息</h2>
+                <div class="meta-strip">
+                  <span v-if="isFollowUp" class="info-chip source-vector">追问 · {{ followUpLabel }}</span>
+                  <div class="meta-item">
+                    <span class="meta-k">数据源</span>
+                    <span class="meta-v">{{ resultDatasource.display_name }}</span>
+                  </div>
+                  <div class="meta-item">
+                    <span class="meta-k">方言</span>
+                    <span class="meta-v">{{ resultDatasource.dialect }}</span>
+                  </div>
+                  <div class="meta-item">
+                    <span class="meta-k">行数</span>
+                    <span class="meta-v num">{{ resultRowCount ?? rows.length }}</span>
+                  </div>
+                  <div class="meta-item">
+                    <span class="meta-k">耗时</span>
+                    <span class="meta-v num">{{ formattedElapsedMs }}</span>
+                  </div>
+                </div>
               </section>
 
-              <section v-if="summary" class="answer-section">
+              <section v-if="groundingWarnings.length" class="answer-section grounding-warning-section">
+                <h2>语义提示</h2>
+                <div
+                  v-for="(warning, warningIndex) in groundingWarnings"
+                  :key="`${warningIndex}-${warning.concept ?? 'semantic'}-${warning.failure_kind ?? 'warning'}`"
+                  class="grounding-warning"
+                >
+                  <strong>{{ warning.concept ?? "语义校验" }}</strong>
+                  <span>{{ warning.message ?? warning.explanation ?? "当前结果可能缺少语义支撑。" }}</span>
+                </div>
+              </section>
+
+              <section v-if="sql" class="answer-section sql-section">
+                <div class="sql-card">
+                  <header class="sql-card-head">
+                    <h2>SQL</h2>
+                    <button type="button" class="copy-button" @click="copySql">
+                      {{ sqlCopied ? "已复制" : "复制" }}
+                    </button>
+                  </header>
+                  <pre>{{ sql }}</pre>
+                </div>
+              </section>
+
+              <section v-if="summary" class="answer-section answer-summary">
                 <h2>回答</h2>
                 <p>{{ summary }}</p>
               </section>

@@ -2,7 +2,8 @@
 
 > 日期: 2026-05-31
 > 状态: 设计修订完成，待实现
-> 前置: Phase 4 code complete；自动化测试通过；真实 Qdrant + bge-m3 手动验收 pending
+> 前置: Phase 4 code complete；自动化测试通过；真实 Qdrant + 默认 MiniLM 手动验收 pending
+> 2026-06-13 更新: 当前向量默认模型为 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`，Docker 使用 CPU-only PyTorch；不需要 CUDA 或外部模型挂载。
 > 范围: SQL 修复闭环、执行错误重试、修复可观测展示、修复评测
 
 ---
@@ -11,7 +12,7 @@
 
 Phase 1-4 已经形成完整 NL2SQL 查询链路：意图检查 -> 检索上下文 -> 构建 Schema -> 生成 SQL -> SQL Guard -> 执行 -> 摘要。当前链路是单次执行：SQL Guard 拒绝或 DuckDB 执行失败后直接报错给用户，没有自动修复能力。
 
-Phase 4 的向量召回代码已经完成，但真实 Qdrant + bge-m3 手动测试因本机资源占用暂缓。Phase 5 不依赖真实向量效果验收；默认要求在 `VECTOR_ENABLED=false` 或索引不可用时仍保持 Phase 3/4 的规则链路可用。
+Phase 4 的向量召回代码已经完成，但真实 Qdrant + 默认 MiniLM 手动测试因本机资源占用暂缓。Phase 5 不依赖真实向量效果验收；默认要求在 `VECTOR_ENABLED=false` 或索引不可用时仍保持 Phase 3/4 的规则链路可用。
 
 实际场景中 LLM 生成 SQL 经常有可修复的小错误：
 
@@ -495,7 +496,7 @@ expected:
 6. 不做 token-level 流式修复；只在每次修复完成后发 SSE step
 7. 不做 SQL diff 展示；只展示原始 SQL 和修复后 SQL
 8. 不做修复缓存/记忆
-9. 不依赖真实 Qdrant+bge-m3 手动验收完成
+9. 不依赖真实 Qdrant+默认 MiniLM 手动验收完成
 
 ---
 

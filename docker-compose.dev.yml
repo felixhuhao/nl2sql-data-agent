@@ -1,0 +1,7 @@
+# Local-development override.
+#
+# This file is intentionally empty for now. It keeps the common
+# `docker compose -f docker-compose.yml -f docker-compose.dev.yml ...`
+# command working while the default stack remains fully defined in
+# docker-compose.yml.
+services: {}

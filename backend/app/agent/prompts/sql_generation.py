@@ -1,3 +1,5 @@
+import re
+
 from backend.app.core.llm_provider import SQLGenerationRequest
 
 
@@ -27,7 +29,9 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
     if request.olap_hint:
         user_content = f"{user_content}\n\nOLAP SQL guidance:\n{request.olap_hint}"
     if request.prior_sql:
-        user_content = f"{user_content}\n\n{_conversation_output_contract()}"
+        user_content = f"{user_content}\n\n{_conversation_followup_rules()}"
+    if request.repair is None:
+        user_content = f"{user_content}\n\n{_output_format_contract(request)}"
 
     user_message = {
         "role": "user",
@@ -37,7 +41,11 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
         return [
             {
                 "role": "system",
-                "content": _system_prompt(request.datasource_dialect),
+                "content": _system_prompt(
+                    request.datasource_dialect,
+                    default_ranking_limit=request.default_ranking_limit,
+                    default_browse_limit=request.default_browse_limit,
+                ),
             },
             user_message,
             {
@@ -53,7 +61,11 @@ def build_sql_generation_messages(request: SQLGenerationRequest) -> list[dict[st
     return [
         {
             "role": "system",
-            "content": _system_prompt(request.datasource_dialect),
+            "content": _system_prompt(
+                request.datasource_dialect,
+                default_ranking_limit=request.default_ranking_limit,
+                default_browse_limit=request.default_browse_limit,
+            ),
         },
         user_message,
     ]
@@ -81,8 +93,8 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
         lines.extend(
             [
                 "",
-                "If the error is fanout_guard, do not aggregate fact_orders.payment_amount after joining fact_order_items.",
-                "For product/category sales, use fact_order_items.item_amount.",
+                "If the error is fanout_guard, follow the schema-specific SQL generation guidance and aggregate at the correct grain.",
+                "Do not repair by reusing a measure that the schema context marks as fanout-prone.",
             ]
         )
     if request.repair.error_kind == "missing_carried_filter":
@@ -93,70 +105,224 @@ def _repair_prompt(request: SQLGenerationRequest) -> str:
                 "Add the missing filter from the error reason to the WHERE clause while preserving the user's requested follow-up change.",
             ]
         )
+    scope_context = _scope_repair_context(request)
+    if scope_context:
+        lines.extend(["", *scope_context])
     lines.extend(
         [
             "",
             "Generate SQL valid for the datasource dialect above.",
             "Fix the SQL using only the provided schema context.",
-            "If a column is not allowed or missing, replace it with the semantically closest allowed column from the schema context; keep user-facing dimensions readable and avoid replacing names with *_key columns.",
-            "If the failed SQL used dim_products.product_name, use dim_products.name AS product_name instead.",
+            "Follow any schema-specific SQL generation guidance from the schema context.",
+            "If a column is not allowed or missing, replace it only with an allowed column that has the same business role based on schema labels, descriptions, tags, aliases, Metric Definitions, or SQL Generation Guidance.",
+            "If no safe same-role replacement exists, remove the invalid projection or filter and preserve the rest of the query rather than inventing a column; keep user-facing dimensions readable and avoid replacing names with *_key columns.",
             _repair_return_instruction(request),
         ]
     )
     return "\n".join(lines)
 
 
-def _conversation_output_contract() -> str:
+def _conversation_followup_rules() -> str:
     return "\n".join(
         [
-            "Conversation follow-up output contract:",
+            "Conversation follow-up rules:",
             "First decide whether the new question refines the previous query.",
-            "If it is not a follow-up, ignore the previous query and answer standalone.",
+            "If it is not a follow-up, set is_follow_up=false and change_kind=none.",
+            "For a non-follow-up, answer standalone and do not carry over prior SQL, filters, dimensions, metrics, time windows, or joins.",
             "If it is a follow-up, return a full standalone SQL preserving prior dimensions, filters, metric, and time window unless the user changes them.",
             "For change_kind=dimension, add the requested dimension but keep the previous metric and time window.",
             "For change_kind=filter, add or change only the filter; keep previous dimensions, metric, and time window.",
             "For change_kind=metric, change only the metric; keep previous dimensions, filters, and time window.",
             "For change_kind=time, change only the time window; keep previous dimensions, filters, and metric.",
-            "The output MUST be JSON even if the SQL is simple; never return bare SQL in follow-up mode.",
-            "Return a single JSON object and nothing else:",
-            '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }',
-            "change_kind must be one of: dimension, filter, metric, time, none.",
+        ]
+    )
+
+
+def _output_format_contract(request: SQLGenerationRequest) -> str:
+    if request.prior_sql:
+        return "\n".join(
+            [
+                "Output format:",
+                "OUTPUT_FORMAT=json",
+                "Return one JSON object and nothing else.",
+                '{ "sql": "SELECT ...", "is_follow_up": true, "change_kind": "dimension" }',
+                "sql must be a full standalone SELECT statement.",
+                "is_follow_up must be true only when the new question refines the previous query.",
+                "change_kind must be one of: dimension, filter, metric, time, none.",
+            ]
+        )
+    return "\n".join(
+        [
+            "Output format:",
+            "OUTPUT_FORMAT=sql",
+            "Return one SQL SELECT statement and nothing else.",
+            "Do not return JSON.",
         ]
     )
 
 
 def _repair_return_instruction(request: SQLGenerationRequest) -> str:
     if request.prior_sql:
-        return (
-            "Return a single JSON object and nothing else, preserving the original "
-            "is_follow_up/change_kind semantics when applicable."
-        )
-    return "Return corrected SQL only."
+        return _output_format_contract(request)
+    return "\n".join(
+        [
+            "Output format:",
+            "OUTPUT_FORMAT=sql",
+            "Return corrected SQL only.",
+            "Do not return JSON.",
+        ]
+    )
 
 
-def _system_prompt(dialect: str = "duckdb") -> str:
+def _scope_repair_context(request: SQLGenerationRequest) -> list[str]:
+    if request.repair is None or request.repair.error_kind != "scope_guard":
+        return []
+
+    lines = [
+        "Scope repair context:",
+        "The guard rejected a table or column reference. Repair by using allowed schema context and SQL Generation Guidance, not by applying a hardcoded string substitution.",
+    ]
+    table_name, column_name = _rejected_column_reference(request.repair.error_reason)
+    if table_name and column_name:
+        lines.append(f"Rejected column reference: {table_name}.{column_name}")
+        table_excerpt = _table_schema_excerpt(request.schema_context, table_name)
+        if table_excerpt:
+            lines.extend([f"Allowed columns for {table_name}:", *table_excerpt])
+    return lines
+
+
+def _rejected_column_reference(error_reason: str) -> tuple[str | None, str | None]:
+    match = re.search(
+        r"\bColumn\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s+is\s+not\s+allowed\b",
+        error_reason,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def _table_schema_excerpt(schema_context: str, table_name: str, *, max_lines: int = 12) -> list[str]:
+    table_pattern = re.compile(rf"^-\s+{re.escape(table_name)}\b")
+    lines = schema_context.splitlines()
+    for index, line in enumerate(lines):
+        if table_pattern.match(line):
+            excerpt = [line]
+            for next_line in lines[index + 1 :]:
+                if next_line.startswith("## ") or (next_line.startswith("- ") and not next_line.startswith("  - ")):
+                    break
+                if next_line.startswith("  - "):
+                    excerpt.append(next_line)
+                if len(excerpt) >= max_lines:
+                    break
+            return excerpt
+    return []
+
+
+def _schema_context_guide() -> list[str]:
+    return [
+        "- The Analysis Space section lists the only allowed datasource, operations, tables, and metrics.",
+        "- In the Tables section, lines like '- table_name: ...' define available tables; indented lines like '- column_name (TYPE) [tags] - ...' define columns for the most recent table.",
+        "- Join Relationships use 'source_table.source_column -> target_table.target_column' to describe allowed join paths and cardinality.",
+        "- Metric Definitions use 'label (metric_name) = expression'; use the expression for the calculation and metric_name as the SELECT alias.",
+        "- English role words in these instructions, such as metric, dimension, product name, user name, and date/time, describe business roles; resolve them through schema labels, descriptions, tags, aliases, Metric Definitions, and SQL Generation Guidance, including Chinese text.",
+        "- SQL Generation Guidance contains schema-specific rules that override generic examples when both apply.",
+        "- Verified Queries are vetted examples; reuse their SQL only when the user's request clearly asks for the same metric, dimensions, filters, and time range.",
+        "- If a Verified Query does not clearly match, generate fresh SQL from the schema context and do not carry over filters or time ranges from the example.",
+    ]
+
+
+def _few_shot_examples(default_ranking_limit: int, default_browse_limit: int) -> list[str]:
+    return [
+        "These examples are illustrative only; do not copy example table, column, or metric names unless they appear in the current schema context.",
+        "",
+        "Example 1 - OUTPUT_FORMAT=sql with a metric alias:",
+        'Question: "Show total value by category"',
+        "Schema excerpt: example_events(category, event_value); metric total_value = SUM(example_events.event_value)",
+        "Output:",
+        "SELECT e.category AS category, SUM(e.event_value) AS total_value",
+        "FROM example_events AS e",
+        "GROUP BY e.category",
+        "ORDER BY total_value DESC",
+        f"LIMIT {default_ranking_limit}",
+        "",
+        "Example 2 - OUTPUT_FORMAT=json for a conversation follow-up:",
+        (
+            "Previous SQL: SELECT e.category AS category, SUM(e.event_value) AS total_value "
+            "FROM example_events AS e GROUP BY e.category"
+        ),
+        'New question: "Only completed records"',
+        "Output:",
+        (
+            '{"sql": "SELECT e.category AS category, SUM(e.event_value) AS total_value '
+            "FROM example_events AS e WHERE e.status = 'completed' GROUP BY e.category "
+            f'ORDER BY total_value DESC LIMIT {default_ranking_limit}", '
+            '"is_follow_up": true, "change_kind": "filter"}'
+        ),
+        "",
+        "Example 3 - repair when OUTPUT_FORMAT=sql:",
+        "Failed SQL: SELECT e.category_name FROM example_events AS e",
+        "Error: column example_events.category_name is not allowed; column example_events.category is allowed.",
+        "Output:",
+        "SELECT e.category AS category",
+        "FROM example_events AS e",
+        "ORDER BY e.category",
+        f"LIMIT {default_browse_limit}",
+        "If a repair prompt uses OUTPUT_FORMAT=json, return the corrected standalone SQL in the JSON sql field.",
+        "",
+        "Counterexamples - avoid these:",
+        "- Do not use SELECT *; choose allowed columns that answer the question.",
+        "- Do not translate SQL identifiers; use exact table, column, and metric names from the schema context.",
+        "- Do not add date filters unless the user asks for a time range or the schema context provides a matching relative-date rule.",
+    ]
+
+
+def _system_prompt(
+    dialect: str = "duckdb",
+    *,
+    default_ranking_limit: int,
+    default_browse_limit: int,
+) -> str:
     dialect_lines = DIALECT_INSTRUCTIONS.get(dialect, DIALECT_INSTRUCTIONS["duckdb"])
     return "\n".join(
         [
+            "## Role",
             "You generate SQL for a governed NL2SQL data agent.",
-            "Return SQL only unless the user prompt explicitly asks for the conversation follow-up JSON object. Do not include markdown, comments, prose, or explanation.",
+            "",
+            "## Output Contract",
+            "Follow the Output format section in the user or repair message exactly.",
+            "For OUTPUT_FORMAT=sql return only SQL.",
+            "For OUTPUT_FORMAT=json return only the requested JSON object.",
+            "Do not include markdown, comments, prose, or explanation.",
+            "",
+            "## Dialect Rules",
             *dialect_lines,
+            "",
+            "## Core SQL Rules",
             "Only generate a single SELECT statement.",
             "Use only tables and columns present in the provided schema context.",
             "Use only assets inside the Analysis Space.",
             "Qualify every physical column with its table name or table alias.",
             "Alias every computed projection with a stable snake_case name.",
-            "When using a Metric Layer expression, use the metric name as the SELECT alias, such as sales_amount, order_count, or aov.",
+            "When using a Metric Layer expression, use the metric name from the schema context as the SELECT alias.",
             "For human-readable dimensions, prefer descriptive name/label columns from the schema and do not substitute surrogate *_key columns unless the user asks for IDs or keys.",
-            "For product names, use dim_products.name AS product_name when dim_products is available; do not invent dim_products.product_name and do not use product_key as the product display label.",
-            "For ranking questions without an explicit count, return the top 10 rows with ORDER BY and LIMIT 10.",
-            "For plain list, sample, or browse-data questions without an explicit count, return representative business columns and LIMIT 20.",
-            "For open-ended browse-data questions, prefer order_id and a primary business measure; avoid date/time columns unless the user asks for time.",
+            "Treat Chinese labels, descriptions, aliases, and sample values as business meaning; generated SQL must still use exact table, column, and metric identifiers from the schema context.",
             "For dimension value lists, ORDER BY the displayed name/label column for deterministic results.",
-            "For user rankings, include dim_users.user_id and dim_users.name AS user_name when dim_users is available.",
+            "Follow schema-specific SQL generation guidance in the schema context when present.",
+            "",
+            "## Default Limits",
+            f"- Ranking, top, bottom, highest, or lowest questions without an explicit count: use ORDER BY and LIMIT {default_ranking_limit}.",
+            f"- Plain list, sample, or browse-data questions without an explicit count: LIMIT {default_browse_limit}.",
+            "- For open-ended browse-data questions, prefer identifiers and primary business measures from the schema context; avoid date/time columns unless the user asks for time.",
+            "- Treat these as configurable SQL generation defaults, not schema facts.",
+            "",
+            "## Safety Rules",
             "Do not generate INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, COPY, INSTALL, or LOAD.",
-            "For product or category sales amount, use SUM(fact_order_items.item_amount), not SUM(fact_orders.payment_amount).",
-            "Do not aggregate fact_orders.payment_amount after joining fact_order_items; it duplicates order-level amounts.",
-            "Prefer verified queries when the user question matches one.",
+            "",
+            "## Schema Context Reading Guide",
+            *_schema_context_guide(),
+            "",
+            "## Few-Shot Examples",
+            *_few_shot_examples(default_ranking_limit, default_browse_limit),
         ]
     )

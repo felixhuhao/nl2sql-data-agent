@@ -1,4 +1,6 @@
 import re
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
@@ -63,6 +65,23 @@ DETAIL_ROW_COLUMN_THRESHOLD = 5
 METRIC_SCALE_GAP_RATIO = 20.0
 MAX_BAR_CATEGORIES = 30
 MAX_PIE_CATEGORIES = 8
+PROFILE_SIGNAL_THRESHOLD = 0.8
+
+
+@dataclass(frozen=True)
+class ColumnProfile:
+    column: str
+    non_null_count: int
+    numeric_count: int
+    temporal_count: int
+
+    @property
+    def numeric_ratio(self) -> float:
+        return self.numeric_count / self.non_null_count if self.non_null_count else 0.0
+
+    @property
+    def temporal_ratio(self) -> float:
+        return self.temporal_count / self.non_null_count if self.non_null_count else 0.0
 
 
 class ChartRecommendation(BaseModel):
@@ -82,8 +101,9 @@ def recommend_chart(
         return _table("Result looks like record-level detail rows.")
 
     primary_intent = olap_intents[0] if olap_intents else None
-    x_column = _find_time_column(result.columns)
-    y_columns = _find_metric_columns(result.columns, exclude=x_column)
+    profiles = _column_profiles(result)
+    x_column = _find_time_column(profiles)
+    y_columns = _find_metric_columns(profiles, exclude=x_column)
     if primary_intent == "yoy_mom" and x_column is not None and len(y_columns) >= 2:
         dual_axis_columns = _select_dual_axis_columns(result, y_columns)
         if len(dual_axis_columns) >= 2:
@@ -111,7 +131,7 @@ def recommend_chart(
             reason="Detected a time column and numeric metric columns.",
         )
 
-    category_column = _find_category_column(result, exclude=y_columns)
+    category_column = _find_category_column(profiles, exclude=y_columns)
     if category_column is not None and y_columns and 0 < result.row_count <= MAX_BAR_CATEGORIES:
         if result.row_count == 1:
             return _table("Single category row is clearer as a table.")
@@ -152,23 +172,40 @@ def _looks_like_detail_rows(result: QueryResult) -> bool:
     )
 
 
-def _find_time_column(columns: list[str]) -> str | None:
-    for column in columns:
-        lower_column = column.lower()
-        if lower_column.endswith("_key"):
-            continue
-        if _is_comparison_column(column):
+def _column_profiles(result: QueryResult) -> list[ColumnProfile]:
+    profiles = []
+    for index, column in enumerate(result.columns):
+        values = tuple(row[index] for row in result.rows if len(row) > index)
+        non_null_values = tuple(value for value in values if value is not None)
+        profiles.append(
+            ColumnProfile(
+                column=column,
+                non_null_count=len(non_null_values),
+                numeric_count=sum(1 for value in non_null_values if _is_number(value)),
+                temporal_count=sum(1 for value in non_null_values if _is_temporal_value(value)),
+            )
+        )
+    return profiles
+
+
+def _find_time_column(profiles: list[ColumnProfile]) -> str | None:
+    for profile in profiles:
+        if _is_time_profile(profile):
+            return profile.column
+    for profile in profiles:
+        column = profile.column
+        if _is_key_or_id_column(column):
             continue
         if _has_any_token(column, DATE_COLUMN_HINTS):
             return column
     return None
 
 
-def _find_metric_columns(columns: list[str], exclude: str | None) -> list[str]:
+def _find_metric_columns(profiles: list[ColumnProfile], exclude: str | None) -> list[str]:
     return [
-        column
-        for column in columns
-        if column != exclude and _has_any_token(column, METRIC_COLUMN_HINTS)
+        profile.column
+        for profile in profiles
+        if profile.column != exclude and _is_metric_profile(profile)
     ]
 
 
@@ -217,29 +254,64 @@ def _find_distribution_metric_column(y_columns: list[str]) -> str | None:
     return None
 
 
-def _find_category_column(result: QueryResult, exclude: list[str]) -> str | None:
+def _find_category_column(profiles: list[ColumnProfile], exclude: list[str]) -> str | None:
     excluded_columns = set(exclude)
-    for column in result.columns:
-        lower_column = column.lower()
+    for profile in profiles:
+        column = profile.column
         if column in excluded_columns:
             continue
-        if lower_column.endswith("_key") or lower_column in DETAIL_ROW_ID_COLUMNS:
+        if _is_key_or_id_column(column):
             continue
-        if _find_time_column([column]) is not None:
+        if _is_time_profile(profile):
             continue
-        column_index = result.columns.index(column)
-        values = [row[column_index] for row in result.rows if len(row) > column_index]
-        if values and not all(_is_number(value) for value in values):
+        if profile.non_null_count and profile.numeric_ratio < PROFILE_SIGNAL_THRESHOLD:
             return column
     return None
 
 
 def _is_number(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
     try:
         float(cast(Any, value))
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _is_temporal_value(value: object) -> bool:
+    if isinstance(value, (datetime, date)):
+        return True
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    return bool(
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?", value)
+        or re.fullmatch(r"\d{4}-\d{2}", value)
+    )
+
+
+def _is_time_profile(profile: ColumnProfile) -> bool:
+    column = profile.column
+    if _is_key_or_id_column(column) or _is_comparison_column(column):
+        return False
+    if profile.temporal_ratio >= PROFILE_SIGNAL_THRESHOLD:
+        return True
+    return profile.non_null_count == 0 and _has_any_token(column, DATE_COLUMN_HINTS)
+
+
+def _is_metric_profile(profile: ColumnProfile) -> bool:
+    column = profile.column
+    if _is_key_or_id_column(column) or _is_time_profile(profile):
+        return False
+    if profile.numeric_ratio >= PROFILE_SIGNAL_THRESHOLD:
+        return True
+    return _has_any_token(column, METRIC_COLUMN_HINTS)
+
+
+def _is_key_or_id_column(column: str) -> bool:
+    lower_column = column.lower()
+    return lower_column.endswith("_key") or lower_column in DETAIL_ROW_ID_COLUMNS
 
 
 def _avoid_mixed_scale_metrics(result: QueryResult, y_columns: list[str]) -> list[str]:
