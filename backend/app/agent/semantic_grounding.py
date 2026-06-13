@@ -12,6 +12,7 @@ from sqlglot.errors import SqlglotError
 
 from backend.app.agent.state import AgentState, GroundingWarningPayload
 from backend.app.agent.schema_evidence import SchemaEvidence, build_schema_evidence, normalize_evidence_text
+from backend.app.agent.promoted_patterns import is_pattern_promoted
 from backend.app.config import get_settings, semantic_guard_mode
 from backend.app.core.llm_provider import strip_code_fence
 from backend.app.metadata.models import DEFAULT_DATASOURCE
@@ -92,6 +93,7 @@ class GroundingCheckResult:
 class RefutationAuditResult:
     confirmed: bool
     reason: str
+    pattern: str = ""
 
     def model_dump(self) -> dict:
         return asdict(self)
@@ -196,6 +198,7 @@ class SemanticRefutationAuditor:
         return RefutationAuditResult(
             confirmed=True,
             reason=f"Full datasource metadata contains no evidence for {requested_concept!r} across any channel.",
+            pattern="concept_absent_full_metadata",
         )
 
     def _audit_value(
@@ -235,6 +238,7 @@ class SemanticRefutationAuditor:
         return RefutationAuditResult(
             confirmed=True,
             reason=f"{value!r} is absent from {table!r}.{column!r} (DISTINCT probe).",
+            pattern="value_absent_distinct_probe",
         )
 
 
@@ -316,9 +320,14 @@ def semantic_guard_node(
         )
         state.grounding_warnings.append(_warning_from_issue(issue, refutation))
 
-    if mode == "enforce" and any(warning.get("refutation_confirmed") for warning in state.grounding_warnings):
+    blocking_warnings = [
+        warning
+        for warning in state.grounding_warnings
+        if warning.get("refutation_confirmed") and is_pattern_promoted(warning.get("refutation_pattern"))
+    ]
+    if mode == "enforce" and blocking_warnings:
         state.stopped_at = "semantic_guard"
-        state.error = _semantic_block_message(state.grounding_warnings)
+        state.error = _semantic_block_message(blocking_warnings)
     return state
 
 
@@ -440,6 +449,7 @@ def _warning_from_issue(issue: SemanticGroundingIssue, refutation: RefutationAud
         "explanation": issue.explanation,
         "refutation_confirmed": refutation.confirmed,
         "refutation_reason": refutation.reason,
+        "refutation_pattern": refutation.pattern,
         "message": f"The question asked for {issue.concept!r}, but the SQL {action}.{detail} {issue.explanation}".strip(),
     }
 

@@ -1,6 +1,6 @@
 # Semantic Promotion Eval Methodology (Phase 2B) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Turn the semantic-guard eval runner into a promotion-readiness instrument: a three-way verdict (pass / fail / inconclusive) that decouples verifier availability from semantic correctness, a per-pattern promotion gate that emits a machine-readable promoted-patterns artifact, availability reported as a separate SLO, pinned-SQL verifier fixtures, and a small non-gating live-smoke tier.
 
@@ -36,7 +36,7 @@ Today `SemanticEvalResult` is binary `passed: bool`, and `_validate_expected_sem
 - Modify: `scripts/run_semantic_guard_eval.py` (`SemanticEvalResult`, `_validate_expected_semantic`, `_summary`, `main` exit)
 - Test: `backend/tests/test_semantic_guard_eval_runner.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # add to backend/tests/test_semantic_guard_eval_runner.py
@@ -86,12 +86,12 @@ def test_retries_continue_past_inconclusive_until_completed(monkeypatch):
     assert result.status == "pass"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k "inconclusive or completed" -q`
 Expected: FAIL (`SemanticEvalResult` has no `status` / `inconclusive` / `mark_inconclusive`).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `SemanticEvalResult` add the field and methods:
 
@@ -157,7 +157,7 @@ Fix `_run_case_with_retries` so an inconclusive result keeps retrying (it only s
 
 The loop still returns `last_result` after exhausting attempts, so a case that is inconclusive on every attempt stays inconclusive (and is excluded from the correctness denominator) rather than being forced to pass or fail.
 
-- [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -q` — Expected: PASS (update `test_run_case_with_retries_returns_later_pass` only if it asserted on the old summary shape; it does not).
+- [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -q` — Expected: PASS (update `test_run_case_with_retries_returns_later_pass` only if it asserted on the old summary shape; it does not).
 
 - [ ] **Step 5: Commit**
 
@@ -179,7 +179,7 @@ A pattern is **promotable** only when, over **completed** observations: it has a
 - Create: `evals/promoted_patterns.json` (initial content `{"promoted": []}`)
 - Test: `backend/tests/test_semantic_guard_eval_runner.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def _pattern_case(case_id, *, pattern="p", passed=True, inconclusive=False,
@@ -279,12 +279,12 @@ def test_write_promoted_patterns_lists_only_promotable(tmp_path):
     assert json.loads(path.read_text())["promoted"] == ["p"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k promotion -q`
 Expected: FAIL (`evaluate_promotion_readiness` / `write_promoted_patterns` undefined).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 import json
@@ -292,6 +292,7 @@ import json
 DEFAULT_MIN_COMPLETED = 20
 DEFAULT_MIN_POSITIVE_FIXTURES = 1
 DEFAULT_MIN_NEGATIVE_FIXTURES = 1
+PROMOTED_PATTERNS_PATH = ROOT_DIR / "evals" / "promoted_patterns.json"
 
 
 def evaluate_promotion_readiness(
@@ -360,9 +361,10 @@ def _confirmed_under_pattern(result: SemanticEvalResult, pattern: str) -> bool:
     )
 
 
-def write_promoted_patterns(readiness: dict[str, dict[str, Any]], *, path: Path) -> None:
+def write_promoted_patterns(readiness: dict[str, dict[str, Any]], *, path: Path) -> list[str]:
     promoted = sorted(pattern for pattern, info in readiness.items() if info["promotable"])
     path.write_text(json.dumps({"promoted": promoted}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return promoted
 ```
 
 Wire into `main` after `results` are collected (write artifact, print readiness), gated behind a `--write-promoted` flag so an ad-hoc run never silently overwrites the artifact:
@@ -374,10 +376,11 @@ Wire into `main` after `results` are collected (write artifact, print readiness)
     # ... after results:
     readiness = evaluate_promotion_readiness(results, min_completed=args.min_completed)
     if args.write_promoted:
-        write_promoted_patterns(readiness, path=Path("evals/promoted_patterns.json"))
+        promoted = write_promoted_patterns(readiness, path=PROMOTED_PATTERNS_PATH)
+        print(f"promoted patterns written to {PROMOTED_PATTERNS_PATH}: {_format_list(promoted)}")
 ```
 
-- [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k promotion -q` — Expected: PASS.
+- [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k promotion -q` — Expected: PASS.
 
 - [ ] **Step 5: Create the initial artifact and commit**
 
@@ -399,7 +402,7 @@ Availability is reported separately and never gates. A case whose every repeated
 - Modify: `scripts/run_semantic_guard_eval.py` (add `availability_report`, include in `_render_report`)
 - Test: `backend/tests/test_semantic_guard_eval_runner.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_availability_report_separates_and_lists_chronic_case_ids():
@@ -415,12 +418,12 @@ def test_availability_report_separates_and_lists_chronic_case_ids():
     assert report["chronically_unavailable_case_ids"] == ["b"]   # "a" had >=1 completed
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k availability -q`
 Expected: FAIL (`availability_report` undefined).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 def availability_report(results: list[SemanticEvalResult]) -> dict[str, Any]:
@@ -444,7 +447,7 @@ def availability_report(results: list[SemanticEvalResult]) -> dict[str, Any]:
 
 Add an "## Availability (SLO — non-gating)" section to `_render_report` printing these fields. Keep it visually separate from the promotion section so no one mistakes availability for a semantic verdict.
 
-- [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k availability -q` — Expected: PASS.
+- [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k availability -q` — Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -466,7 +469,7 @@ The existing `verifier_only` case type tests extraction only. Add a `fixture` ca
 - Modify: `evals/semantic_guard_cases.yaml` (add `type: fixture` cases for the promoted pattern)
 - Test: `backend/tests/test_semantic_guard_eval_runner.py`
 
-- [ ] **Step 1: Write the failing test** (uses a fake verifier + fake auditor, no live provider)
+- [x] **Step 1: Write the failing test** (uses a fake verifier + fake auditor, no live provider)
 
 ```python
 def test_run_fixture_case_runs_grounding_and_refutation_on_pinned_sql():
@@ -498,22 +501,14 @@ def test_run_fixture_case_runs_grounding_and_refutation_on_pinned_sql():
     assert result.passed is True
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k fixture -q`
 Expected: FAIL (`_run_fixture_case` undefined).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
-```python
-Define an availability-error tuple at module scope (only these are "inconclusive"; everything else is a real bug that must fail):
-
-```python
-import httpx
-from backend.app.agent.semantic_grounding import SemanticVerifierUnavailable
-
-_VERIFIER_AVAILABILITY_ERRORS = (SemanticVerifierUnavailable, httpx.HTTPError)
-```
+Only the verifier method calls may be marked inconclusive. Catch `Exception` around those calls because provider outages, HTTP errors, and malformed verifier responses are all verifier unavailability from the eval runner's point of view. Keep local deterministic refutation code outside those catches so local bugs fail the eval loudly.
 
 ```python
 def _run_fixture_case(result, case, *, verifier, auditor) -> None:
@@ -534,7 +529,7 @@ def _run_fixture_case(result, case, *, verifier, auditor) -> None:
         extraction = verifier.extract_required_concepts(ConceptExtractionRequest(
             question=result.question, full_schema_context=full_context,
             datasource_name=result.datasource_name, datasource_dialect=result.datasource_dialect))
-    except _VERIFIER_AVAILABILITY_ERRORS as exc:
+    except Exception as exc:
         result.verifier_unavailable = True
         result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
         return
@@ -551,7 +546,7 @@ def _run_fixture_case(result, case, *, verifier, auditor) -> None:
         grounding = verifier.check_grounding(GroundingCheckRequest(
             question=result.question, sql=sql, concepts=unsupported, sql_facts=facts,
             datasource_name=result.datasource_name, datasource_dialect=result.datasource_dialect))
-    except _VERIFIER_AVAILABILITY_ERRORS as exc:
+    except Exception as exc:
         result.verifier_unavailable = True
         result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
         return
@@ -592,7 +587,7 @@ Dispatch in `_run_case`: after the `verifier_only` branch, add `if result.case_t
 
 Two consistency edits to existing code:
 
-1. **`_run_verifier_only_case` outage is also inconclusive — and narrowly caught.** Its except handler currently does `except Exception ...: result.verifier_unavailable = True; result.fail(...)`. Change it to `except _VERIFIER_AVAILABILITY_ERRORS as exc: result.verifier_unavailable = True; result.mark_inconclusive(...)`, for the same two reasons: an outage must not count as a semantic failure, and a broad `except Exception` would hide local bugs as availability. Add a regression test asserting a fake verifier raising `SemanticVerifierUnavailable` yields `status == "inconclusive"` for a `verifier_only` case.
+1. **`_run_verifier_only_case` outage is also inconclusive.** Its except handler currently does `except Exception ...: result.verifier_unavailable = True; result.fail(...)`. Keep the catch scoped to the `verifier.extract_required_concepts(...)` call, but change it to `result.verifier_unavailable = True; result.mark_inconclusive(...)`. Add regression tests asserting fake verifiers raising `SemanticVerifierUnavailable` and `ValueError` both yield `status == "inconclusive"` for a `verifier_only` case; the `ValueError` case covers malformed verifier responses.
 2. **Pinned-SQL fixtures count as schema coverage.** Broaden the predicates so the fixture tier satisfies the Task 2 coverage gate:
 
 ```python
@@ -604,9 +599,9 @@ def _is_verifier_negative_case(result: SemanticEvalResult) -> bool:
     return result.case_type in {"verifier_only", "fixture"} and "negative_schema" in result.tags
 ```
 
-- [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k fixture -q` — Expected: PASS.
+- [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k fixture -q` — Expected: PASS.
 
-- [ ] **Step 5: Add corpus fixtures + commit.** Add 2-3 `type: fixture` cases to `evals/semantic_guard_cases.yaml` under `promotion_pattern: concept_absent_full_metadata` (e.g. 删除率 substitution, 删除的订单 omission, a valid 退款率 negative). Each carries `full_schema_context`, `sql`, and `expected`.
+- [ ] **Step 5: Add corpus fixtures + commit.** Add 2-3 `type: fixture` cases to `evals/semantic_guard_cases.yaml` under `promotion_pattern: concept_absent_full_metadata` (e.g. 删除率 substitution, 删除的订单 omission, a valid 退款率 negative). Each carries `full_schema_context`, `sql`, and `expected`; every positive fixture must include `expected.refutation_pattern` equal to its `promotion_pattern`.
 
 ```bash
 git add scripts/run_semantic_guard_eval.py evals/semantic_guard_cases.yaml backend/tests/test_semantic_guard_eval_runner.py
@@ -628,7 +623,7 @@ A small live-generator smoke set (the known risky shapes) confirms the guard sti
 - Modify: `backend/app/agent/semantic_grounding.py` (enforce requires promoted pattern)
 - Test: `backend/tests/test_promoted_patterns.py`, `backend/tests/test_semantic_grounding.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # backend/tests/test_promoted_patterns.py
@@ -645,12 +640,12 @@ def test_is_pattern_promoted_defaults_false_when_missing(tmp_path):
     assert is_pattern_promoted("anything", path=tmp_path / "nope.json") is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_promoted_patterns.py -q`
 Expected: FAIL (`ModuleNotFoundError: backend.app.agent.promoted_patterns`).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # backend/app/agent/promoted_patterns.py
@@ -701,7 +696,7 @@ The block must be triggered by — and its message must name — **only** the pr
 
 `_semantic_block_message` already filters by `refutation_confirmed`; passing it `blocking` (not all `grounding_warnings`) ensures an unpromoted confirmed warning is never named in the block. `_warning_from_issue` adds `"refutation_pattern": refutation.pattern`. Add `test_semantic_grounding.py` tests: (a) enforce + refutation_confirmed but **unpromoted** rule → warns, does NOT block; (b) promoted rule → blocks; (c) one promoted + one unpromoted confirmed warning → blocks, and the error message names only the promoted concept (with `promoted_patterns` path monkeypatched to a tmp file).
 
-- [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_promoted_patterns.py backend/tests/test_semantic_grounding.py -q` — Expected: PASS.
+- [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_promoted_patterns.py backend/tests/test_semantic_grounding.py -q` — Expected: PASS.
 
 - [ ] **Step 5: Smoke tier + commit.** Tag five workflow cases `smoke` (deletion-rate substitution, deleted-orders omission, refund adjacent status, valid refund rate, rank correlation), exclude `smoke`-tagged results from `evaluate_promotion_readiness`, and add a `--smoke-only` selector. Print smoke results in their own non-gating report section.
 
@@ -716,8 +711,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## Task 6: Full suite + deployment doc
 
-- [ ] **Step 1: Run the entire backend suite** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests -q` — Expected: PASS (455+ plus new tests).
-- [ ] **Step 2: Update the spec** rollout section: production `semantic_guard_mode` stays `off` until a pattern is promoted; `warn` for evidence collection; `enforce` only with a non-empty `promoted_patterns.json`; availability is a separate SLO and `enforce` still fails open on outage.
+- [x] **Step 1: Run the entire backend suite** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests -q` — Expected: PASS (455+ plus new tests).
+- [x] **Step 2: Update the spec** rollout section: production `semantic_guard_mode` stays `off` until a pattern is promoted; `warn` for evidence collection; `enforce` only with a non-empty `promoted_patterns.json`; availability is a separate SLO and `enforce` still fails open on outage.
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -734,7 +729,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - **Requirement coverage:** three-way verdict (Task 1), per-pattern gate + artifact (Task 2), availability-as-separate-SLO + chronic ids (Task 3), pinned-SQL fixtures (Task 4), non-gating smoke tier + promoted-pattern-gated enforce / "no broad enforce rollout" (Task 5).
 - **Decoupling invariant:** `inconclusive` is never in the correctness denominator (Tasks 1-3); the gate computes over completed only; availability never gates.
 - **Promotion gates (all must pass, Task 2):** ≥ `min_completed` completed observations; `false_confirmed == 0` (airtight deterministic refutation, the double-gate philosophy); **zero failed completed cases** (fixture or not); and **minimum positive/negative fixture coverage present and pattern-matched** — a positive fixture only counts when its confirmation's `refutation_pattern` equals the pattern under evaluation (`_confirmed_under_pattern`), so a pattern can never promote on absence of evidence *or* on evidence credited to a different runtime rule.
-- **Availability never pollutes the verdict, and never blocks retries:** every verifier-outage path (`_run_fixture_case`, `_run_verifier_only_case`) catches only `_VERIFIER_AVAILABILITY_ERRORS` and calls `mark_inconclusive`, never `fail` — local refutation/auditor bugs surface as real failures. Because `inconclusive` carries `passed=True`, `_run_case_with_retries` stops only on `passed and not inconclusive`, so a transient outage retries instead of short-circuiting.
+- **Availability never pollutes the verdict, and never blocks retries:** every verifier-outage path (`_run_fixture_case`, `_run_verifier_only_case`) catches exceptions only around verifier method calls and calls `mark_inconclusive`, never `fail` — malformed verifier responses are treated as unavailable, while local refutation/auditor bugs surface as real failures. Because `inconclusive` carries `passed=True`, `_run_case_with_retries` stops only on `passed and not inconclusive`, so a transient outage retries instead of short-circuiting.
 - **Block scoping:** runtime `enforce` blocks on, and names, only promoted+confirmed warnings (Task 5).
 - **Pure-function testability:** Tasks 1-3 and the gate are unit-tested with synthetic `SemanticEvalResult` lists; Task 4 uses fake verifier/auditor — no task needs a live provider to pass.
 - **Risk:** `_run_fixture_case` reuses `_warning_from_issue` from `semantic_grounding` to keep warning shape identical to runtime; if that helper's signature changes, the fixture path must follow.

@@ -542,6 +542,110 @@ def test_semantic_guard_warn_mode_records_visible_warning():
     assert state.completed_steps == ["semantic_guard"]
 
 
+def test_semantic_guard_enforce_does_not_block_unpromoted_confirmed_warning(monkeypatch):
+    monkeypatch.setattr("backend.app.agent.semantic_grounding.is_pattern_promoted", lambda pattern: False)
+    state = AgentState(
+        question="查看删除率趋势",
+        sql="SELECT countIf(order_status = 'refunded') AS deletion_rate FROM fact_orders",
+    )
+    verifier = _FakeSemanticVerifier(
+        concepts=[RequiredConcept(concept="删除率", concept_type="metric", supported=False)],
+        checks=[
+            GroundingCheckResult(
+                ok=False,
+                issues=(SemanticGroundingIssue(concept="删除率", failure_kind="substituted"),),
+            )
+        ],
+    )
+    auditor = _FakeAuditor(
+        RefutationAuditResult(
+            confirmed=True,
+            reason="No evidence.",
+            pattern="concept_absent_full_metadata",
+        )
+    )
+
+    semantic_guard_node(state, verifier=verifier, auditor=auditor, mode="enforce")
+
+    assert state.stopped_at is None
+    assert state.grounding_warnings[0]["refutation_confirmed"] is True
+    assert state.grounding_warnings[0]["refutation_pattern"] == "concept_absent_full_metadata"
+
+
+def test_semantic_guard_enforce_blocks_promoted_confirmed_warning(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.agent.semantic_grounding.is_pattern_promoted",
+        lambda pattern: pattern == "concept_absent_full_metadata",
+    )
+    state = AgentState(question="查看删除率趋势", sql="SELECT 1")
+    verifier = _FakeSemanticVerifier(
+        concepts=[RequiredConcept(concept="删除率", concept_type="metric", supported=False)],
+        checks=[
+            GroundingCheckResult(
+                ok=False,
+                issues=(SemanticGroundingIssue(concept="删除率", failure_kind="omitted"),),
+            )
+        ],
+    )
+    auditor = _FakeAuditor(
+        RefutationAuditResult(
+            confirmed=True,
+            reason="No evidence.",
+            pattern="concept_absent_full_metadata",
+        )
+    )
+
+    semantic_guard_node(state, verifier=verifier, auditor=auditor, mode="enforce")
+
+    assert state.stopped_at == "semantic_guard"
+    assert state.error is not None
+    assert "删除率" in state.error
+
+
+def test_semantic_guard_enforce_message_names_only_promoted_warning(monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.agent.semantic_grounding.is_pattern_promoted",
+        lambda pattern: pattern == "concept_absent_full_metadata",
+    )
+    state = AgentState(question="查看删除率和取消率", sql="SELECT 1")
+    verifier = _FakeSemanticVerifier(
+        concepts=[
+            RequiredConcept(concept="删除率", concept_id="c1", concept_type="metric", supported=False),
+            RequiredConcept(concept="取消率", concept_id="c2", concept_type="metric", supported=False),
+        ],
+        checks=[
+            GroundingCheckResult(
+                ok=False,
+                issues=(
+                    SemanticGroundingIssue(concept="删除率", concept_id="c1", failure_kind="omitted"),
+                    SemanticGroundingIssue(concept="取消率", concept_id="c2", failure_kind="omitted"),
+                ),
+            )
+        ],
+    )
+
+    class _PatternAuditor(_FakeAuditor):
+        def __init__(self) -> None:
+            super().__init__(RefutationAuditResult(confirmed=False, reason="unused"))
+
+        def audit(
+            self,
+            issue: SemanticGroundingIssue,
+            *,
+            evidence: SchemaEvidence,
+            concept: RequiredConcept | None = None,
+        ) -> RefutationAuditResult:
+            pattern = "concept_absent_full_metadata" if issue.concept == "删除率" else "value_absent_distinct_probe"
+            return RefutationAuditResult(confirmed=True, reason="No evidence.", pattern=pattern)
+
+    semantic_guard_node(state, verifier=verifier, auditor=_PatternAuditor(), mode="enforce")
+
+    assert state.stopped_at == "semantic_guard"
+    assert state.error is not None
+    assert "删除率" in state.error
+    assert "取消率" not in state.error
+
+
 def test_semantic_guard_normalizes_issue_from_concept_id():
     state = AgentState(question="查看删除率趋势", sql="SELECT 1")
     verifier = _FakeSemanticVerifier(

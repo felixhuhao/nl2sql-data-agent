@@ -27,13 +27,13 @@ cases:
 
   - id: supported_refund_rate
     question: 查看退款率趋势
-    tags: [supported, status_value, derived_metric]
+    tags: [supported, status_value, derived_metric, smoke]
     expected:
       warning: false
 
   - id: supported_refunded_orders
     question: 已退款订单
-    tags: [supported, status_value, filter]
+    tags: [supported, status_value, filter, smoke]
     expected:
       warning: false
 
@@ -63,7 +63,7 @@ cases:
 
   - id: supported_rank_correlation
     question: price 和 quantity 的 rank correlation 是多少
-    tags: [supported, analytics, rank_correlation]
+    tags: [supported, analytics, rank_correlation, smoke]
     expected:
       warning: false
 
@@ -75,7 +75,7 @@ cases:
 
   - id: unsupported_deletion_rate
     question: 查看删除率趋势
-    tags: [unsupported, substituted, deletion]
+    tags: [unsupported, substituted, deletion, smoke]
     promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
@@ -85,13 +85,69 @@ cases:
 
   - id: unsupported_deleted_orders
     question: 删除的订单
-    tags: [unsupported, omitted, deletion]
+    tags: [unsupported, omitted, deletion, smoke]
     promotion_pattern: concept_absent_full_metadata
     expected:
       warning: true
       concepts: [删除的订单]
       failure_kinds: [omitted]
       refutation_confirmed: true
+
+  - id: fixture_deletion_rate_substitution
+    type: fixture
+    question: 查看删除率趋势
+    tags: [fixture, positive_schema, deletion]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    sql: SELECT countIf(order_status = 'refunded') / count(*) AS deletion_rate FROM fact_orders
+    expected:
+      warning: true
+      refutation_confirmed: true
+      refutation_pattern: concept_absent_full_metadata
+
+  - id: fixture_deleted_orders_omission
+    type: fixture
+    question: 删除的订单
+    tags: [fixture, positive_schema, deletion]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+    sql: SELECT order_id FROM fact_orders LIMIT 20
+    expected:
+      warning: true
+      refutation_confirmed: true
+      refutation_pattern: concept_absent_full_metadata
+
+  - id: fixture_refund_rate_supported_negative
+    type: fixture
+    question: 查看退款率趋势
+    tags: [fixture, negative_schema, refund]
+    promotion_pattern: concept_absent_full_metadata
+    full_schema_context: |-
+      # Schema Context
+      ## Tables
+      - fact_orders: 订单事实表
+        - order_id (VARCHAR) [dimension] - 订单 ID
+        - order_status (VARCHAR) [dimension] - 订单状态；取值含义：paid=已支付，completed=已完成，refunded=已退款/退款
+        - date_key (INTEGER) [dimension] - 日期键
+      ## Guidance
+      - Value-derived rates over documented order_status values are allowed.
+    sql: SELECT countIf(order_status = 'refunded') / count(*) AS refund_rate FROM fact_orders
+    expected:
+      warning: false
 
   - id: unsupported_cancel_rate
     question: 查看取消率趋势

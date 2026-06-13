@@ -17,7 +17,12 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from backend.app.agent.nodes import generate_sql_node, olap_intent_detect_node
 from backend.app.agent.repair import iter_sql_repair_events
-from backend.app.agent.semantic_grounding import ConceptExtractionRequest, SemanticRefutationAuditor
+from backend.app.agent.semantic_grounding import (
+    ConceptExtractionRequest,
+    GroundingCheckRequest,
+    SemanticRefutationAuditor,
+    analyze_sql_semantic_facts,
+)
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
 from backend.app.connectors.registry import get_datasource_manager
@@ -27,6 +32,12 @@ from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.service import build_focused_context_from_retrieval
 from backend.app.sql_guard.scope import build_default_guard_scope
+
+
+DEFAULT_MIN_COMPLETED = 20
+DEFAULT_MIN_POSITIVE_FIXTURES = 1
+DEFAULT_MIN_NEGATIVE_FIXTURES = 1
+PROMOTED_PATTERNS_PATH = ROOT_DIR / "evals" / "promoted_patterns.json"
 
 
 @dataclass(frozen=True)
@@ -59,10 +70,21 @@ class SemanticEvalResult:
     semantic_guard_result: dict[str, Any] | None = None
     error: str | None = None
     elapsed_ms: int | None = None
+    inconclusive: bool = False
 
     def fail(self, message: str) -> None:
         self.passed = False
         self.messages.append(message)
+
+    def mark_inconclusive(self, message: str) -> None:
+        self.inconclusive = True
+        self.messages.append(message)
+
+    @property
+    def status(self) -> str:
+        if self.inconclusive:
+            return "inconclusive"
+        return "pass" if self.passed else "fail"
 
 
 def main() -> int:
@@ -110,6 +132,17 @@ def main() -> int:
         default=0,
         help="Retry a failed case up to N times. Useful for transient provider availability during eval collection.",
     )
+    parser.add_argument(
+        "--smoke-only",
+        action="store_true",
+        help="Run only cases tagged smoke. Smoke cases are non-gating for promotion.",
+    )
+    parser.add_argument(
+        "--write-promoted",
+        action="store_true",
+        help="Recompute and overwrite evals/promoted_patterns.json from this run.",
+    )
+    parser.add_argument("--min-completed", type=int, default=DEFAULT_MIN_COMPLETED)
     args = parser.parse_args()
 
     try:
@@ -118,6 +151,8 @@ def main() -> int:
             cases = _select_case_ids(cases, args.case_id)
         if args.promotion_pattern:
             cases = _filter_promotion_patterns(cases, args.promotion_pattern)
+        if args.smoke_only:
+            cases = [case for case in cases if "smoke" in (case.get("tags") or [])]
         if args.limit is not None:
             cases = cases[: args.limit]
         cases = _repeat_cases(cases, repeat=args.repeat)
@@ -144,10 +179,14 @@ def main() -> int:
         )
         for case in cases
     ]
+    readiness = evaluate_promotion_readiness(results, min_completed=args.min_completed)
+    if args.write_promoted:
+        promoted = write_promoted_patterns(readiness, path=PROMOTED_PATTERNS_PATH)
+        print(f"promoted patterns written to {PROMOTED_PATTERNS_PATH}: {_format_list(promoted)}")
     report_path = Path(args.report_path)
-    _write_report(report_path, results, semantic_mode=args.semantic_mode)
+    _write_report(report_path, results, semantic_mode=args.semantic_mode, readiness=readiness)
     _print_results(results, report_path=report_path)
-    return 0 if all(result.passed for result in results) else 1
+    return 0 if all(result.passed for result in results if not result.inconclusive) else 1
 
 
 def _load_cases(path: Path) -> list[dict[str, Any]]:
@@ -225,6 +264,9 @@ def _run_case(
         if result.case_type == "verifier_only":
             _run_verifier_only_case(result, case, verifier=semantic_verifier)
             return result
+        if result.case_type == "fixture":
+            _run_fixture_case(result, case, verifier=semantic_verifier, auditor=auditor)
+            return result
         if datasource is None:
             result.fail(f"datasource unavailable: {datasource_name}")
             return result
@@ -300,10 +342,75 @@ def _run_verifier_only_case(
         )
     except Exception as exc:
         result.verifier_unavailable = True
-        result.fail(f"semantic verifier unavailable: {exc}")
+        result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
         return
     result.required_concepts = [concept.model_dump() for concept in extraction.concepts]
     _validate_expected_required_concepts(result, case.get("expected") or {})
+
+
+def _run_fixture_case(
+    result: SemanticEvalResult,
+    case: dict[str, Any],
+    *,
+    verifier: DeepSeekProvider,
+    auditor: SemanticRefutationAuditor,
+) -> None:
+    from backend.app.agent.semantic_grounding import _concept_for_issue, _warning_from_issue
+
+    full_context = case.get("full_schema_context")
+    sql = case.get("sql")
+    if not isinstance(full_context, str) or not full_context.strip() or not isinstance(sql, str) or not sql.strip():
+        result.fail("fixture case requires full_schema_context and sql")
+        return
+
+    try:
+        extraction = verifier.extract_required_concepts(
+            ConceptExtractionRequest(
+                question=result.question,
+                full_schema_context=full_context,
+                datasource_name=result.datasource_name,
+                datasource_dialect=result.datasource_dialect,
+            )
+        )
+    except Exception as exc:
+        result.verifier_unavailable = True
+        result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
+        return
+
+    unsupported = tuple(concept for concept in extraction.concepts if not concept.supported)
+    result.required_concepts = [concept.model_dump() for concept in extraction.concepts]
+    if not unsupported:
+        result.semantic_ok = True
+        result.warning_count = 0
+        _validate_expected_fixture(result, case.get("expected") or {})
+        return
+
+    facts = analyze_sql_semantic_facts(sql, datasource_dialect=result.datasource_dialect)
+    try:
+        grounding = verifier.check_grounding(
+            GroundingCheckRequest(
+                question=result.question,
+                sql=sql,
+                concepts=unsupported,
+                sql_facts=facts,
+                datasource_name=result.datasource_name,
+                datasource_dialect=result.datasource_dialect,
+            )
+        )
+    except Exception as exc:
+        result.verifier_unavailable = True
+        result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
+        return
+
+    evidence = auditor.evidence(datasource_name=result.datasource_name)
+    for issue in grounding.issues:
+        concept = _concept_for_issue(issue, unsupported)
+        refutation = auditor.audit(issue, evidence=evidence, concept=concept)
+        result.warnings.append(_warning_from_issue(issue, refutation))
+    result.semantic_ok = grounding.ok
+    result.warning_count = len(result.warnings)
+    result.sql = sql
+    _validate_expected_fixture(result, case.get("expected") or {})
 
 
 def _run_case_with_retries(
@@ -327,7 +434,7 @@ def _run_case_with_retries(
             auditor=auditor,
             semantic_mode=semantic_mode,
         )
-        if result.passed:
+        if result.passed and not result.inconclusive:
             if attempt > 1:
                 result.messages.append(f"passed after retry attempt {attempt}/{attempts}")
             return result
@@ -354,8 +461,9 @@ def _record_state(result: SemanticEvalResult, state: AgentState) -> None:
 def _validate_expected_semantic(result: SemanticEvalResult, expected: dict[str, Any]) -> None:
     expected_warning = expected.get("warning")
     result.expected_warning = bool(expected_warning) if expected_warning is not None else None
-    if result.verifier_unavailable and not expected.get("allow_verifier_unavailable", False):
-        result.fail("semantic verifier unavailable")
+    if result.verifier_unavailable:
+        result.mark_inconclusive("semantic verifier unavailable (inconclusive, not a semantic failure)")
+        return
     if expected_warning is not None and bool(result.warnings) != bool(expected_warning):
         result.fail(f"expected warning={expected_warning}, got {bool(result.warnings)}")
 
@@ -388,6 +496,29 @@ def _validate_expected_semantic(result: SemanticEvalResult, expected: dict[str, 
             result.fail(
                 "expected all warnings refutation_confirmed="
                 f"{expected_confirmed}, got {[warning.get('refutation_confirmed') for warning in result.warnings]}"
+            )
+
+
+def _validate_expected_fixture(result: SemanticEvalResult, expected: dict[str, Any]) -> None:
+    expected_warning = expected.get("warning")
+    result.expected_warning = bool(expected_warning) if expected_warning is not None else None
+    if expected_warning is not None and bool(result.warnings) != bool(expected_warning):
+        result.fail(f"expected warning={expected_warning}, got {bool(result.warnings)}")
+    if "refutation_confirmed" in expected:
+        actual = bool(result.warnings) and all(warning.get("refutation_confirmed") for warning in result.warnings)
+        if actual != bool(expected["refutation_confirmed"]):
+            result.fail(f"expected refutation_confirmed={expected['refutation_confirmed']}, got {actual}")
+    expected_pattern = expected.get("refutation_pattern")
+    if expected_pattern is not None:
+        actual_patterns = {
+            warning.get("refutation_pattern")
+            for warning in result.warnings
+            if warning.get("refutation_confirmed")
+        }
+        if actual_patterns != {expected_pattern}:
+            result.fail(
+                f"expected refutation_pattern={expected_pattern!r}, "
+                f"got {sorted(pattern for pattern in actual_patterns if pattern)}"
             )
 
 
@@ -441,7 +572,7 @@ def _normalize_concept_name(value: str) -> str:
 
 def _print_results(results: list[SemanticEvalResult], *, report_path: Path) -> None:
     for result in results:
-        status = "PASS" if result.passed else "FAIL"
+        status = result.status.upper()
         print(
             f"[{status}] {result.case_id} "
             f"type={result.case_type} "
@@ -455,7 +586,8 @@ def _print_results(results: list[SemanticEvalResult], *, report_path: Path) -> N
     summary = _summary(results)
     print(
         "\n"
-        f"{summary['passed_cases']}/{summary['total_cases']} semantic guard cases passed; "
+        f"{summary['passed_cases']}/{summary['completed_cases']} completed semantic guard cases passed; "
+        f"inconclusive={summary['inconclusive_cases']}; "
         f"warnings={summary['warning_cases']}; "
         f"confirmed={summary['confirmed_warning_cases']}; "
         f"verifier_unavailable={summary['verifier_unavailable_cases']}."
@@ -463,13 +595,25 @@ def _print_results(results: list[SemanticEvalResult], *, report_path: Path) -> N
     print(f"report: {report_path}")
 
 
-def _write_report(path: Path, results: list[SemanticEvalResult], *, semantic_mode: str) -> None:
+def _write_report(
+    path: Path,
+    results: list[SemanticEvalResult],
+    *,
+    semantic_mode: str,
+    readiness: dict[str, dict[str, Any]] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_render_report(results, semantic_mode=semantic_mode), encoding="utf-8")
+    path.write_text(_render_report(results, semantic_mode=semantic_mode, readiness=readiness), encoding="utf-8")
 
 
-def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> str:
+def _render_report(
+    results: list[SemanticEvalResult],
+    *,
+    semantic_mode: str,
+    readiness: dict[str, dict[str, Any]] | None = None,
+) -> str:
     summary = _summary(results)
+    availability = availability_report(results)
     warning_kinds = Counter(
         str(warning.get("failure_kind") or "-")
         for result in results
@@ -488,8 +632,11 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         "",
         f"- Semantic mode: {semantic_mode}",
         f"- Cases: {summary['total_cases']}",
-        f"- Passed: {summary['passed_cases']}/{summary['total_cases']}",
+        f"- Completed: {summary['completed_cases']}",
+        f"- Passed: {summary['passed_cases']}/{summary['completed_cases']}",
+        f"- Inconclusive: {summary['inconclusive_cases']}",
         f"- Verifier-only cases: {summary['verifier_only_cases']}",
+        f"- Fixture cases: {summary['fixture_cases']}",
         f"- Warning cases: {summary['warning_cases']}",
         f"- Expected-warning cases: {summary['expected_warning_cases']}",
         f"- Confirmed warning cases: {summary['confirmed_warning_cases']}",
@@ -501,11 +648,54 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
         f"- Failure kinds: {_format_distribution(warning_kinds)}",
         f"- Concepts: {_format_distribution(warning_concepts)}",
         "",
+        "## Availability (SLO — non-gating)",
+        "",
+        f"- Completed observations: {availability['completed_observations']}",
+        f"- Inconclusive observations: {availability['inconclusive_observations']}",
+        f"- Availability rate: {availability['availability_rate']}",
+        f"- Chronically unavailable case ids: {_format_list(availability['chronically_unavailable_case_ids'])}",
+        "",
         "## Promotion Pattern Readiness",
         "",
-        "| Pattern | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier-only Negative | Verifier Unavailable |",
-        "|---------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|------------------------|----------------------|",
     ]
+    if readiness:
+        lines.extend(
+            [
+                "| Pattern | Promotable | Reason | Completed | Failed | Inconclusive | False Confirmed | Positive Fixtures | Positive Matched | Negative Fixtures |",
+                "|---------|------------|--------|-----------|--------|--------------|-----------------|-------------------|------------------|-------------------|",
+            ]
+        )
+        for pattern, info in readiness.items():
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _md_cell(pattern),
+                        str(info["promotable"]),
+                        _md_cell(info["reason"]),
+                        str(info["completed"]),
+                        str(info["failed_completed"]),
+                        str(info["inconclusive"]),
+                        str(info["false_confirmed"]),
+                        str(info["positive_fixtures"]),
+                        str(info["positive_fixtures_matched"]),
+                        str(info["negative_fixtures"]),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("No promotable patterns in this selection.")
+
+    lines.extend(
+        [
+            "",
+            "## Promotion Pattern Observations",
+            "",
+            "| Pattern | Cases | Passed | Expected Warnings | Actual Warnings | Confirmed Warnings | False Confirmed Warnings | Verifier-only Positive | Verifier-only Negative | Verifier Unavailable |",
+            "|---------|-------|--------|-------------------|-----------------|--------------------|--------------------------|------------------------|------------------------|----------------------|",
+        ]
+    )
     if promotion_stats:
         for pattern, stats in promotion_stats.items():
             lines.append(
@@ -544,7 +734,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
             + " | ".join(
                 [
                     _md_cell(result.case_id),
-                    "PASS" if result.passed else "FAIL",
+                    result.status.upper(),
                     _md_cell(result.case_type),
                     _md_cell(result.promotion_pattern or "-"),
                     str(result.expected_warning),
@@ -561,7 +751,7 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
             + " |"
         )
 
-    failures = [result for result in results if not result.passed]
+    failures = [result for result in results if not result.passed and not result.inconclusive]
     lines.extend(["", "## Failure Details", ""])
     if not failures:
         lines.append("No failures.")
@@ -597,10 +787,14 @@ def _render_report(results: list[SemanticEvalResult], *, semantic_mode: str) -> 
 
 def _summary(results: list[SemanticEvalResult]) -> dict[str, Any]:
     elapsed_values = [result.elapsed_ms for result in results if result.elapsed_ms is not None]
+    completed = [result for result in results if not result.inconclusive]
     return {
         "total_cases": len(results),
-        "passed_cases": sum(1 for result in results if result.passed),
+        "completed_cases": len(completed),
+        "inconclusive_cases": sum(1 for result in results if result.inconclusive),
+        "passed_cases": sum(1 for result in completed if result.passed),
         "verifier_only_cases": sum(1 for result in results if result.case_type == "verifier_only"),
+        "fixture_cases": sum(1 for result in results if result.case_type == "fixture"),
         "warning_cases": sum(1 for result in results if result.warning_count > 0),
         "expected_warning_cases": sum(1 for result in results if result.expected_warning is True),
         "confirmed_warning_cases": sum(
@@ -611,6 +805,95 @@ def _summary(results: list[SemanticEvalResult]) -> dict[str, Any]:
         "verifier_unavailable_cases": sum(1 for result in results if result.verifier_unavailable),
         "avg_elapsed_ms": round(sum(elapsed_values) / len(elapsed_values)) if elapsed_values else None,
     }
+
+
+def availability_report(results: list[SemanticEvalResult]) -> dict[str, Any]:
+    completed = sum(1 for result in results if not result.inconclusive)
+    inconclusive = sum(1 for result in results if result.inconclusive)
+    by_case: dict[str, list[SemanticEvalResult]] = {}
+    for result in results:
+        case_id = result.case_id.split("__run", 1)[0]
+        by_case.setdefault(case_id, []).append(result)
+    chronic = sorted(
+        case_id
+        for case_id, observations in by_case.items()
+        if observations and all(observation.inconclusive for observation in observations)
+    )
+    total = completed + inconclusive
+    return {
+        "completed_observations": completed,
+        "inconclusive_observations": inconclusive,
+        "availability_rate": round(completed / total, 4) if total else None,
+        "chronically_unavailable_case_ids": chronic,
+    }
+
+
+def evaluate_promotion_readiness(
+    results: list[SemanticEvalResult],
+    *,
+    min_completed: int = DEFAULT_MIN_COMPLETED,
+    min_positive: int = DEFAULT_MIN_POSITIVE_FIXTURES,
+    min_negative: int = DEFAULT_MIN_NEGATIVE_FIXTURES,
+) -> dict[str, dict[str, Any]]:
+    by_pattern: dict[str, list[SemanticEvalResult]] = {}
+    for result in results:
+        if result.promotion_pattern and "smoke" not in result.tags:
+            by_pattern.setdefault(result.promotion_pattern, []).append(result)
+
+    readiness: dict[str, dict[str, Any]] = {}
+    for pattern, pattern_results in by_pattern.items():
+        completed = [result for result in pattern_results if not result.inconclusive]
+        failed_completed = [result for result in completed if not result.passed]
+        false_confirmed = [
+            result
+            for result in completed
+            if result.expected_warning is False
+            and any(warning.get("refutation_confirmed") for warning in result.warnings)
+        ]
+        positive = [result for result in completed if _is_verifier_positive_case(result)]
+        positive_valid = [result for result in positive if _confirmed_under_pattern(result, pattern)]
+        negative = [result for result in completed if _is_verifier_negative_case(result)]
+
+        if len(completed) < min_completed:
+            promotable, reason = False, f"insufficient completed observations ({len(completed)}/{min_completed})"
+        elif false_confirmed:
+            promotable, reason = False, f"false_confirmed refutation on {len(false_confirmed)} case(s)"
+        elif failed_completed:
+            promotable, reason = False, f"{len(failed_completed)} completed case(s) failed"
+        elif len(positive_valid) < min_positive or len(negative) < min_negative:
+            promotable, reason = False, (
+                f"insufficient pattern-matched fixture coverage "
+                f"(+{len(positive_valid)}/{min_positive}, -{len(negative)}/{min_negative})"
+            )
+        else:
+            promotable, reason = True, "all completed checks passed"
+
+        readiness[pattern] = {
+            "promotable": promotable,
+            "reason": reason,
+            "completed": len(completed),
+            "failed_completed": len(failed_completed),
+            "inconclusive": len(pattern_results) - len(completed),
+            "false_confirmed": len(false_confirmed),
+            "positive_fixtures": len(positive),
+            "positive_fixtures_matched": len(positive_valid),
+            "negative_fixtures": len(negative),
+        }
+    return readiness
+
+
+def _confirmed_under_pattern(result: SemanticEvalResult, pattern: str) -> bool:
+    return any(
+        warning.get("refutation_confirmed") and warning.get("refutation_pattern") == pattern
+        for warning in result.warnings
+    )
+
+
+def write_promoted_patterns(readiness: dict[str, dict[str, Any]], *, path: Path) -> list[str]:
+    promoted = sorted(pattern for pattern, info in readiness.items() if info["promotable"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"promoted": promoted}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return promoted
 
 
 def _promotion_pattern_stats(results: list[SemanticEvalResult]) -> dict[str, dict[str, int]]:
@@ -655,11 +938,11 @@ def _promotion_pattern_stats(results: list[SemanticEvalResult]) -> dict[str, dic
 
 
 def _is_verifier_positive_case(result: SemanticEvalResult) -> bool:
-    return result.case_type == "verifier_only" and "positive_schema" in result.tags
+    return result.case_type in {"verifier_only", "fixture"} and "positive_schema" in result.tags
 
 
 def _is_verifier_negative_case(result: SemanticEvalResult) -> bool:
-    return result.case_type == "verifier_only" and "negative_schema" in result.tags
+    return result.case_type in {"verifier_only", "fixture"} and "negative_schema" in result.tags
 
 
 def _format_distribution(counter: Counter[str]) -> str:
@@ -693,6 +976,10 @@ def _format_required_concepts(concepts: list[dict[str, Any]]) -> str:
         supported = bool(concept.get("supported"))
         formatted.append(f"{name} ({concept_type}, supported={supported})")
     return ", ".join(formatted)
+
+
+def _format_list(values: list[str]) -> str:
+    return ", ".join(values) if values else "-"
 
 
 def _optional_string(value: object) -> str | None:

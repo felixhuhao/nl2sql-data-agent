@@ -1,7 +1,7 @@
 # Semantic Grounding Guard — Design
 
 **Date:** 2026-06-12
-**Status:** Draft; Phase 2A refutation hardening implemented, Phase 2B promotion gate pending
+**Status:** Draft; Phase 2A refutation hardening implemented, Phase 2B promotion gate implemented
 **Related:** `docs/prompt-reliability-audit.md` (Manual Test Finding: Unsupported Concept Substitution)
 
 ---
@@ -180,7 +180,7 @@ The unsafe thing is the **absence of evidence for the requested concept**, not a
 
 ## Decision logic
 
-| `semantic_guard_mode` | verifier `ok:true` | verifier `ok:false`, refutation **confirmed** | verifier `ok:false`, refutation **not confirmed** | verifier unavailable |
+| `semantic_guard_mode` | verifier `ok:true` | verifier `ok:false`, promoted refutation **confirmed** | verifier `ok:false`, unpromoted / unconfirmed refutation | verifier unavailable |
 |---|---|---|---|---|
 | `off` | pass | pass | pass | pass |
 | `warn` | pass | **warn** (visible) | **warn** (visible) | skip + log `verifier_unavailable` |
@@ -192,6 +192,7 @@ The unsafe thing is the **absence of evidence for the requested concept**, not a
 semantic_guard_mode == "enforce"
 AND verifier.ok == false
 AND deterministic_refutation.confirmed == true
+AND deterministic_refutation.pattern is present in evals/promoted_patterns.json
 ```
 
 **Medium / uncertain stays warn-only forever** unless a deterministic refutation pattern has been proven for it. A verifier finding the audit cannot corroborate never escalates to a block on its own, in any mode. Enforcement is earned per pattern, from eval evidence — never granted by default.
@@ -236,22 +237,21 @@ The API response model (chat result / SSE final event) is extended to include `g
 ## Rollout (eval-first)
 
 1. **Phase 1 — verifier-first, warn-only.** The LLM verifier does *all* extraction and grounding judgment. The deterministic refutation audit runs **observation-only**: it computes whether it *would* confirm each finding and logs the result alongside the verifier output, but it never bands or blocks. Nothing is blocked; verifier `ok:false` produces a visible warning. No hand-written concept rules exist. The logged `{question, sql, verifier finding, would-confirm}` tuples become an **eval corpus** measuring verifier precision/recall and how often the deterministic audit agrees.
-2. **Phase 2 — earned enforcement.** From the eval corpus, promote **only** the deterministic refutation patterns the data proves safe (high agreement, no false confirmations). A hard block then requires the double gate: verifier `ok:false` **and** a proven deterministic refutation confirmed. Findings without a proven refutation pattern stay warn-only.
+2. **Phase 2 — earned enforcement.** From the eval corpus, promote **only** the deterministic refutation patterns the data proves safe (high agreement, no false confirmations). A hard block then requires the double gate: verifier `ok:false` **and** a promoted deterministic refutation confirmed. Findings without a promoted refutation pattern stay warn-only, even in `enforce`.
 3. **Phase 3 (later, optional) — clarify.** Replace warnings with an interactive disambiguation turn ("删除率 在当前 schema 中没有直接对应。你是指 退款率 / 取消率 / 都不是?"). Higher build cost (mid-workflow suspend/resume); deferred until value is proven.
 
-A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible. The verifier uses a separate `semantic_guard_timeout` budget; the initial default is 30 seconds because Stage A reads full datasource metadata and is cached across repaired candidates.
+A setting `semantic_guard_mode = off | warn | enforce` gates the phases so rollout is reversible. Production stays `off` until evidence collection starts, then uses `warn`; `enforce` is meaningful only with a non-empty `evals/promoted_patterns.json`. The verifier uses a separate `semantic_guard_timeout` budget; the initial default is 30 seconds because Stage A reads full datasource metadata and is cached across repaired candidates.
 
 ### Phase 2 Promotion Criteria
 
-Promotion is decided per named `promotion_pattern`, never from an aggregate verifier score. The first candidate pattern is `concept_absent_full_metadata`: the LLM flags an unsupported concept and the deterministic refutation audit confirms the concept is absent across full datasource metadata. A pattern can enter the `enforce` double gate only when a fresh pattern-scoped eval run satisfies all of these:
+Promotion is decided per named `promotion_pattern`, never from an aggregate verifier score. The runtime refutation rule self-identifies its pattern (for example `concept_absent_full_metadata` or `value_absent_distinct_probe`); the eval corpus labels must match those runtime rule names. A pattern can enter the `enforce` double gate only when a fresh pattern-scoped eval run satisfies all of these:
 
-- At least 20 total eval cases tagged with the pattern.
-- At least 10 unsupported workflow cases with expected warnings, covering both `substituted` and `omitted` findings.
-- At least 5 positive-schema verifier-only cases where a schema truly supports adjacent concepts such as returned/cancelled/deleted/shipped, and every one passes.
-- At least 3 negative-schema verifier-only cases where related-but-different metadata is present and every one is correctly unsupported.
-- `false_confirmed_warning_cases == 0`: no expected-no-warning case may produce a confirmed refutation.
-- Verifier-unavailable cases are inconclusive, not semantic failures. They must be rerun as targeted cases before promotion evidence is counted; availability is reported separately from semantic correctness and never becomes a deterministic block.
-- The implementation still requires the double gate: LLM verifier finding **and** promoted deterministic refutation. Unpromoted patterns remain warn-only, even in `enforce` mode.
+- At least `min_completed` completed observations for the pattern (default 20); inconclusive verifier-outage observations are excluded from correctness counts.
+- Zero completed semantic failures.
+- `false_confirmed == 0`: no expected-no-warning case may produce a confirmed refutation.
+- Minimum positive and negative fixture coverage is present. A positive fixture only counts when its confirmed warning's `refutation_pattern` exactly matches the `promotion_pattern` under evaluation.
+- Verifier-unavailable observations are reported as a separate availability SLO, including chronically unavailable case ids. Availability never blocks promotion and never overrides runtime fail-open behavior; it tells operators how often enforcement would fail open.
+- Promoted patterns are written to `evals/promoted_patterns.json`. Runtime `enforce` consults that artifact and blocks only promoted+confirmed warnings; unpromoted confirmed warnings remain visible warnings.
 
 ---
 
