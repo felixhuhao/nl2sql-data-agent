@@ -207,6 +207,185 @@ def test_distinct_probe_confirms_when_requested_value_absent_in_data():
     assert probed["column"] == "order_status"
 
 
+def test_distinct_probe_uses_target_fields_even_when_concept_type_is_filter():
+    probed = {}
+
+    def fake_executor(table, column, *, datasource_name):
+        probed["table"] = table
+        probed["column"] = column
+        return ("paid", "completed", "refunded")
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+    concept = RequiredConcept(
+        concept="cancelled",
+        concept_id="c1",
+        concept_type="filter",
+        supported=False,
+        target_table="fact_orders",
+        target_column="order_status",
+        requested_value="cancelled",
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(concept="cancelled", failure_kind="substituted", concept_id="c1"),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=concept,
+    )
+
+    assert result.confirmed is True
+    assert "DISTINCT probe" in result.reason
+    assert probed == {"table": "fact_orders", "column": "order_status"}
+
+
+def test_distinct_probe_recovers_value_target_from_issue_mapping_when_value_is_requested():
+    probed = {}
+
+    def fake_executor(table, column, *, datasource_name):
+        probed["table"] = table
+        probed["column"] = column
+        return ("paid", "completed", "refunded")
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(
+            concept="订单状态为cancelled",
+            concept_id="c1",
+            failure_kind="substituted",
+            sql_mapping="WHERE o.order_status = 'cancelled'",
+        ),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=RequiredConcept(
+            concept="订单状态为cancelled",
+            concept_id="c1",
+            concept_type="filter",
+            supported=False,
+        ),
+    )
+
+    assert result.confirmed is True
+    assert "DISTINCT probe" in result.reason
+    assert probed == {"table": "fact_orders", "column": "order_status"}
+
+
+def test_distinct_probe_parses_issue_mapping_with_datasource_dialect():
+    probed = {}
+
+    def fake_executor(table, column, *, datasource_name):
+        probed["table"] = table
+        probed["column"] = column
+        return ("paid", "completed", "refunded")
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "clickhouse_ecommerce",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(
+            concept="order_status=cancelled",
+            concept_id="c1",
+            failure_kind="substituted",
+            sql_mapping="WHERE `order_status` = 'cancelled'",
+        ),
+        evidence=auditor.evidence(datasource_name="clickhouse_ecommerce"),
+        concept=RequiredConcept(
+            concept="order_status=cancelled",
+            concept_id="c1",
+            concept_type="filter",
+            supported=False,
+        ),
+    )
+
+    assert result.confirmed is True
+    assert "DISTINCT probe" in result.reason
+    assert probed == {"table": "fact_orders", "column": "order_status"}
+
+
+def test_distinct_probe_does_not_use_proxy_value_mapping_for_unrelated_concept():
+    called = False
+
+    def fake_executor(table, column, *, datasource_name):
+        nonlocal called
+        called = True
+        return ("paid", "completed", "refunded")
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": '["refunded"]'},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(
+            concept="删除率",
+            concept_id="c1",
+            failure_kind="substituted",
+            sql_mapping="order_status = 'refunded'",
+        ),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=RequiredConcept(
+            concept="删除率",
+            concept_id="c1",
+            concept_type="metric",
+            supported=False,
+        ),
+    )
+
+    assert result.confirmed is True
+    assert "no evidence" in result.reason
+    assert called is False
+
+
 def test_distinct_probe_abstains_when_requested_value_present_in_data():
     auditor = SemanticRefutationAuditor(
         evidence_builder=lambda datasource_name: build_schema_evidence(

@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from backend.app.agent.state import AgentState, GroundingWarningPayload
-from backend.app.agent.schema_evidence import SchemaEvidence, build_schema_evidence
+from backend.app.agent.schema_evidence import SchemaEvidence, build_schema_evidence, normalize_evidence_text
 from backend.app.config import get_settings, semantic_guard_mode
 from backend.app.core.llm_provider import strip_code_fence
 from backend.app.metadata.models import DEFAULT_DATASOURCE
@@ -181,11 +181,13 @@ class SemanticRefutationAuditor:
             )
         if (
             concept is not None
-            and concept.concept_type == "value"
             and concept.target_column
             and concept.requested_value
         ):
             return self._audit_value(requested_concept, concept, evidence)
+        mapped_value_concept = _value_concept_from_issue_mapping(issue, concept, evidence)
+        if mapped_value_concept is not None:
+            return self._audit_value(requested_concept, mapped_value_concept, evidence)
         if evidence.has_concept_evidence(requested_concept):
             return RefutationAuditResult(
                 confirmed=False,
@@ -457,6 +459,70 @@ def _validated_target(concept: RequiredConcept, evidence: SchemaEvidence) -> tup
         return (table, column, value) if evidence.has_column(table, column) else (None, column, value)
     unique_table = evidence.unique_table_for_column(column)
     return (unique_table, column, value) if unique_table else (None, column, value)
+
+
+def _value_concept_from_issue_mapping(
+    issue: SemanticGroundingIssue,
+    concept: RequiredConcept | None,
+    evidence: SchemaEvidence,
+) -> RequiredConcept | None:
+    if not issue.sql_mapping:
+        return None
+    from backend.app.connectors.registry import get_datasource_dialect
+
+    mapped = _single_value_predicate(
+        issue.sql_mapping,
+        datasource_dialect=get_datasource_dialect(evidence.datasource_name),
+    )
+    if mapped is None:
+        return None
+    table_hint, column, value = mapped
+    requested_parts = [issue.concept]
+    if concept is not None and concept.concept != issue.concept:
+        requested_parts.append(concept.concept)
+    requested_text = " ".join(part for part in requested_parts if part)
+    normalized_value = normalize_evidence_text(value)
+    if not normalized_value or normalized_value not in normalize_evidence_text(requested_text):
+        return None
+    table = table_hint if table_hint and evidence.has_column(table_hint, column) else evidence.unique_table_for_column(column)
+    if table is None:
+        return None
+    return RequiredConcept(
+        concept=issue.concept,
+        concept_id=issue.concept_id,
+        concept_type="value",
+        supported=False,
+        target_table=table,
+        target_column=column,
+        requested_value=value,
+    )
+
+
+def _single_value_predicate(sql_mapping: str, *, datasource_dialect: str) -> tuple[str, str, str] | None:
+    fragment = sql_mapping.strip()
+    if fragment.casefold().startswith("where "):
+        fragment = fragment[6:].strip()
+    try:
+        expression = sqlglot.parse_one(fragment, read=datasource_dialect or "duckdb")
+    except SqlglotError:
+        return None
+    if isinstance(expression, exp.EQ):
+        return _column_literal_pair(expression.args.get("this"), expression.args.get("expression"))
+    if isinstance(expression, exp.In) and len(expression.expressions) == 1:
+        literal = expression.expressions[0]
+        if isinstance(literal, exp.Literal) and literal.is_string:
+            column = expression.this
+            if isinstance(column, exp.Column):
+                return column.table, column.name, str(literal.this)
+    return None
+
+
+def _column_literal_pair(left: object, right: object) -> tuple[str, str, str] | None:
+    if isinstance(left, exp.Column) and isinstance(right, exp.Literal) and right.is_string:
+        return left.table, left.name, str(right.this)
+    if isinstance(right, exp.Column) and isinstance(left, exp.Literal) and left.is_string:
+        return right.table, right.name, str(left.this)
+    return None
 
 
 def _json_object(content: str, error_message: str) -> dict:

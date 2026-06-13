@@ -4,7 +4,7 @@
 
 **Goal:** Replace the blunt substring corroboration in `SemanticRefutationAuditor` with structured, channel-by-channel, datasource-scoped refutation plus a `SELECT DISTINCT` probe for value-level concepts, so a confirmed refutation is trustworthy enough to gate a hard block.
 
-**Architecture:** A new `SchemaEvidence` value object is built once per datasource from the existing datasource-scoped metadata accessors (`list_tables`, `list_columns`, `list_metrics`, `list_aliases`, `list_verified_queries`). The auditor confirms a refutation only when a requested concept is absent from **every** channel. For value-typed concepts that name a metadata-validated `(target_table, target_column, requested_value)`, an injected executor runs a bounded `SELECT DISTINCT` to confirm the value is genuinely absent before confirming. The auditor still *only refutes* — finding evidence makes it abstain, never assert support.
+**Architecture:** A new `SchemaEvidence` value object is built once per datasource from the existing datasource-scoped metadata accessors (`list_tables`, `list_columns`, `list_metrics`, `list_aliases`, `list_verified_queries`). The auditor confirms a refutation only when a requested concept is absent from **every** channel. For concepts that include a metadata-validated `(target_table, target_column, requested_value)`, an injected executor runs a bounded `SELECT DISTINCT` to confirm the value is genuinely absent before confirming. The auditor still *only refutes* — finding evidence makes it abstain, never assert support.
 
 **Tech Stack:** Python 3.12, dataclasses, sqlglot (already used), pytest. Metadata via `backend.app.metadata.service`. Execution via `backend.app.execution.runner` / `backend.app.sql_guard.guard`.
 
@@ -471,7 +471,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## Task 3: `SELECT DISTINCT` probe for value-level concepts
 
-When a requested concept is a **value** (e.g. "status = cancelled") that is absent from metadata evidence, run a bounded `SELECT DISTINCT <table>.<column>` to confirm it is genuinely absent before confirming the refutation. The probe runs **only** when the concept carries a metadata-validated `(target_table, target_column, requested_value)` (or a unique metadata-resolvable column); otherwise the auditor abstains. The probe never tests a substituted proxy value.
+When a requested concept is a **value** (e.g. "status = cancelled") that is absent from metadata evidence, run a bounded `SELECT DISTINCT <table>.<column>` to confirm it is genuinely absent before confirming the refutation. The probe runs when the concept carries a metadata-validated `(target_table, target_column, requested_value)` (or a unique metadata-resolvable column). If those fields are missing, the audit may recover a target by parsing the verifier's own `sql_mapping` with the active datasource dialect, but only when the mapped literal appears in the flagged requested concept text. Otherwise the auditor abstains. The probe never tests a substituted proxy value.
 
 **Files:**
 - Modify: `backend/app/agent/semantic_grounding.py` (`RequiredConcept`, parse, `audit`)
@@ -648,7 +648,7 @@ class SemanticRefutationAuditor:
         if not name:
             return RefutationAuditResult(confirmed=False, reason="No requested concept was provided by the verifier.")
         # value-level path: the question named a specific value to filter on
-        if concept is not None and concept.concept_type == "value" and concept.target_column and concept.requested_value:
+        if concept is not None and concept.target_column and concept.requested_value:
             return self._audit_value(name, concept, evidence)
         if evidence.has_concept_evidence(name):
             return RefutationAuditResult(confirmed=False, reason=f"Full datasource metadata contains evidence for {name!r}; deterministic audit abstained.")
@@ -723,4 +723,4 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - **Spec coverage:** Task 1-2 cover "structured channel-by-channel refutation" (round-3 HIGH#1); Task 3 covers "SELECT DISTINCT for the requested value, never the proxy" (round-3 HIGH#2); the "abstain on any evidence, only refute" invariant is enforced in `audit`/`_audit_value`. Datasource scoping is satisfied because every `list_*` accessor is datasource-scoped (no global overlay used).
 - **Deferred (Phase 2B):** three-way eval verdict, pinned-SQL fixtures, live smoke, per-pattern promotion gate, availability SLO — separate plan.
 - **Deferred (open question):** overlay→datasource binding; until then the overlay is not an evidence source here.
-- **Risk:** `_default_distinct_executor` runs in the request hot path only for value-typed unsupported concepts in `warn`/`enforce` mode; it is bounded (`LIMIT 1000`) and guarded. It is injected, so tests never hit a real DB.
+- **Risk:** `_default_distinct_executor` runs in the request hot path only for unsupported concepts with metadata-validated value target fields in `warn`/`enforce` mode; it is bounded (`LIMIT 1000`) and guarded. It is injected, so tests never hit a real DB.
