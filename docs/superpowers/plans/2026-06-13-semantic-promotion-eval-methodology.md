@@ -187,8 +187,40 @@ def test_promotion_ignores_inconclusive_in_denominator():
         _pattern_case("b", expected_warning=True, warnings=[{"refutation_confirmed": True}]),
         _pattern_case("c", inconclusive=True),  # excluded from completed
     ]
-    readiness = runner.evaluate_promotion_readiness(results, min_completed=2)
+    # fixture-coverage gate disabled here; this test isolates the inconclusive denominator.
+    readiness = runner.evaluate_promotion_readiness(results, min_completed=2, min_positive=0, min_negative=0)
     assert readiness["p"]["completed"] == 2
+    assert readiness["p"]["promotable"] is True
+
+
+def test_promotion_blocks_when_a_completed_case_failed():
+    results = [
+        _pattern_case("ok", expected_warning=True, warnings=[{"refutation_confirmed": True}]),
+        # completed semantic failure (expected a warning, produced none) — not a fixture
+        _pattern_case("miss", expected_warning=True, warnings=[], passed=False),
+    ]
+    readiness = runner.evaluate_promotion_readiness(results, min_completed=2, min_positive=0, min_negative=0)
+    assert readiness["p"]["promotable"] is False
+    assert "failed" in readiness["p"]["reason"]
+
+
+def test_promotion_requires_minimum_fixture_coverage():
+    # 20 passing workflow cases, but zero positive/negative fixtures
+    results = [
+        _pattern_case(f"c{i}", expected_warning=True, warnings=[{"refutation_confirmed": True}])
+        for i in range(20)
+    ]
+    readiness = runner.evaluate_promotion_readiness(results, min_completed=20)
+    assert readiness["p"]["promotable"] is False
+    assert "fixture coverage" in readiness["p"]["reason"]
+
+
+def test_promotion_passes_with_completed_failures_absent_and_fixtures_present():
+    positive = _pattern_case("pos", case_type="verifier_only", tags=["positive_schema"],
+                             expected_warning=True, warnings=[{"refutation_confirmed": True}])
+    negative = _pattern_case("neg", case_type="verifier_only", tags=["negative_schema"], expected_warning=False)
+    workflow = [_pattern_case(f"w{i}", expected_warning=True, warnings=[{"refutation_confirmed": True}]) for i in range(18)]
+    readiness = runner.evaluate_promotion_readiness([positive, negative, *workflow], min_completed=20)
     assert readiness["p"]["promotable"] is True
 
 
@@ -211,36 +243,45 @@ Expected: FAIL (`evaluate_promotion_readiness` / `write_promoted_patterns` undef
 import json
 
 DEFAULT_MIN_COMPLETED = 20
+DEFAULT_MIN_POSITIVE_FIXTURES = 1
+DEFAULT_MIN_NEGATIVE_FIXTURES = 1
 
 
 def evaluate_promotion_readiness(
     results: list[SemanticEvalResult],
     *,
     min_completed: int = DEFAULT_MIN_COMPLETED,
+    min_positive: int = DEFAULT_MIN_POSITIVE_FIXTURES,
+    min_negative: int = DEFAULT_MIN_NEGATIVE_FIXTURES,
 ) -> dict[str, dict[str, Any]]:
     by_pattern: dict[str, list[SemanticEvalResult]] = {}
     for result in results:
-        if result.promotion_pattern:
+        # smoke is a non-gating tier; it never contributes to promotion.
+        if result.promotion_pattern and "smoke" not in result.tags:
             by_pattern.setdefault(result.promotion_pattern, []).append(result)
 
     readiness: dict[str, dict[str, Any]] = {}
     for pattern, pattern_results in by_pattern.items():
         completed = [r for r in pattern_results if not r.inconclusive]
+        failed_completed = [r for r in completed if not r.passed]
         false_confirmed = [
             r for r in completed
             if r.expected_warning is False and any(w.get("refutation_confirmed") for w in r.warnings)
         ]
         positive = [r for r in completed if _is_verifier_positive_case(r)]
         negative = [r for r in completed if _is_verifier_negative_case(r)]
-        failed_positive = [r for r in positive if not r.passed]
-        failed_negative = [r for r in negative if not r.passed]
 
         if len(completed) < min_completed:
             promotable, reason = False, f"insufficient completed observations ({len(completed)}/{min_completed})"
         elif false_confirmed:
             promotable, reason = False, f"false_confirmed refutation on {len(false_confirmed)} case(s)"
-        elif failed_positive or failed_negative:
-            promotable, reason = False, f"schema fixtures failed (+{len(failed_positive)} / -{len(failed_negative)})"
+        elif failed_completed:
+            # any completed case that did not pass blocks promotion, fixture or not.
+            promotable, reason = False, f"{len(failed_completed)} completed case(s) failed"
+        elif len(positive) < min_positive or len(negative) < min_negative:
+            promotable, reason = False, (
+                f"insufficient fixture coverage (+{len(positive)}/{min_positive}, -{len(negative)}/{min_negative})"
+            )
         else:
             promotable, reason = True, "all completed checks passed"
 
@@ -248,8 +289,11 @@ def evaluate_promotion_readiness(
             "promotable": promotable,
             "reason": reason,
             "completed": len(completed),
+            "failed_completed": len(failed_completed),
             "inconclusive": len(pattern_results) - len(completed),
             "false_confirmed": len(false_confirmed),
+            "positive_fixtures": len(positive),
+            "negative_fixtures": len(negative),
         }
     return readiness
 
@@ -403,6 +447,7 @@ Expected: FAIL (`_run_fixture_case` undefined).
 def _run_fixture_case(result, case, *, verifier, auditor) -> None:
     from backend.app.agent.semantic_grounding import (
         ConceptExtractionRequest, GroundingCheckRequest, analyze_sql_semantic_facts,
+        _concept_for_issue,   # reuse runtime id+name matching, not id-only
         _warning_from_issue,  # reuse the same warning shape as runtime
     )
     full_context = case.get("full_schema_context")
@@ -423,14 +468,15 @@ def _run_fixture_case(result, case, *, verifier, auditor) -> None:
                 question=result.question, sql=sql, concepts=unsupported, sql_facts=facts,
                 datasource_name=result.datasource_name, datasource_dialect=result.datasource_dialect))
             evidence = auditor.evidence(datasource_name=result.datasource_name)
-            by_id = {c.concept_id: c for c in unsupported}
             for issue in grounding.issues:
-                refutation = auditor.audit(issue, evidence=evidence, concept=by_id.get(issue.concept_id))
+                concept = _concept_for_issue(issue, unsupported)  # same id+name fallback as runtime
+                refutation = auditor.audit(issue, evidence=evidence, concept=concept)
                 result.warnings.append(_warning_from_issue(issue, refutation))
             result.semantic_ok = grounding.ok
     except Exception as exc:
+        # Availability is not a semantic verdict: an outage is inconclusive, never a fail.
         result.verifier_unavailable = True
-        result.fail(f"semantic verifier unavailable: {exc}")
+        result.mark_inconclusive(f"semantic verifier unavailable: {exc}")
         return
     result.warning_count = len(result.warnings)
     _validate_expected_fixture(result, case.get("expected") or {})
@@ -451,6 +497,20 @@ def _validate_expected_fixture(result, expected) -> None:
 ```
 
 Dispatch in `_run_case`: after the `verifier_only` branch, add `if result.case_type == "fixture": _run_fixture_case(result, case, verifier=semantic_verifier, auditor=auditor); return result`.
+
+Two consistency edits to existing code:
+
+1. **`_run_verifier_only_case` outage is also inconclusive.** Its except handler currently does `result.verifier_unavailable = True; result.fail(...)`. Change the `fail(...)` to `mark_inconclusive(...)` for the same reason (an outage must not count as a semantic failure). Add a regression test asserting a raising fake verifier yields `status == "inconclusive"` for a `verifier_only` case.
+2. **Pinned-SQL fixtures count as schema coverage.** Broaden the predicates so the fixture tier satisfies the Task 2 coverage gate:
+
+```python
+def _is_verifier_positive_case(result: SemanticEvalResult) -> bool:
+    return result.case_type in {"verifier_only", "fixture"} and "positive_schema" in result.tags
+
+
+def _is_verifier_negative_case(result: SemanticEvalResult) -> bool:
+    return result.case_type in {"verifier_only", "fixture"} and "negative_schema" in result.tags
+```
 
 - [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k fixture -q` — Expected: PASS.
 
@@ -532,16 +592,19 @@ def is_pattern_promoted(pattern: str | None, *, path: Path = _DEFAULT_PATH) -> b
 
 The eval corpus's `promotion_pattern` labels are defined to **match these rule names**, which closes the eval→runtime loop: evidence collected under `concept_absent_full_metadata` promotes exactly the runtime rule that emits it. Thread `pattern` from the refutation onto the warning in `_warning_from_issue` (pass the `RefutationAuditResult`, which it already receives), then gate enforce on it:
 
+The block must be triggered by — and its message must name — **only** the promoted+confirmed warnings, never an unrelated confirmed-but-unpromoted warning that happens to ride along:
+
 ```python
-    if mode == "enforce" and any(
-        w.get("refutation_confirmed") and is_pattern_promoted(w.get("refutation_pattern"))
-        for w in state.grounding_warnings
-    ):
+    blocking = [
+        w for w in state.grounding_warnings
+        if w.get("refutation_confirmed") and is_pattern_promoted(w.get("refutation_pattern"))
+    ]
+    if mode == "enforce" and blocking:
         state.stopped_at = "semantic_guard"
-        state.error = _semantic_block_message(state.grounding_warnings)
+        state.error = _semantic_block_message(blocking)   # only the warnings that caused the block
 ```
 
-`_warning_from_issue` adds `"refutation_pattern": refutation.pattern`. Add `test_semantic_grounding.py` tests: enforce + refutation_confirmed but **unpromoted** rule → warns, does NOT block; promoted rule → blocks (with `promoted_patterns` path monkeypatched to a tmp file).
+`_semantic_block_message` already filters by `refutation_confirmed`; passing it `blocking` (not all `grounding_warnings`) ensures an unpromoted confirmed warning is never named in the block. `_warning_from_issue` adds `"refutation_pattern": refutation.pattern`. Add `test_semantic_grounding.py` tests: (a) enforce + refutation_confirmed but **unpromoted** rule → warns, does NOT block; (b) promoted rule → blocks; (c) one promoted + one unpromoted confirmed warning → blocks, and the error message names only the promoted concept (with `promoted_patterns` path monkeypatched to a tmp file).
 
 - [ ] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_promoted_patterns.py backend/tests/test_semantic_grounding.py -q` — Expected: PASS.
 
@@ -575,7 +638,9 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - **Requirement coverage:** three-way verdict (Task 1), per-pattern gate + artifact (Task 2), availability-as-separate-SLO + chronic ids (Task 3), pinned-SQL fixtures (Task 4), non-gating smoke tier + promoted-pattern-gated enforce / "no broad enforce rollout" (Task 5).
 - **Decoupling invariant:** `inconclusive` is never in the correctness denominator (Tasks 1-3); the gate computes over completed only; availability never gates.
-- **Zero-tolerance gate:** `false_confirmed` > 0 blocks promotion for that pattern (Task 2) — the deterministic-refutation side must be airtight, per the double-gate philosophy.
+- **Promotion gates (all must pass, Task 2):** ≥ `min_completed` completed observations; `false_confirmed == 0` (airtight deterministic refutation, the double-gate philosophy); **zero failed completed cases** (fixture or not); and **minimum positive/negative fixture coverage present** (not merely "no failures") — so a pattern cannot promote on absence of evidence.
+- **Availability never pollutes the verdict:** every verifier-outage path (`_run_fixture_case`, `_run_verifier_only_case`) calls `mark_inconclusive`, never `fail`, so an outage is excluded from the correctness denominator rather than counted as a semantic failure.
+- **Block scoping:** runtime `enforce` blocks on, and names, only promoted+confirmed warnings (Task 5).
 - **Pure-function testability:** Tasks 1-3 and the gate are unit-tested with synthetic `SemanticEvalResult` lists; Task 4 uses fake verifier/auditor — no task needs a live provider to pass.
 - **Risk:** `_run_fixture_case` reuses `_warning_from_issue` from `semantic_grounding` to keep warning shape identical to runtime; if that helper's signature changes, the fixture path must follow.
 - **Open dependency:** Task 5 adds a self-identifying `pattern` onto `RefutationAuditResult` (the deterministic rule that confirmed) and threads it to the warning so runtime enforce can consult the artifact; the corpus `promotion_pattern` labels are defined to match those rule names. This is the one runtime change in an otherwise eval-tooling plan.
