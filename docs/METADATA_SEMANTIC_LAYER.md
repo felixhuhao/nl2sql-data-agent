@@ -89,7 +89,7 @@ question
 
 ### 向量召回
 
-`VECTOR_ENABLED=auto` 时，Qdrant 可保存 table/column/metric/verified query/value 向量；当 `EMBEDDING_MODEL` 为空时，系统使用默认轻量多语言 embedding model。Qdrant、依赖或索引不可用时，系统自动回退到规则召回。Hybrid retrieval 将规则分和向量分合并；只有显式设置 `VECTOR_ENABLED=disabled` 才会强制关闭向量召回。
+`VECTOR_ENABLED=auto` 时，Qdrant 可保存 table/column/metric/verified query/value 向量；当 `EMBEDDING_MODEL` 为空时，系统使用默认模型 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`，Docker 会把首次下载的模型缓存在 `model_cache` volume。PyTorch 只用于运行 embedding model，Docker 镜像安装的是 CPU-only PyTorch，不需要 CUDA 或外部模型挂载。Qdrant、依赖或索引不可用时，系统自动回退到规则召回。Hybrid retrieval 将规则分和向量分合并；只有显式设置 `VECTOR_ENABLED=disabled` 才会强制关闭向量召回。
 
 ### Fallback
 

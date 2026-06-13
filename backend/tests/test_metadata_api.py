@@ -118,8 +118,8 @@ def test_rebuild_vector_index_endpoint_returns_build_result(monkeypatch):
     monkeypatch.setattr(
         "backend.app.api.metadata.rebuild_vector_index_payload",
         lambda: {
-            "embedding_model": "/models/BAAI/bge-m3",
-            "embedding_dimension": 1024,
+            "embedding_model": "/models/custom-embedding-model",
+            "embedding_dimension": 768,
             "built_at": "2026-05-31T10:00:00Z",
             "asset_counts": {"metric": 3},
         },

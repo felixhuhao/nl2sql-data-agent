@@ -20,10 +20,11 @@ python -m pip install -e "backend[mcp]"
 python -m pip install -e "backend[vector]"
 ```
 
-Vector dependencies can be heavy. Install CPU PyTorch first when using sentence-transformers locally:
+Vector retrieval uses sentence-transformers, which depends on PyTorch to run the embedding model. CUDA is not required. Docker installs CPU-only PyTorch; for local Python installs, install the CPU wheel before `backend[vector]` if pip tries to pull GPU/CUDA packages:
 
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e "backend[vector]"
 ```
 
 ## Environment Variables
@@ -71,11 +72,12 @@ Qdrant and vector retrieval:
 VECTOR_ENABLED=auto
 QDRANT_URL=http://localhost:6333
 QDRANT_COLLECTION_PREFIX=nl2sql
-# Optional; leave blank for the default lightweight multilingual model.
+# Optional; blank resolves to sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2.
+# First use may download it into the model cache volume.
 EMBEDDING_MODEL=
 ```
 
-`auto` attempts vector retrieval when Qdrant, embedding dependencies, and a ready index are available. If `EMBEDDING_MODEL` is blank, the backend uses `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. If Qdrant or the index is unavailable, retrieval falls back to the rule path. Use `VECTOR_ENABLED=disabled` only to force vector retrieval off.
+`auto` attempts vector retrieval when Qdrant, embedding dependencies, and a ready index are available. If `EMBEDDING_MODEL` is blank, the backend uses `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; Docker caches the downloaded model in the `model_cache` volume. Qdrant stores and searches vectors; PyTorch only runs the embedding model, and the Docker image uses CPU-only PyTorch. If Qdrant or the index is unavailable, retrieval falls back to the rule path. Use `VECTOR_ENABLED=disabled` only to force vector retrieval off.
 
 Do not commit `backend/.env`.
 

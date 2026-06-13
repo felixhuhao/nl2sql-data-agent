@@ -61,7 +61,7 @@ def test_rebuild_vector_index_writes_rows_and_metadata(monkeypatch):
     assert vector_store.ensured_dimensions == [3]
     assert vector_store.clear_called is True
     assert len(vector_store.rows) == 12
-    assert result.embedding_model == "D:/Models/BAAI/bge-m3"
+    assert result.embedding_model == "local/custom-embedding-model"
     assert result.embedding_dimension == 3
     assert result.asset_counts == {
         "table": 1,
@@ -70,7 +70,7 @@ def test_rebuild_vector_index_writes_rows_and_metadata(monkeypatch):
         "verified_query": 1,
         "value": 3,
     }
-    assert vector_store.metadata.embedding_model == "D:/Models/BAAI/bge-m3"
+    assert vector_store.metadata.embedding_model == "local/custom-embedding-model"
     assert vector_store.metadata.embedding_dimension == 3
     assert vector_store.metadata.asset_counts == result.asset_counts
 
@@ -190,7 +190,7 @@ def _fake_embed_texts(texts):
     return [[float(index), float(index + 1), float(index + 2)] for index, _ in enumerate(texts)]
 
 
-def _settings(vector_enabled=True, embedding_model="D:/Models/BAAI/bge-m3"):
+def _settings(vector_enabled=True, embedding_model="local/custom-embedding-model"):
     return SimpleNamespace(
         vector_enabled=vector_enabled,
         embedding_model=embedding_model,

@@ -112,7 +112,7 @@ Frontend: http://127.0.0.1:5174/
 Backend:  http://127.0.0.1:8000/api/health
 ```
 
-The default Compose stack uses `LLM_PROVIDER=auto`: it uses DeepSeek when `DEEPSEEK_API_KEY` is configured and falls back to mock otherwise. Qdrant is bundled into the stack and persisted in a Docker volume. For local development, DeepSeek, vector retrieval, and MCP client setup, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The default Compose stack uses `LLM_PROVIDER=auto`: it uses DeepSeek when `DEEPSEEK_API_KEY` is configured and falls back to mock otherwise. Qdrant is bundled into the stack and persisted in a Docker volume. Vector embeddings use the default MiniLM sentence-transformers model with CPU-only PyTorch; CUDA and external model mounts are not required. For local development, DeepSeek, vector retrieval, and MCP client setup, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Try These Questions
 
@@ -212,7 +212,7 @@ Setup details: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#mcp-tools).
 | SQL safety | SQLGlot AST parsing and normalization |
 | Metadata | SQLite, SQLAlchemy |
 | OLAP engines | DuckDB, ClickHouse |
-| Vector retrieval | Qdrant, sentence-transformers, BGE-M3 compatible embeddings |
+| Vector retrieval | Qdrant, sentence-transformers MiniLM embeddings, CPU-only PyTorch |
 | Eval | Pytest, smoke eval runner, result-equivalence checks |
 | Tooling | MCP stdio servers |
 | Packaging | Docker Compose |

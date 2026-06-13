@@ -159,7 +159,7 @@ The loop still returns `last_result` after exhausting attempts, so a case that i
 
 - [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -q` — Expected: PASS (update `test_run_case_with_retries_returns_later_pass` only if it asserted on the old summary shape; it does not).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/run_semantic_guard_eval.py backend/tests/test_semantic_guard_eval_runner.py
@@ -382,7 +382,7 @@ Wire into `main` after `results` are collected (write artifact, print readiness)
 
 - [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k promotion -q` — Expected: PASS.
 
-- [ ] **Step 5: Create the initial artifact and commit**
+- [x] **Step 5: Create the initial artifact and commit**
 
 ```bash
 printf '{\n  "promoted": []\n}\n' > evals/promoted_patterns.json
@@ -449,7 +449,7 @@ Add an "## Availability (SLO — non-gating)" section to `_render_report` printi
 
 - [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k availability -q` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/run_semantic_guard_eval.py backend/tests/test_semantic_guard_eval_runner.py
@@ -601,7 +601,7 @@ def _is_verifier_negative_case(result: SemanticEvalResult) -> bool:
 
 - [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_semantic_guard_eval_runner.py -k fixture -q` — Expected: PASS.
 
-- [ ] **Step 5: Add corpus fixtures + commit.** Add 2-3 `type: fixture` cases to `evals/semantic_guard_cases.yaml` under `promotion_pattern: concept_absent_full_metadata` (e.g. 删除率 substitution, 删除的订单 omission, a valid 退款率 negative). Each carries `full_schema_context`, `sql`, and `expected`; every positive fixture must include `expected.refutation_pattern` equal to its `promotion_pattern`.
+- [x] **Step 5: Add corpus fixtures + commit.** Add 2-3 `type: fixture` cases to `evals/semantic_guard_cases.yaml` under `promotion_pattern: concept_absent_full_metadata` (e.g. 删除率 substitution, 删除的订单 omission, a valid 退款率 negative). Each carries `full_schema_context`, `sql`, and `expected`; every positive fixture must include `expected.refutation_pattern` equal to its `promotion_pattern`.
 
 ```bash
 git add scripts/run_semantic_guard_eval.py evals/semantic_guard_cases.yaml backend/tests/test_semantic_guard_eval_runner.py
@@ -698,7 +698,7 @@ The block must be triggered by — and its message must name — **only** the pr
 
 - [x] **Step 4: Run tests** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_promoted_patterns.py backend/tests/test_semantic_grounding.py -q` — Expected: PASS.
 
-- [ ] **Step 5: Smoke tier + commit.** Tag five workflow cases `smoke` (deletion-rate substitution, deleted-orders omission, refund adjacent status, valid refund rate, rank correlation), exclude `smoke`-tagged results from `evaluate_promotion_readiness`, and add a `--smoke-only` selector. Print smoke results in their own non-gating report section.
+- [x] **Step 5: Smoke tier + commit.** Tag five workflow cases `smoke` (deletion-rate substitution, deleted-orders omission, refund adjacent status, valid refund rate, rank correlation), exclude `smoke`-tagged results from `evaluate_promotion_readiness`, and add a `--smoke-only` selector. Print smoke results in their own non-gating report section.
 
 ```bash
 git add scripts/run_semantic_guard_eval.py backend/app/agent/promoted_patterns.py backend/app/agent/semantic_grounding.py evals/semantic_guard_cases.yaml backend/tests/test_promoted_patterns.py backend/tests/test_semantic_grounding.py
@@ -713,7 +713,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [x] **Step 1: Run the entire backend suite** — `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests -q` — Expected: PASS (455+ plus new tests).
 - [x] **Step 2: Update the spec** rollout section: production `semantic_guard_mode` stays `off` until a pattern is promoted; `warn` for evidence collection; `enforce` only with a non-empty `promoted_patterns.json`; availability is a separate SLO and `enforce` still fails open on outage.
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-06-12-semantic-grounding-guard-design.md

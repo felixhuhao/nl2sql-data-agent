@@ -312,7 +312,7 @@ def test_search_values_embeds_question_for_vector_value_search(monkeypatch):
     assert fake_store.search_calls == [("value_vectors", [0.1, 0.2, 0.3], 20, _datasource_filter())]
 
 
-def _settings(vector_enabled=True, embedding_model="D:/Models/BAAI/bge-m3", threshold=0.7):
+def _settings(vector_enabled=True, embedding_model="local/custom-embedding-model", threshold=0.7):
     return SimpleNamespace(
         vector_enabled=vector_enabled,
         embedding_model=embedding_model,
