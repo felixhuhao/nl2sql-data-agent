@@ -17,6 +17,7 @@ from backend.app.agent.semantic_grounding import (
     RequiredConcept,
     SemanticGroundingIssue,
 )
+from backend.app.agent.schema_evidence import SchemaEvidence
 from backend.app.agent.state import AgentState
 from backend.app.api.chat import WorkflowPayloadError, _workflow_step_payload, iter_chat_events
 from backend.app.api.session_store import SessionStore
@@ -900,7 +901,16 @@ class _ChatSemanticAuditor:
     def full_schema_context(self, *, datasource_name: str) -> str:
         return "# Full Schema Context"
 
-    def audit(self, issue: SemanticGroundingIssue, *, full_schema_context: str) -> RefutationAuditResult:
+    def evidence(self, *, datasource_name: str) -> SchemaEvidence:
+        return SchemaEvidence(datasource_name=datasource_name)
+
+    def audit(
+        self,
+        issue: SemanticGroundingIssue,
+        *,
+        evidence: SchemaEvidence,
+        concept: RequiredConcept | None = None,
+    ) -> RefutationAuditResult:
         return RefutationAuditResult(confirmed=True, reason="No evidence.")
 
 

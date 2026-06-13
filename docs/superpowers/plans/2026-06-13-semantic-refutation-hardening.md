@@ -4,7 +4,7 @@
 
 **Goal:** Replace the blunt substring corroboration in `SemanticRefutationAuditor` with structured, channel-by-channel, datasource-scoped refutation plus a `SELECT DISTINCT` probe for value-level concepts, so a confirmed refutation is trustworthy enough to gate a hard block.
 
-**Architecture:** A new `SchemaEvidence` value object is built once per datasource from the existing datasource-scoped metadata accessors (`list_tables`, `list_columns`, `list_metrics`, `list_aliases`, `list_verified_queries`). The auditor confirms a refutation only when a requested concept is absent from **every** channel. For value-typed concepts that name a `(target_column, requested_value)`, an injected executor runs a bounded `SELECT DISTINCT` to confirm the value is genuinely absent before confirming. The auditor still *only refutes* — finding evidence makes it abstain, never assert support.
+**Architecture:** A new `SchemaEvidence` value object is built once per datasource from the existing datasource-scoped metadata accessors (`list_tables`, `list_columns`, `list_metrics`, `list_aliases`, `list_verified_queries`). The auditor confirms a refutation only when a requested concept is absent from **every** channel. For value-typed concepts that name a metadata-validated `(target_table, target_column, requested_value)`, an injected executor runs a bounded `SELECT DISTINCT` to confirm the value is genuinely absent before confirming. The auditor still *only refutes* — finding evidence makes it abstain, never assert support.
 
 **Tech Stack:** Python 3.12, dataclasses, sqlglot (already used), pytest. Metadata via `backend.app.metadata.service`. Execution via `backend.app.execution.runner` / `backend.app.sql_guard.guard`.
 
@@ -17,8 +17,9 @@
 | File | Responsibility | Change |
 |---|---|---|
 | `backend/app/agent/schema_evidence.py` | `SchemaEvidence` model + `build_schema_evidence(datasource_name)` channel builder + normalization | **Create** |
-| `backend/app/agent/semantic_grounding.py` | `SemanticRefutationAuditor` uses structured evidence + DISTINCT probe; `RequiredConcept` gains `target_column`/`requested_value`; `audit()` takes evidence + concept | **Modify** |
-| `backend/app/agent/prompts/semantic_grounding.py` | extraction prompt asks for `target_column`/`requested_value` on value-typed concepts | **Modify** |
+| `backend/app/agent/semantic_grounding.py` | `SemanticRefutationAuditor` uses structured evidence + DISTINCT probe; `RequiredConcept` gains `target_table`/`target_column`/`requested_value`; `audit()` takes evidence + concept | **Modify** |
+| `backend/app/agent/prompts/semantic_grounding.py` | extraction prompt asks for `target_table`/`target_column`/`requested_value` on value-typed concepts | **Modify** |
+| `backend/app/sql_guard/guard.py` | `guard_sql` accepts a narrow `max_result_rows` override for the internal 1000-row semantic probe; user SQL default stays 500 | **Modify** |
 | `backend/tests/test_schema_evidence.py` | unit tests for evidence builder | **Create** |
 | `backend/tests/test_semantic_grounding.py` | extend: structured refutation, DISTINCT probe, parse of new fields | **Modify** |
 
@@ -33,7 +34,7 @@
 - Create: `backend/app/agent/schema_evidence.py`
 - Test: `backend/tests/test_schema_evidence.py`
 
-The builder pulls every datasource-scoped channel and normalizes tokens with the **same** normalization already used in `semantic_grounding._normalize_evidence_text` (lowercased ASCII alnum runs + CJK runs), so concept matching is consistent across the codebase.
+The builder pulls every datasource-scoped channel into **entry-scoped evidence records**, not a single concatenated blob. Normalization stays consistent with the current guard (lowercased ASCII alnum runs + CJK runs), but matching is done per entry with exact phrase / token-set semantics so short strings such as `id` cannot match inside `paid`, and concepts cannot be assembled accidentally across unrelated metadata fields.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -46,7 +47,7 @@ def _fake_sources():
     tables = [{"table_name": "fact_orders", "display_name": "订单", "description": "订单事实表", "domain": "sales"}]
     columns = {
         "fact_orders": [
-            {"column_name": "order_status", "description": "订单状态", "sample_values": ["paid", "completed", "refunded"]},
+            {"column_name": "order_status", "description": "订单状态", "sample_values": '["paid", "completed", "refunded"]'},
             {"column_name": "payment_amount", "description": "支付金额", "sample_values": []},
         ]
     }
@@ -69,9 +70,12 @@ def test_build_schema_evidence_indexes_all_channels():
     assert evidence.has_concept_evidence("退款率") is True       # metric label
     assert evidence.has_concept_evidence("订单状态") is True      # column description
     assert evidence.has_concept_evidence("删除率") is False       # absent everywhere
+    assert evidence.has_concept_evidence("id") is False          # does not match inside "paid"
     assert evidence.column_values("order_status") == ("paid", "completed", "refunded")
     assert evidence.columns_with_value("refunded") == ("order_status",)
     assert evidence.columns_with_value("cancelled") == ()
+    assert evidence.has_column("fact_orders", "order_status") is True
+    assert evidence.unique_table_for_column("order_status") == "fact_orders"
 
 
 def test_has_concept_evidence_is_normalization_insensitive():
@@ -84,6 +88,20 @@ def test_has_concept_evidence_is_normalization_insensitive():
         list_verified_queries=lambda datasource_name: [],
     )
     assert evidence.has_concept_evidence("refund   rate") is True   # spacing/case ignored
+
+
+def test_has_concept_evidence_does_not_match_across_entries():
+    evidence = build_schema_evidence(
+        "duckdb_ecommerce",
+        list_tables=lambda datasource_name: [{"table_name": "refund", "display_name": "", "description": "", "domain": ""}],
+        list_columns=lambda table_name, datasource_name: [
+            {"column_name": "rate", "description": "", "sample_values": []},
+        ],
+        list_metrics=lambda datasource_name: [],
+        list_aliases=lambda datasource_name: [],
+        list_verified_queries=lambda datasource_name: [],
+    )
+    assert evidence.has_concept_evidence("refund rate") is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -98,38 +116,72 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'backend.app.agent.sch
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata import service
 
 
-def _normalize(text: str) -> str:
+def normalize_evidence_text(text: object) -> str:
     return "".join(re.findall(r"[a-z0-9]+|[㐀-鿿]+", str(text).casefold()))
+
+
+def _terms(text: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[a-z0-9]+|[㐀-鿿]+", str(text).casefold()))
+
+
+@dataclass(frozen=True)
+class EvidenceEntry:
+    channel: str
+    text: str
+    table_name: str = ""
+    column_name: str = ""
+    normalized: str = ""
+    terms: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
 class SchemaEvidence:
     datasource_name: str
-    # one normalized blob per channel for concept-presence checks
-    _channels: tuple[str, ...] = ()
+    # Individual evidence entries; never concatenate unrelated metadata fields.
+    _entries: tuple[EvidenceEntry, ...] = ()
     # column_name -> ordered distinct sample values (original casing)
     _column_values: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # normalized value -> column names that enumerate it
     _value_index: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # column_name -> table names that own it, for probe target validation
+    _column_tables: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def has_concept_evidence(self, concept: str) -> bool:
-        token = _normalize(concept)
+        token = normalize_evidence_text(concept)
         if not token:
             return False
-        return any(token in channel for channel in self._channels)
+        concept_terms = _terms(concept)
+        return any(_entry_supports_concept(token, concept_terms, entry) for entry in self._entries)
 
     def column_values(self, column_name: str) -> tuple[str, ...]:
         return self._column_values.get(column_name, ())
 
     def columns_with_value(self, value: str) -> tuple[str, ...]:
-        return self._value_index.get(_normalize(value), ())
+        return self._value_index.get(normalize_evidence_text(value), ())
+
+    def has_sample_value(self, column_name: str, value: str) -> bool:
+        return self.value_matches(value, self.column_values(column_name))
+
+    def value_matches(self, value: str, candidates: Iterable[object]) -> bool:
+        normalized = normalize_evidence_text(value)
+        if not normalized:
+            return False
+        return normalized in {normalize_evidence_text(candidate) for candidate in candidates}
+
+    def has_column(self, table_name: str, column_name: str) -> bool:
+        return table_name in self._column_tables.get(column_name, ())
+
+    def unique_table_for_column(self, column_name: str) -> str | None:
+        tables = self._column_tables.get(column_name, ())
+        return tables[0] if len(tables) == 1 else None
 
 
 ListTables = Callable[..., list[dict]]
@@ -137,6 +189,60 @@ ListColumns = Callable[..., list[dict]]
 ListMetrics = Callable[..., list[dict]]
 ListAliases = Callable[..., list[dict]]
 ListVerified = Callable[..., list[dict]]
+
+
+def _entry_supports_concept(normalized_concept: str, concept_terms: frozenset[str], entry: EvidenceEntry) -> bool:
+    if normalized_concept == entry.normalized:
+        return True
+    if concept_terms and concept_terms.issubset(entry.terms):
+        return True
+    # CJK business terms are often unsegmented and commonly two characters
+    # long. Keep containment CJK-only and entry-scoped so ASCII short tokens
+    # such as "id" cannot match inside values such as "paid".
+    if re.fullmatch(r"[\u3400-\u9fff]+", normalized_concept) and len(normalized_concept) >= 2:
+        return normalized_concept in entry.normalized
+    return False
+
+
+def _add_entry(
+    entries: list[EvidenceEntry],
+    channel: str,
+    text: object,
+    *,
+    table_name: str = "",
+    column_name: str = "",
+) -> None:
+    raw = str(text or "").strip()
+    normalized = normalize_evidence_text(raw)
+    if not normalized:
+        return
+    entries.append(
+        EvidenceEntry(
+            channel=channel,
+            text=raw,
+            table_name=table_name,
+            column_name=column_name,
+            normalized=normalized,
+            terms=_terms(raw),
+        )
+    )
+
+
+def _sample_values(raw_values: object) -> tuple[str, ...]:
+    if isinstance(raw_values, str):
+        try:
+            parsed = json.loads(raw_values)
+        except json.JSONDecodeError:
+            parsed = []
+    else:
+        parsed = raw_values
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(dict.fromkeys(text for value in parsed if (text := str(value).strip())))
+
+
+def _merge_values(existing: tuple[str, ...], new_values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*existing, *new_values)))
 
 
 def build_schema_evidence(
@@ -148,53 +254,64 @@ def build_schema_evidence(
     list_aliases: ListAliases = service.list_aliases,
     list_verified_queries: ListVerified = service.list_verified_queries,
 ) -> SchemaEvidence:
-    channels: list[str] = []
+    entries: list[EvidenceEntry] = []
     column_values: dict[str, tuple[str, ...]] = {}
     value_index: dict[str, list[str]] = {}
+    column_tables: dict[str, list[str]] = {}
 
     tables = list_tables(datasource_name=datasource_name)
-    channels.append(_normalize(" ".join(
-        f"{t.get('table_name','')} {t.get('display_name','')} {t.get('description','')} {t.get('domain','')}"
-        for t in tables
-    )))
-
-    column_blob_parts: list[str] = []
     for table in tables:
-        for column in list_columns(table_name=table["table_name"], datasource_name=datasource_name):
-            name = column.get("column_name", "")
-            column_blob_parts.append(f"{name} {column.get('description','')}")
-            samples = tuple(str(v) for v in (column.get("sample_values") or []))
-            if samples:
-                column_values[name] = samples
-                for value in samples:
-                    value_index.setdefault(_normalize(value), [])
-                    if name not in value_index[_normalize(value)]:
-                        value_index[_normalize(value)].append(name)
-    channels.append(_normalize(" ".join(column_blob_parts)))
+        table_name = str(table.get("table_name", ""))
+        for attr in ("table_name", "display_name", "description", "domain"):
+            _add_entry(entries, f"table.{attr}", table.get(attr), table_name=table_name)
 
-    channels.append(_normalize(" ".join(
-        f"{m.get('name','')} {m.get('label','')} {m.get('description','')}"
-        for m in list_metrics(datasource_name=datasource_name)
-    )))
-    channels.append(_normalize(" ".join(
-        a.get("alias", "") for a in list_aliases(datasource_name=datasource_name)
-    )))
-    channels.append(_normalize(" ".join(
-        f"{q.get('question','')}" for q in list_verified_queries(datasource_name=datasource_name)
-    )))
+    for table in tables:
+        table_name = str(table.get("table_name", ""))
+        for column in list_columns(table_name=table_name, datasource_name=datasource_name):
+            name = column.get("column_name", "")
+            column_tables.setdefault(name, [])
+            if table_name not in column_tables[name]:
+                column_tables[name].append(table_name)
+            _add_entry(entries, "column.name", name, table_name=table_name, column_name=name)
+            _add_entry(entries, "column.description", column.get("description"), table_name=table_name, column_name=name)
+            samples = _sample_values(column.get("sample_values"))
+            if samples:
+                column_values[name] = _merge_values(column_values.get(name, ()), samples)
+                for value in samples:
+                    _add_entry(entries, "column.sample_value", value, table_name=table_name, column_name=name)
+                    normalized_value = normalize_evidence_text(value)
+                    value_index.setdefault(normalized_value, [])
+                    if name not in value_index[normalized_value]:
+                        value_index[normalized_value].append(name)
+
+    for metric in list_metrics(datasource_name=datasource_name):
+        for attr in ("name", "label", "description", "expression"):
+            _add_entry(entries, f"metric.{attr}", metric.get(attr))
+    for alias in list_aliases(datasource_name=datasource_name):
+        _add_entry(
+            entries,
+            "alias",
+            alias.get("alias"),
+            table_name=str(alias.get("table_name", "")),
+            column_name=str(alias.get("column_name", "")),
+        )
+    for query in list_verified_queries(datasource_name=datasource_name):
+        for attr in ("question", "sql"):
+            _add_entry(entries, f"verified_query.{attr}", query.get(attr))
 
     return SchemaEvidence(
         datasource_name=datasource_name,
-        _channels=tuple(channel for channel in channels if channel),
+        _entries=tuple(entries),
         _column_values=column_values,
         _value_index={key: tuple(value) for key, value in value_index.items()},
+        _column_tables={key: tuple(value) for key, value in column_tables.items()},
     )
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `PYTHONPATH=. backend/.venv/bin/python -m pytest backend/tests/test_schema_evidence.py -q`
-Expected: PASS (2 passed)
+Expected: PASS (3 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -298,12 +415,14 @@ class SemanticRefutationAuditor:
         )
 ```
 
-Delete the now-unused `_concept_has_schema_evidence`, `_normalize_evidence_text`, `_full_schema_context`, the `FullSchemaContextBuilder` alias, and the `build_schema_context` import. Update `semantic_guard_node` to build/cache evidence instead of the context string:
+Delete the now-unused `_concept_has_schema_evidence` and `_normalize_evidence_text`. Keep the rendered `full_schema_context` path for the verifier prompt; the LLM still needs the human-readable context. Update `semantic_guard_node` to build/cache structured evidence separately for the auditor:
 
 ```python
-# in semantic_guard_node, replace the `full_context = _full_schema_context(...)` block and audit loop:
-    evidence = _evidence(state, auditor)
-    concepts = _required_concepts(state, verifier, evidence)
+# in semantic_guard_node, keep `full_context = _full_schema_context(state)` for the verifier prompt,
+# and add structured evidence for the deterministic audit:
+    full_context = _full_schema_context(state)
+    evidence = _schema_evidence(state, auditor)
+    concepts = _required_concepts(state, verifier, full_context)
     ...
     for issue in result.issues:
         concept = _concept_for_issue(issue, unsupported_concepts)
@@ -311,10 +430,16 @@ Delete the now-unused `_concept_has_schema_evidence`, `_normalize_evidence_text`
         state.grounding_warnings.append(_warning_from_issue(issue, refutation))
 ```
 
-Add helpers and adjust `_required_concepts` to accept evidence instead of a string (it only needs the datasource-derived context for the LLM call — pass `state.full_schema_context` built lazily for the *verifier prompt*, but the audit uses `evidence`):
+Add helpers. `_required_concepts` continues to accept the rendered context string; only the auditor uses `SchemaEvidence`:
 
 ```python
-def _evidence(state: AgentState, auditor: SemanticRefutationAuditor) -> SchemaEvidence:
+def _full_schema_context(state: AgentState) -> str:
+    if state.full_schema_context is None:
+        state.full_schema_context = build_schema_context(datasource_name=state.datasource_name)
+    return state.full_schema_context
+
+
+def _schema_evidence(state: AgentState, auditor: SemanticRefutationAuditor) -> SchemaEvidence:
     if state.schema_evidence is None:
         state.schema_evidence = auditor.evidence(datasource_name=state.datasource_name)
     return state.schema_evidence
@@ -326,7 +451,7 @@ def _concept_for_issue(issue, concepts):
     return by_id.get(issue.concept_id) or by_name.get(issue.concept)
 ```
 
-Add `schema_evidence: "SchemaEvidence | None" = None` to `AgentState` (and reset it in `repair.reset_failure_state`). For the verifier prompt's `full_schema_context`, keep building the rendered string via `build_schema_context` in `_required_concepts` only when calling `verifier.extract_required_concepts` (cached on `state.full_schema_context`).
+Add `schema_evidence: "SchemaEvidence | None" = None` to `AgentState`. **Do not reset it in `repair.reset_failure_state`**; the repair loop intentionally preserves question-invariant context such as `required_concepts` and `full_schema_context`, and structured evidence should be built once per query/datasource, not once per repair candidate.
 
 - [ ] **Step 4: Run the full semantic suite**
 
@@ -346,7 +471,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## Task 3: `SELECT DISTINCT` probe for value-level concepts
 
-When a requested concept is a **value** (e.g. "status = cancelled") that is absent from enumerated `sample_values`, run a bounded `SELECT DISTINCT <column>` to confirm it is genuinely absent before confirming the refutation. The probe runs **only** when the concept carries `(target_column, requested_value)`; otherwise the concept-level path (Task 2) applies. The probe never tests a substituted proxy value.
+When a requested concept is a **value** (e.g. "status = cancelled") that is absent from metadata evidence, run a bounded `SELECT DISTINCT <table>.<column>` to confirm it is genuinely absent before confirming the refutation. The probe runs **only** when the concept carries a metadata-validated `(target_table, target_column, requested_value)` (or a unique metadata-resolvable column); otherwise the auditor abstains. The probe never tests a substituted proxy value.
 
 **Files:**
 - Modify: `backend/app/agent/semantic_grounding.py` (`RequiredConcept`, parse, `audit`)
@@ -356,23 +481,26 @@ When a requested concept is a **value** (e.g. "status = cancelled") that is abse
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def _value_concept(column: str, value: str) -> RequiredConcept:
+def _value_concept(table: str, column: str, value: str) -> RequiredConcept:
     return RequiredConcept(
         concept=f"{column}={value}", concept_id="c1", concept_type="value",
-        supported=False, target_column=column, requested_value=value,
+        supported=False, target_table=table, target_column=column, requested_value=value,
     )
 
 
 def test_distinct_probe_confirms_when_requested_value_absent_in_data():
     probed = {}
-    def fake_executor(column, *, datasource_name):
+    def fake_executor(table, column, *, datasource_name):
+        probed["table"] = table
         probed["column"] = column
         return ("paid", "completed", "refunded")  # 'cancelled' absent
     auditor = SemanticRefutationAuditor(
         evidence_builder=lambda datasource_name: build_schema_evidence(
             "d",
-            list_tables=lambda datasource_name: [],
-            list_columns=lambda table_name, datasource_name: [],
+            list_tables=lambda datasource_name: [{"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
             list_metrics=lambda datasource_name: [],
             list_aliases=lambda datasource_name: [],
             list_verified_queries=lambda datasource_name: [],
@@ -380,8 +508,9 @@ def test_distinct_probe_confirms_when_requested_value_absent_in_data():
         distinct_executor=fake_executor,
     )
     issue = SemanticGroundingIssue(concept="order_status=cancelled", failure_kind="substituted", concept_id="c1")
-    result = auditor.audit(issue, evidence=auditor.evidence(datasource_name="d"), concept=_value_concept("order_status", "cancelled"))
+    result = auditor.audit(issue, evidence=auditor.evidence(datasource_name="d"), concept=_value_concept("fact_orders", "order_status", "cancelled"))
     assert result.confirmed is True
+    assert probed["table"] == "fact_orders"
     assert probed["column"] == "order_status"
 
 
@@ -389,17 +518,44 @@ def test_distinct_probe_abstains_when_requested_value_present_in_data():
     auditor = SemanticRefutationAuditor(
         evidence_builder=lambda datasource_name: build_schema_evidence(
             "d",
-            list_tables=lambda datasource_name: [],
-            list_columns=lambda table_name, datasource_name: [],
+            list_tables=lambda datasource_name: [{"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
             list_metrics=lambda datasource_name: [],
             list_aliases=lambda datasource_name: [],
             list_verified_queries=lambda datasource_name: [],
         ),
-        distinct_executor=lambda column, *, datasource_name: ("paid", "cancelled"),
+        distinct_executor=lambda table, column, *, datasource_name: ("paid", "cancelled"),
     )
     issue = SemanticGroundingIssue(concept="order_status=cancelled", failure_kind="substituted", concept_id="c1")
-    result = auditor.audit(issue, evidence=auditor.evidence(datasource_name="d"), concept=_value_concept("order_status", "cancelled"))
+    result = auditor.audit(issue, evidence=auditor.evidence(datasource_name="d"), concept=_value_concept("fact_orders", "order_status", "cancelled"))
     assert result.confirmed is False
+
+
+def test_value_audit_abstains_when_metadata_describes_requested_value_meaning():
+    called = False
+    def fake_executor(table, column, *, datasource_name):
+        nonlocal called
+        called = True
+        return ()
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [{"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态；cancelled=已取消/取消", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+    issue = SemanticGroundingIssue(concept="取消", failure_kind="omitted", concept_id="c1")
+    result = auditor.audit(issue, evidence=auditor.evidence(datasource_name="d"), concept=_value_concept("fact_orders", "order_status", "取消"))
+    assert result.confirmed is False
+    assert called is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -420,6 +576,7 @@ class RequiredConcept:
     supported: bool = False
     evidence: tuple[str, ...] = ()
     explanation: str = ""
+    target_table: str = ""
     target_column: str = ""
     requested_value: str = ""
 ```
@@ -427,6 +584,7 @@ class RequiredConcept:
 Parse them in `_parse_required_concept` (both optional):
 
 ```python
+        target_table=_optional_string(value.get("target_table"), ""),
         target_column=_optional_string(value.get("target_column"), ""),
         requested_value=_optional_string(value.get("requested_value"), ""),
 ```
@@ -434,25 +592,53 @@ Parse them in `_parse_required_concept` (both optional):
 Default distinct executor (guarded read, bounded), injectable:
 
 ```python
-def _default_distinct_executor(column: str, *, datasource_name: str) -> tuple[str, ...]:
+def _default_distinct_executor(table_name: str, column_name: str, *, datasource_name: str) -> tuple[str, ...]:
+    import sqlglot
     from backend.app.sql_guard.guard import guard_sql
     from backend.app.sql_guard.scope import build_default_guard_scope
     from backend.app.execution.runner import execute_guarded_sql
-    # column is a bare identifier from metadata; resolve its table via metadata, not the LLM.
-    table = _table_for_column(column, datasource_name)
-    if table is None:
-        raise SemanticVerifierUnavailable(f"No table found for column {column!r}.")
-    sql = f"SELECT DISTINCT {column} FROM {table} LIMIT 1000"
-    guard_result = guard_sql(sql, build_default_guard_scope(datasource_name=datasource_name), datasource_name=datasource_name)
+    from backend.app.connectors.registry import get_datasource_dialect
+    # table/column have already been validated against metadata.
+    dialect = get_datasource_dialect(datasource_name)
+    table_sql = sqlglot.exp.to_identifier(table_name, quoted=True).sql(dialect=dialect)
+    column_sql = sqlglot.exp.to_identifier(column_name, quoted=True).sql(dialect=dialect)
+    sql = f"SELECT DISTINCT {column_sql} FROM {table_sql} LIMIT 1000"
+    guard_result = guard_sql(
+        sql,
+        build_default_guard_scope(datasource_name=datasource_name),
+        datasource_name=datasource_name,
+        max_result_rows=1000,
+    )
     if not guard_result.allowed:
         raise SemanticVerifierUnavailable(f"DISTINCT probe rejected by guard: {guard_result.reason}")
     query_result = execute_guarded_sql(guard_result, datasource_name=datasource_name)
     return tuple(str(row[0]) for row in query_result.rows)
 ```
 
-Add `_table_for_column` using `service.list_tables` + `service.list_columns` (first table that has the column). Extend `audit` to probe value concepts:
+Add metadata target validation before probing:
+
+- If `target_table` is provided, confirm that table exists and owns `target_column`; otherwise abstain.
+- If only `target_column` is provided, resolve it only when exactly one enabled table owns that column; duplicate column names such as `date_key` must abstain.
+- Never use an LLM-supplied table/column that is not present in datasource metadata.
+
+If a value concept's target cannot be validated, abstain instead of falling back to concept-level confirmed refutation. That is intentional conservatism: a hallucinated or ambiguous Stage A target should never create block-grade evidence. A non-value concept can still use the concept-level path independently.
+
+Extend `audit` to probe value concepts:
 
 ```python
+def _validated_target(concept: RequiredConcept, evidence: SchemaEvidence) -> tuple[str | None, str, str]:
+    table = concept.target_table.strip()
+    column = concept.target_column.strip()
+    value = concept.requested_value.strip()
+    if not column or not value:
+        return None, column, value
+    if table:
+        return (table, column, value) if evidence.has_column(table, column) else (None, column, value)
+    unique_table = evidence.unique_table_for_column(column)
+    return (unique_table, column, value) if unique_table else (None, column, value)
+
+
+class SemanticRefutationAuditor:
     def __init__(self, evidence_builder=build_schema_evidence, distinct_executor=_default_distinct_executor):
         self._evidence_builder = evidence_builder
         self._distinct_executor = distinct_executor
@@ -463,26 +649,32 @@ Add `_table_for_column` using `service.list_tables` + `service.list_columns` (fi
             return RefutationAuditResult(confirmed=False, reason="No requested concept was provided by the verifier.")
         # value-level path: the question named a specific value to filter on
         if concept is not None and concept.concept_type == "value" and concept.target_column and concept.requested_value:
-            return self._audit_value(concept, evidence)
+            return self._audit_value(name, concept, evidence)
         if evidence.has_concept_evidence(name):
             return RefutationAuditResult(confirmed=False, reason=f"Full datasource metadata contains evidence for {name!r}; deterministic audit abstained.")
         return RefutationAuditResult(confirmed=True, reason=f"Full datasource metadata contains no evidence for {name!r} across any channel.")
 
-    def _audit_value(self, concept, evidence):
-        col, value = concept.target_column, concept.requested_value
-        # cheap path: value enumerated in sample metadata -> evidence exists -> abstain
-        if _normalize(value) in {_normalize(v) for v in evidence.column_values(col)}:
+    def _audit_value(self, issue_concept, concept, evidence):
+        table, col, value = _validated_target(concept, evidence)
+        if table is None:
+            return RefutationAuditResult(confirmed=False, reason="Value target was not uniquely validated in metadata; abstained.")
+        # Metadata evidence/aliases/descriptions beat raw distinct values. If the
+        # requested value meaning is documented, the deterministic layer abstains.
+        if evidence.has_concept_evidence(value) or evidence.has_concept_evidence(issue_concept):
+            return RefutationAuditResult(confirmed=False, reason=f"Metadata contains evidence for {value!r}; abstained.")
+        # Cheap path: value enumerated in sample metadata -> evidence exists -> abstain.
+        if evidence.has_sample_value(col, value):
             return RefutationAuditResult(confirmed=False, reason=f"{value!r} is an enumerated sample value of {col!r}; abstained.")
         try:
-            actual = self._distinct_executor(col, datasource_name=evidence.datasource_name)
-        except SemanticVerifierUnavailable as exc:
+            actual = self._distinct_executor(table, col, datasource_name=evidence.datasource_name)
+        except Exception as exc:
             return RefutationAuditResult(confirmed=False, reason=f"DISTINCT probe unavailable for {col!r}: {exc}; abstained.")
-        if _normalize(value) in {_normalize(v) for v in actual}:
+        if evidence.value_matches(value, actual):
             return RefutationAuditResult(confirmed=False, reason=f"{value!r} exists in {col!r}; abstained.")
         return RefutationAuditResult(confirmed=True, reason=f"{value!r} is absent from {col!r} (DISTINCT probe).")
 ```
 
-Import `_normalize` from `schema_evidence` (or re-export). Add a one-line note to the extraction prompt in `prompts/semantic_grounding.py`: for a value-typed concept (a specific status/enum the question filters on), include `"target_column"` and `"requested_value"`.
+Use `SchemaEvidence.has_sample_value()` and `SchemaEvidence.value_matches()` rather than importing private normalization helpers across modules. Add a one-line note to the extraction prompt in `prompts/semantic_grounding.py`: for a value-typed concept (a specific status/enum the question filters on), include `"target_table"`, `"target_column"`, and `"requested_value"` only when the target comes from metadata evidence; otherwise leave target fields blank so the auditor abstains.
 
 - [ ] **Step 4: Run tests**
 

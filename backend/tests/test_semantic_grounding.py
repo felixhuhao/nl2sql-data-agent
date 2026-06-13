@@ -15,6 +15,7 @@ from backend.app.agent.semantic_grounding import (
     parse_grounding_check_content,
     semantic_guard_node,
 )
+from backend.app.agent.schema_evidence import SchemaEvidence, build_schema_evidence
 from backend.app.agent.state import AgentState
 
 
@@ -43,6 +44,38 @@ def test_parse_concept_extraction_content_accepts_structured_json():
             supported=False,
             evidence=(),
             explanation="No deletion concept exists.",
+        ),
+    )
+
+
+def test_parse_concept_extraction_content_accepts_value_target_fields():
+    result = parse_concept_extraction_content(
+        """
+        {
+          "concepts": [
+            {
+              "concept_id": "c9",
+              "concept": "order_status=cancelled",
+              "concept_type": "value",
+              "supported": false,
+              "target_table": "fact_orders",
+              "target_column": "order_status",
+              "requested_value": "cancelled"
+            }
+          ]
+        }
+        """
+    )
+
+    assert result.concepts == (
+        RequiredConcept(
+            concept="order_status=cancelled",
+            concept_id="c9",
+            concept_type="value",
+            supported=False,
+            target_table="fact_orders",
+            target_column="order_status",
+            requested_value="cancelled",
         ),
     )
 
@@ -93,11 +126,22 @@ def test_parse_grounding_check_content_requires_issue_identifier():
 
 
 def test_refutation_auditor_confirms_absent_requested_concept():
-    auditor = SemanticRefutationAuditor(full_schema_context_builder=lambda datasource_name: "# Tables\n- fact_orders")
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            datasource_name,
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        )
+    )
 
     result = auditor.audit(
         SemanticGroundingIssue(concept="删除率", failure_kind="substituted"),
-        full_schema_context=auditor.full_schema_context(datasource_name="duckdb_ecommerce"),
+        evidence=auditor.evidence(datasource_name="duckdb_ecommerce"),
     )
 
     assert result.confirmed is True
@@ -106,16 +150,185 @@ def test_refutation_auditor_confirms_absent_requested_concept():
 
 def test_refutation_auditor_abstains_when_full_metadata_has_evidence():
     auditor = SemanticRefutationAuditor(
-        full_schema_context_builder=lambda datasource_name: "# Metric Definitions\n- 退款率 (refund_rate)"
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            datasource_name,
+            list_tables=lambda datasource_name: [],
+            list_columns=lambda table_name, datasource_name: [],
+            list_metrics=lambda datasource_name: [
+                {"name": "refund_rate", "label": "退款率", "description": "", "expression": "x"}
+            ],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        )
     )
 
     result = auditor.audit(
         SemanticGroundingIssue(concept="退款率", failure_kind="substituted"),
-        full_schema_context=auditor.full_schema_context(datasource_name="duckdb_ecommerce"),
+        evidence=auditor.evidence(datasource_name="duckdb_ecommerce"),
     )
 
     assert result.confirmed is False
     assert "abstained" in result.reason
+
+
+def test_distinct_probe_confirms_when_requested_value_absent_in_data():
+    probed = {}
+
+    def fake_executor(table, column, *, datasource_name):
+        probed["table"] = table
+        probed["column"] = column
+        return ("paid", "completed", "refunded")
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+    issue = SemanticGroundingIssue(concept="order_status=cancelled", failure_kind="substituted", concept_id="c1")
+
+    result = auditor.audit(
+        issue,
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=_value_concept("fact_orders", "order_status", "cancelled"),
+    )
+
+    assert result.confirmed is True
+    assert probed["table"] == "fact_orders"
+    assert probed["column"] == "order_status"
+
+
+def test_distinct_probe_abstains_when_requested_value_present_in_data():
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=lambda table, column, *, datasource_name: ("paid", "cancelled"),
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(concept="order_status=cancelled", failure_kind="substituted", concept_id="c1"),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=_value_concept("fact_orders", "order_status", "cancelled"),
+    )
+
+    assert result.confirmed is False
+
+
+def test_value_audit_abstains_when_metadata_describes_requested_value_meaning():
+    called = False
+
+    def fake_executor(table, column, *, datasource_name):
+        nonlocal called
+        called = True
+        return ()
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态；cancelled=已取消/取消", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(concept="取消", failure_kind="omitted", concept_id="c1"),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=_value_concept("fact_orders", "order_status", "取消"),
+    )
+
+    assert result.confirmed is False
+    assert called is False
+
+
+def test_value_audit_abstains_when_target_column_is_not_validated():
+    called = False
+
+    def fake_executor(table, column, *, datasource_name):
+        nonlocal called
+        called = True
+        return ()
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=fake_executor,
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(concept="order_state=cancelled", failure_kind="substituted", concept_id="c1"),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=_value_concept("fact_orders", "order_state", "cancelled"),
+    )
+
+    assert result.confirmed is False
+    assert called is False
+
+
+def test_distinct_probe_abstains_when_executor_raises_generic_exception():
+    def failing_executor(table, column, *, datasource_name):
+        raise RuntimeError("database unavailable")
+
+    auditor = SemanticRefutationAuditor(
+        evidence_builder=lambda datasource_name: build_schema_evidence(
+            "d",
+            list_tables=lambda datasource_name: [
+                {"table_name": "fact_orders", "display_name": "", "description": "", "domain": ""}
+            ],
+            list_columns=lambda table_name, datasource_name: [
+                {"column_name": "order_status", "description": "订单状态", "sample_values": []},
+            ],
+            list_metrics=lambda datasource_name: [],
+            list_aliases=lambda datasource_name: [],
+            list_verified_queries=lambda datasource_name: [],
+        ),
+        distinct_executor=failing_executor,
+    )
+
+    result = auditor.audit(
+        SemanticGroundingIssue(concept="order_status=cancelled", failure_kind="substituted", concept_id="c1"),
+        evidence=auditor.evidence(datasource_name="d"),
+        concept=_value_concept("fact_orders", "order_status", "cancelled"),
+    )
+
+    assert result.confirmed is False
+    assert "database unavailable" in result.reason
 
 
 def test_semantic_guard_warn_mode_records_visible_warning():
@@ -312,6 +525,18 @@ class _UnavailableVerifier:
         raise AssertionError("check_grounding should not be called")
 
 
+def _value_concept(table: str, column: str, value: str) -> RequiredConcept:
+    return RequiredConcept(
+        concept=f"{column}={value}",
+        concept_id="c1",
+        concept_type="value",
+        supported=False,
+        target_table=table,
+        target_column=column,
+        requested_value=value,
+    )
+
+
 class _FakeAuditor:
     def __init__(self, result: RefutationAuditResult) -> None:
         self._result = result
@@ -319,5 +544,14 @@ class _FakeAuditor:
     def full_schema_context(self, *, datasource_name: str) -> str:
         return "# Full Schema Context"
 
-    def audit(self, issue: SemanticGroundingIssue, *, full_schema_context: str) -> RefutationAuditResult:
+    def evidence(self, *, datasource_name: str) -> SchemaEvidence:
+        return SchemaEvidence(datasource_name=datasource_name)
+
+    def audit(
+        self,
+        issue: SemanticGroundingIssue,
+        *,
+        evidence: SchemaEvidence,
+        concept: RequiredConcept | None = None,
+    ) -> RefutationAuditResult:
         return self._result

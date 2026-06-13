@@ -70,12 +70,13 @@ def _concept_extraction_system_prompt() -> str:
             "Support semantics: value-derived rates, shares, counts, or trends over documented dimension/status values are supported when the column and requested value meaning are documented; an exact pre-defined metric is not required.",
             "A documented value supports only its explicit business meaning and aliases; similarity, causality, or common co-occurrence with another lifecycle/payment/fulfillment outcome is not evidence.",
             "For status/value concepts, a related documented value cannot support a requested value that is not itself named, described, or aliased in metadata.",
+            "For value-typed concepts, include target_table, target_column, and requested_value only when the target comes from metadata evidence; otherwise leave target fields blank.",
             "Do not require same-named columns for analytical operations such as rank correlation, YoY/MoM, moving averages, TopN, share, ratio, or compatible arithmetic.",
             "Do not invent synonym rules. If the metadata does not support the requested business concept, mark supported=false.",
             "Return one JSON object and nothing else.",
             "Schema:",
             '{ "concepts": [',
-            '  { "concept_id": "c1", "concept": "删除率", "concept_type": "metric", "supported": false, "evidence": [], "explanation": "No deleted/deletion concept appears in metadata." }',
+            '  { "concept_id": "c1", "concept": "删除率", "concept_type": "metric", "supported": false, "evidence": [], "explanation": "No deleted/deletion concept appears in metadata.", "target_table": "", "target_column": "", "requested_value": "" }',
             "] }",
         ]
     )

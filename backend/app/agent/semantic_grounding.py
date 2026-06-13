@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Protocol
@@ -12,6 +11,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from backend.app.agent.state import AgentState, GroundingWarningPayload
+from backend.app.agent.schema_evidence import SchemaEvidence, build_schema_evidence
 from backend.app.config import get_settings, semantic_guard_mode
 from backend.app.core.llm_provider import strip_code_fence
 from backend.app.metadata.models import DEFAULT_DATASOURCE
@@ -20,6 +20,9 @@ from backend.app.metadata.service import build_schema_context
 
 logger = logging.getLogger(__name__)
 FullSchemaContextBuilder = Callable[..., str]
+SchemaEvidenceBuilder = Callable[..., SchemaEvidence]
+DistinctValueExecutor = Callable[..., tuple[str, ...]]
+DISTINCT_PROBE_LIMIT = 1000
 
 
 class SemanticVerifierUnavailable(RuntimeError):
@@ -34,6 +37,9 @@ class RequiredConcept:
     supported: bool = False
     evidence: tuple[str, ...] = ()
     explanation: str = ""
+    target_table: str = ""
+    target_column: str = ""
+    requested_value: str = ""
 
     def model_dump(self) -> dict:
         return asdict(self)
@@ -119,41 +125,114 @@ class UnavailableSemanticGroundingVerifier:
         raise SemanticVerifierUnavailable(self.reason)
 
 
+def _default_distinct_executor(table_name: str, column_name: str, *, datasource_name: str) -> tuple[str, ...]:
+    from backend.app.connectors.registry import get_datasource_dialect
+    from backend.app.execution.runner import execute_guarded_sql
+    from backend.app.sql_guard.guard import guard_sql
+    from backend.app.sql_guard.scope import build_default_guard_scope
+
+    dialect = get_datasource_dialect(datasource_name)
+    table_sql = exp.to_identifier(table_name, quoted=True).sql(dialect=dialect)
+    column_sql = exp.to_identifier(column_name, quoted=True).sql(dialect=dialect)
+    sql = f"SELECT DISTINCT {column_sql} FROM {table_sql} LIMIT {DISTINCT_PROBE_LIMIT}"
+    guard_result = guard_sql(
+        sql,
+        build_default_guard_scope(datasource_name=datasource_name),
+        datasource_name=datasource_name,
+        max_result_rows=DISTINCT_PROBE_LIMIT,
+    )
+    if not guard_result.allowed:
+        raise SemanticVerifierUnavailable(f"DISTINCT probe rejected by guard: {guard_result.reason}")
+    query_result = execute_guarded_sql(guard_result, datasource_name=datasource_name)
+    return tuple(str(row[0]) for row in query_result.rows if row)
+
+
 class SemanticRefutationAuditor:
     """Corroborates verifier findings from full schema evidence; it never interprets the question."""
 
     def __init__(
         self,
         full_schema_context_builder: FullSchemaContextBuilder = build_schema_context,
+        evidence_builder: SchemaEvidenceBuilder = build_schema_evidence,
+        distinct_executor: DistinctValueExecutor = _default_distinct_executor,
     ) -> None:
         self._full_schema_context_builder = full_schema_context_builder
+        self._evidence_builder = evidence_builder
+        self._distinct_executor = distinct_executor
 
     def full_schema_context(self, *, datasource_name: str) -> str:
         return self._full_schema_context_builder(datasource_name=datasource_name)
 
-    def audit(self, issue: SemanticGroundingIssue, *, full_schema_context: str) -> RefutationAuditResult:
-        concept = issue.concept.strip()
-        if not concept:
+    def evidence(self, *, datasource_name: str) -> SchemaEvidence:
+        return self._evidence_builder(datasource_name=datasource_name)
+
+    def audit(
+        self,
+        issue: SemanticGroundingIssue,
+        *,
+        evidence: SchemaEvidence,
+        concept: RequiredConcept | None = None,
+    ) -> RefutationAuditResult:
+        requested_concept = issue.concept.strip()
+        if not requested_concept:
             return RefutationAuditResult(
                 confirmed=False,
                 reason="No requested concept was provided by the verifier.",
             )
-        # TODO(phase-2): replace this broad evidence search with structured,
-        # channel-by-channel refutation over tables, columns, aliases, metrics,
-        # verified queries, guidance, sample values, and datasource-bound overlay
-        # assets before enabling confirmed refutations as hard-block evidence.
-        #
-        # TODO(phase-2): add the SELECT DISTINCT confirmation path for requested
-        # value-level concepts that are absent from sample-value fallbacks. Phase 1
-        # is warn-only, so this audit result is observation data, not a block gate.
-        if _concept_has_schema_evidence(concept, full_schema_context):
+        if (
+            concept is not None
+            and concept.concept_type == "value"
+            and concept.target_column
+            and concept.requested_value
+        ):
+            return self._audit_value(requested_concept, concept, evidence)
+        if evidence.has_concept_evidence(requested_concept):
             return RefutationAuditResult(
                 confirmed=False,
-                reason=f"Full datasource metadata contains evidence for {concept!r}; deterministic audit abstained.",
+                reason=f"Full datasource metadata contains evidence for {requested_concept!r}; deterministic audit abstained.",
             )
         return RefutationAuditResult(
             confirmed=True,
-            reason=f"Full datasource metadata contains no evidence for {concept!r}.",
+            reason=f"Full datasource metadata contains no evidence for {requested_concept!r} across any channel.",
+        )
+
+    def _audit_value(
+        self,
+        issue_concept: str,
+        concept: RequiredConcept,
+        evidence: SchemaEvidence,
+    ) -> RefutationAuditResult:
+        table, column, value = _validated_target(concept, evidence)
+        if table is None:
+            return RefutationAuditResult(
+                confirmed=False,
+                reason="Value target was not uniquely validated in metadata; deterministic audit abstained.",
+            )
+        if evidence.has_concept_evidence(value) or evidence.has_concept_evidence(issue_concept):
+            return RefutationAuditResult(
+                confirmed=False,
+                reason=f"Full datasource metadata contains evidence for {value!r}; deterministic audit abstained.",
+            )
+        if evidence.has_sample_value(column, value):
+            return RefutationAuditResult(
+                confirmed=False,
+                reason=f"{value!r} is an enumerated sample value of {column!r}; deterministic audit abstained.",
+            )
+        try:
+            actual_values = self._distinct_executor(table, column, datasource_name=evidence.datasource_name)
+        except Exception as exc:
+            return RefutationAuditResult(
+                confirmed=False,
+                reason=f"DISTINCT probe unavailable for {column!r}: {exc}; deterministic audit abstained.",
+            )
+        if evidence.value_matches(value, actual_values):
+            return RefutationAuditResult(
+                confirmed=False,
+                reason=f"{value!r} exists in {column!r}; deterministic audit abstained.",
+            )
+        return RefutationAuditResult(
+            confirmed=True,
+            reason=f"{value!r} is absent from {table!r}.{column!r} (DISTINCT probe).",
         )
 
 
@@ -215,8 +294,24 @@ def semantic_guard_node(
     if result.ok:
         return state
 
+    try:
+        evidence = _schema_evidence(state, auditor)
+    except Exception as exc:
+        logger.warning("Semantic refutation audit failed open.", exc_info=True)
+        refutation = RefutationAuditResult(
+            confirmed=False,
+            reason=f"Schema evidence unavailable: {exc}; deterministic audit abstained.",
+        )
+        for issue in result.issues:
+            state.grounding_warnings.append(_warning_from_issue(issue, refutation))
+        return state
+
     for issue in result.issues:
-        refutation = auditor.audit(issue, full_schema_context=full_context)
+        refutation = auditor.audit(
+            issue,
+            evidence=evidence,
+            concept=_concept_for_issue(issue, unsupported_concepts),
+        )
         state.grounding_warnings.append(_warning_from_issue(issue, refutation))
 
     if mode == "enforce" and any(warning.get("refutation_confirmed") for warning in state.grounding_warnings):
@@ -299,6 +394,12 @@ def _full_schema_context(state: AgentState, auditor: SemanticRefutationAuditor) 
     return state.full_schema_context
 
 
+def _schema_evidence(state: AgentState, auditor: SemanticRefutationAuditor) -> SchemaEvidence:
+    if state.schema_evidence is None:
+        state.schema_evidence = auditor.evidence(datasource_name=state.datasource_name)
+    return state.schema_evidence
+
+
 def _record_verifier_unavailable(state: AgentState, *, mode: str, reason: str) -> None:
     logger.warning("Semantic grounding verifier unavailable; failing open: %s", reason)
     state.semantic_guard_result = {
@@ -346,18 +447,16 @@ def _semantic_block_message(warnings: list[dict]) -> str:
     return f'当前 schema 中没有"{concepts}"对应的字段、状态值或指标，无法安全生成 SQL。'
 
 
-def _concept_has_schema_evidence(concept: str, full_schema_context: str) -> bool:
-    # TODO(phase-2): this intentionally blunt substring corroboration is only
-    # acceptable while the deterministic audit is observation-only. Enforcement
-    # needs structured evidence by channel and broader Unicode coverage.
-    normalized_concept = _normalize_evidence_text(concept)
-    if not normalized_concept:
-        return False
-    return normalized_concept in _normalize_evidence_text(full_schema_context)
-
-
-def _normalize_evidence_text(text: str) -> str:
-    return "".join(re.findall(r"[a-z0-9]+|[\u3400-\u9fff]+", text.casefold()))
+def _validated_target(concept: RequiredConcept, evidence: SchemaEvidence) -> tuple[str | None, str, str]:
+    table = concept.target_table.strip()
+    column = concept.target_column.strip()
+    value = concept.requested_value.strip()
+    if not column or not value:
+        return None, column, value
+    if table:
+        return (table, column, value) if evidence.has_column(table, column) else (None, column, value)
+    unique_table = evidence.unique_table_for_column(column)
+    return (unique_table, column, value) if unique_table else (None, column, value)
 
 
 def _json_object(content: str, error_message: str) -> dict:
@@ -381,6 +480,9 @@ def _parse_required_concept(value: object) -> RequiredConcept:
         supported=bool(value.get("supported", False)),
         evidence=tuple(_string_list(value.get("evidence"))),
         explanation=_optional_string(value.get("explanation"), ""),
+        target_table=_optional_string(value.get("target_table"), ""),
+        target_column=_optional_string(value.get("target_column"), ""),
+        requested_value=_optional_string(value.get("requested_value"), ""),
     )
 
 
@@ -444,9 +546,21 @@ def _ensure_concept_ids(concepts: tuple[RequiredConcept, ...]) -> tuple[Required
             supported=concept.supported,
             evidence=concept.evidence,
             explanation=concept.explanation,
+            target_table=concept.target_table,
+            target_column=concept.target_column,
+            requested_value=concept.requested_value,
         )
         for index, concept in enumerate(concepts)
     )
+
+
+def _concept_for_issue(
+    issue: SemanticGroundingIssue,
+    concepts: tuple[RequiredConcept, ...],
+) -> RequiredConcept | None:
+    by_id = {concept.concept_id: concept for concept in concepts}
+    by_name = {concept.concept: concept for concept in concepts}
+    return by_id.get(issue.concept_id) or by_name.get(issue.concept)
 
 
 def _normalize_grounding_result(

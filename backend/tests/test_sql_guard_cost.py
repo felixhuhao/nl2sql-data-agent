@@ -33,6 +33,14 @@ def test_existing_large_limit_is_capped():
     assert result.warnings == ["LIMIT 1000 was capped to 500."]
 
 
+def test_cost_guard_accepts_internal_max_result_override():
+    result = guard_sql("SELECT order_id FROM fact_orders LIMIT 1000", scope=_scope(), max_result_rows=1000)
+
+    assert result.allowed is True
+    assert result.normalized_sql == "SELECT order_id FROM fact_orders LIMIT 1000"
+    assert result.warnings == []
+
+
 def test_non_literal_limit_is_rejected():
     result = guard_sql("SELECT order_id FROM fact_orders LIMIT order_id", scope=_scope())
 

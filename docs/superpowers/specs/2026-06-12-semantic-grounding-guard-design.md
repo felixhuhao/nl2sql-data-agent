@@ -1,7 +1,7 @@
 # Semantic Grounding Guard — Design
 
 **Date:** 2026-06-12
-**Status:** Draft (pending review)
+**Status:** Draft; Phase 2A refutation hardening implemented, Phase 2B promotion gate pending
 **Related:** `docs/prompt-reliability-audit.md` (Manual Test Finding: Unsupported Concept Substitution)
 
 ---
@@ -155,6 +155,8 @@ The deliberate consequence: enforcement never blocks on the deterministic layer 
 
 Runs over the concepts the verifier flagged. Its sole job is to answer, from schema-derived facts: **can this flagged mapping be proven unsafe?** It does not parse the question, does not decide what the question "means," and **cannot assert that any concept *is* supported** — only the verifier and the schema evidence together can refute.
 
+**Implementation status (Phase 2A landed).** The runtime audit now builds datasource-scoped `SchemaEvidence` from the active datasource's table, column, sample value, alias, metric, and verified-query metadata. Evidence matching is entry-scoped, not one concatenated text blob, so short ASCII tokens such as `id` cannot match inside unrelated values such as `paid`, and concepts cannot be assembled across unrelated metadata fields. The audit confirms only absent requested concepts; any metadata evidence makes it abstain.
+
 For each flagged concept, the audit confirms a refutation when the **requested** concept has **no match in any evidence channel of the active datasource**:
 
 - `table_semantics` (display name, description, domain)
@@ -170,7 +172,7 @@ The unsafe thing is the **absence of evidence for the requested concept**, not a
 1. **Focused vs. full.** `state.schema_context` is the ranked, limited retrieval subset ([`build_focused_context_from_retrieval`](../../../backend/app/agent/nodes.py), top-K via `_rank(..., limit)`). "Absent from the focused context" is far too weak to justify a block — the concept may simply have fallen below the retrieval cutoff. The audit (and Stage A) therefore query the **full datasource metadata** ([`build_schema_context`](../../../backend/app/metadata/service.py) / the underlying stores), enumerating *all* tables, columns, aliases, metrics, sample values, and verified queries. A useful side effect: auditing against full metadata is exactly what catches a verifier false-positive caused by the focused context — if the LLM flagged a concept only because it was retrieval-pruned, the full-metadata audit finds the evidence and abstains, downgrading the block to (at most) a warning.
 2. **Datasource scope.** The overlay is global: [`_overlay_path`](../../../backend/app/metadata/semantic_overlay.py) resolves a single configured path (`ecommerce.yml`) with no datasource parameter. Using it as evidence for a *different* datasource would supply false evidence, so the overlay is consulted only when explicitly bound to the active datasource (open question); the datasource's own full metadata is always the primary source.
 
-**`SELECT DISTINCT` confirmation — for the *requested* value, never the proxy.** This applies only to the case where the *question itself names a value* (e.g. "status = cancelled") that is absent from `sample_value_fallbacks`. Because that fallback list is, by name, not guaranteed exhaustive, absence there is a signal, not proof. So before confirming a refutation that a *requested* value does not exist, run a cheap `SELECT DISTINCT <column> LIMIT N` on the real column: if the requested value is genuinely absent, the refutation is confirmed; if it exists, the audit abstains. The probe is never run against a substituted proxy value. Concept-level absence — no column/metric/description at all, as with `删除率` — needs no probe; there is no column to query.
+**`SELECT DISTINCT` confirmation — for the *requested* value, never the proxy.** This applies only to the case where the *question itself names a value* (e.g. "status = cancelled") that is absent from `sample_value_fallbacks`. Because that fallback list is, by name, not guaranteed exhaustive, absence there is a signal, not proof. Phase 2A implements a guarded, bounded `SELECT DISTINCT <column> FROM <table> LIMIT 1000` probe, but only when the verifier supplies a metadata-validated `target_table`, `target_column`, and `requested_value`. If the requested value is genuinely absent, the refutation is confirmed; if it exists, the audit abstains. If the target is ambiguous, hallucinated, or the probe fails, the audit also abstains. The probe is never run against a substituted proxy value. Concept-level absence — no column/metric/description at all, as with `删除率` — needs no probe; there is no column to query.
 
 **The audit can only refute.** A "no evidence found" result confirms a refutation. A "found something" result does **not** clear the verifier's finding — it only means the deterministic layer abstains, leaving the finding as a warning. Determinism is never the reason a query passes.
 
@@ -225,6 +227,7 @@ New `AgentState` fields (additive to [`state.py`](../../../backend/app/agent/sta
 - existing `error` / `stopped_at` reused for hard blocks (consistent with `sql_guard`); `semantic_guard` is added to `NON_REPAIRABLE_GUARD_STAGES` in [`repair.py`](../../../backend/app/agent/repair.py).
 - a dedicated, typed `grounding_warnings: list[...]` field (not just an `explainability` key) carried into the response payload and UI. Each entry: concept, `failure_kind` (`substituted` / `omitted` / `verifier_unavailable`), the proxy or omission, refutation status, and a plain-language caveat.
 - a cached `required_concepts` (or equivalent) so the verifier's extraction is computed once and reused across repair iterations.
+- a cached `schema_evidence` object so the deterministic refutation audit builds full datasource evidence once per query/datasource, not once per repair candidate.
 
 The API response model (chat result / SSE final event) is extended to include `grounding_warnings`. No change to the SQL/JSON *generation* output contract. No change to `generate_sql` prompts (the guard is a separate node; a *light* prompt rule — "do not invent proxy metrics/filters from adjacent values" — may be added as a cheap first line of defense, but the guard does not depend on it).
 

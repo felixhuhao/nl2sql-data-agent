@@ -8,6 +8,7 @@ from backend.app.visualization.recommender import ChartRecommendation
 
 if TYPE_CHECKING:
     from backend.app.agent.conversation import ConversationContext, FilterPredicate
+    from backend.app.agent.schema_evidence import SchemaEvidence
 
 
 class SemanticGuardResult(TypedDict, total=False):
@@ -57,6 +58,7 @@ class AgentState:
     runtime_stats: dict | None = None
     chart_recommendation: ChartRecommendation | None = None
     full_schema_context: str | None = None
+    schema_evidence: "SchemaEvidence | None" = None
     required_concepts: list[dict] | None = None
     semantic_guard_result: SemanticGuardResult | None = None
     grounding_warnings: list[GroundingWarningPayload] = field(default_factory=list)

@@ -41,6 +41,7 @@ def guard_sql(
     sql: str,
     scope: GuardScope | None = None,
     datasource_name: str = DEFAULT_DATASOURCE,
+    max_result_rows: int = MAX_RESULT_ROWS,
 ) -> GuardResult:
     dialect = get_datasource_dialect(datasource_name)
 
@@ -79,7 +80,7 @@ def guard_sql(
     if fanout_result is not None:
         return fanout_result
 
-    cost_result = _apply_cost_guard(expression)
+    cost_result = _apply_cost_guard(expression, max_result_rows=max_result_rows)
     if isinstance(cost_result, GuardResult):
         return cost_result
     expression, warnings = cost_result
@@ -223,14 +224,18 @@ def _select_aggregates_order_amount(select: exp.Select) -> bool:
     return False
 
 
-def _apply_cost_guard(expression: exp.Select) -> tuple[exp.Select, list[str]] | GuardResult:
+def _apply_cost_guard(
+    expression: exp.Select,
+    *,
+    max_result_rows: int = MAX_RESULT_ROWS,
+) -> tuple[exp.Select, list[str]] | GuardResult:
     limit = expression.args.get("limit")
     if limit is None:
         if _is_scalar_aggregate_select(expression):
             return expression, []
         return (
-            expression.limit(MAX_RESULT_ROWS),
-            [f"LIMIT {MAX_RESULT_ROWS} was added automatically."],
+            expression.limit(max_result_rows),
+            [f"LIMIT {max_result_rows} was added automatically."],
         )
 
     limit_value = _limit_value(limit)
@@ -238,11 +243,11 @@ def _apply_cost_guard(expression: exp.Select) -> tuple[exp.Select, list[str]] | 
         return _reject("cost_guard", "LIMIT must be an integer literal.")
     if limit_value < 0:
         return _reject("cost_guard", "LIMIT must be non-negative.")
-    if limit_value > MAX_RESULT_ROWS:
-        limit.set("expression", exp.Literal.number(MAX_RESULT_ROWS))
+    if limit_value > max_result_rows:
+        limit.set("expression", exp.Literal.number(max_result_rows))
         return (
             expression,
-            [f"LIMIT {limit_value} was capped to {MAX_RESULT_ROWS}."],
+            [f"LIMIT {limit_value} was capped to {max_result_rows}."],
         )
 
     return expression, []
