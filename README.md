@@ -191,6 +191,14 @@ mcp_servers.olap_tools
   metric_catalog_search
 ```
 
+The Docker backend also exposes a combined streamable HTTP MCP endpoint at:
+
+```text
+http://localhost:8000/mcp
+```
+
+Use this endpoint for HTTP MCP clients that need all five tools from one server.
+
 Example safety behavior:
 
 ```text

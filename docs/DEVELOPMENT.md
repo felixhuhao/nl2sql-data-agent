@@ -239,6 +239,10 @@ mcp_servers.olap_tools
   metric_catalog_search
 ```
 
+When the Docker backend is running, a combined streamable HTTP MCP endpoint is
+available at `http://localhost:8000/mcp`. If you map the backend to a different
+host port, keep the `/mcp` path and adjust only the host/port.
+
 Example MCP client config:
 
 ```json

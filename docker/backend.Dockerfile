@@ -13,9 +13,10 @@ RUN python -m pip install --upgrade pip
 
 COPY backend/pyproject.toml /tmp/backend-pyproject.toml
 RUN python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-RUN python -c 'import subprocess, sys, tomllib; data = tomllib.load(open("/tmp/backend-pyproject.toml", "rb")); deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["vector"]; subprocess.check_call([sys.executable, "-m", "pip", "install", *deps])'
+RUN python -c 'import subprocess, sys, tomllib; data = tomllib.load(open("/tmp/backend-pyproject.toml", "rb")); deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["vector"] + data["project"]["optional-dependencies"]["mcp"]; subprocess.check_call([sys.executable, "-m", "pip", "install", *deps])'
 
 COPY backend /app/backend
+COPY mcp_servers /app/mcp_servers
 COPY scripts /app/scripts
 COPY docker /app/docker
 

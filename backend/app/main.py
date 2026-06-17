@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,7 +10,28 @@ from backend.app.config import deepseek_config_available, effective_llm_provider
 from backend.app.connectors.registry import get_datasource_manager
 
 
-app = FastAPI(title="NL2SQL Data Agent")
+try:
+    from mcp_servers.combined.server import (
+        create_http_app as create_mcp_http_app,
+        get_server as get_mcp_server,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"mcp", "mcp_servers"}:
+        raise
+    create_mcp_http_app = None
+    get_mcp_server = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if get_mcp_server is None:
+        yield
+        return
+    async with get_mcp_server().session_manager.run():
+        yield
+
+
+app = FastAPI(title="NL2SQL Data Agent", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -27,6 +50,9 @@ app.state.datasource_manager = get_datasource_manager()
 app.include_router(datasources_router)
 app.include_router(chat_router)
 app.include_router(metadata_router)
+
+if create_mcp_http_app is not None:
+    app.mount("/mcp", create_mcp_http_app())
 
 
 @app.get("/health")
