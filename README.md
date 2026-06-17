@@ -194,10 +194,13 @@ mcp_servers.olap_tools
 The Docker backend also exposes a combined streamable HTTP MCP endpoint at:
 
 ```text
-http://localhost:8000/mcp
+http://localhost:8000/mcp/
 ```
 
 Use this endpoint for HTTP MCP clients that need all five tools from one server.
+If `NL2SQL_MCP_SERVICE_TOKEN` is set, clients must send the same value in the
+`X-Service-Token` header. Set this token for any non-local deployment; leaving it
+blank is intended only for local/demo network-gated use.
 
 Example safety behavior:
 

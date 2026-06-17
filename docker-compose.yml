@@ -65,6 +65,7 @@ services:
       CLICKHOUSE_READONLY: "true"
       CLICKHOUSE_MAX_EXECUTION_TIME: "30"
       CLICKHOUSE_MAX_RESULT_ROWS: "10000"
+      NL2SQL_MCP_SERVICE_TOKEN: ${NL2SQL_MCP_SERVICE_TOKEN:-}
     volumes:
       - app_data:/app/data
       - model_cache:/app/model-cache

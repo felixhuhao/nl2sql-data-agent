@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     clickhouse_readonly: bool = True
     clickhouse_max_execution_time: int = 30
     clickhouse_max_result_rows: int = 10000
+    nl2sql_mcp_service_token: str = ""
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / "backend" / ".env",

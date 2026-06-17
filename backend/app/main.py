@@ -1,12 +1,20 @@
+import hmac
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 from backend.app.api.chat import router as chat_router
 from backend.app.api.datasources import router as datasources_router
 from backend.app.api.metadata import router as metadata_router
-from backend.app.config import deepseek_config_available, effective_llm_provider_name, get_settings, semantic_guard_mode
+from backend.app.config import (
+    deepseek_config_available,
+    effective_llm_provider_name,
+    get_settings,
+    semantic_guard_mode,
+)
 from backend.app.connectors.registry import get_datasource_manager
 
 
@@ -20,6 +28,26 @@ except ModuleNotFoundError as exc:
         raise
     create_mcp_http_app = None
     get_mcp_server = None
+
+
+class ServiceTokenMiddleware:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        token = get_settings().nl2sql_mcp_service_token.strip()
+        if scope.get("type") != "http" or not token:
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        supplied = headers.get(b"x-service-token", b"")
+        if not hmac.compare_digest(supplied, token.encode("utf-8")):
+            response = JSONResponse({"detail": "invalid service token"}, status_code=401)
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -52,7 +80,7 @@ app.include_router(chat_router)
 app.include_router(metadata_router)
 
 if create_mcp_http_app is not None:
-    app.mount("/mcp", create_mcp_http_app())
+    app.mount("/mcp", ServiceTokenMiddleware(create_mcp_http_app()))
 
 
 @app.get("/health")

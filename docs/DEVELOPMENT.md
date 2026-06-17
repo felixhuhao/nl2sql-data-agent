@@ -240,8 +240,10 @@ mcp_servers.olap_tools
 ```
 
 When the Docker backend is running, a combined streamable HTTP MCP endpoint is
-available at `http://localhost:8000/mcp`. If you map the backend to a different
-host port, keep the `/mcp` path and adjust only the host/port.
+available at `http://localhost:8000/mcp/`. If you map the backend to a different
+host port, keep the `/mcp/` path and adjust only the host/port. If
+`NL2SQL_MCP_SERVICE_TOKEN` is set, clients must send the same value in the
+`X-Service-Token` header. Leave it blank only for local/demo network-gated use.
 
 Example MCP client config:
 
