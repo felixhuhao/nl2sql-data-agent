@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 import sqlglot
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
@@ -23,7 +26,32 @@ def create_server() -> FastMCP:
     return server
 
 
-def explain_query(sql: str, datasource: str | None = None) -> dict:
+def explain_query(
+    sql: Annotated[
+        str,
+        Field(
+            description=(
+                "A complete read-only SELECT query to validate and explain. The "
+                "same SQL Guard used by query_readonly runs before EXPLAIN."
+            )
+        ),
+    ],
+    datasource: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional datasource name. Omit to use the configured default "
+                "warehouse datasource."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Explain a guarded warehouse SELECT query without returning result rows.
+
+    Use when the agent needs query diagnostics, table access hints, or
+    performance guidance. Do not call for simple schema discovery or as a
+    substitute for query_readonly when the operator needs data.
+    """
     try:
         datasource_name = resolve_datasource(datasource)
     except DatasourceUnavailable as exc:
@@ -73,7 +101,32 @@ def explain_query(sql: str, datasource: str | None = None) -> dict:
     )
 
 
-def metric_catalog_search(query: str, datasource: str | None = None) -> dict:
+def metric_catalog_search(
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "Natural-language metric or business concept to search for, such "
+                "as revenue, cohort retention, AOV, region, or channel."
+            )
+        ),
+    ],
+    datasource: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional datasource name. Omit to use the configured default "
+                "warehouse datasource."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Search semantic metrics, tables, and verified query hints.
+
+    Use before writing SQL when the operator asks for a warehouse metric or
+    business concept. This returns metadata and verified examples; it does not
+    execute SQL.
+    """
     try:
         datasource_name = resolve_datasource(datasource)
     except DatasourceUnavailable as exc:

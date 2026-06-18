@@ -17,16 +17,28 @@ from mcp_servers.olap_tools.server import create_server as create_olap_server
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _assert_tools_are_described(tools) -> None:
+    for tool in tools:
+        assert tool.description, f"{tool.name} is missing a tool description"
+        properties = tool.inputSchema.get("properties", {})
+        for name, schema in properties.items():
+            assert schema.get("description"), (
+                f"{tool.name}.{name} is missing a parameter description"
+            )
+
+
 def test_db_tools_server_can_list_tools():
     tools = asyncio.run(create_db_server().list_tools())
 
     assert {tool.name for tool in tools} == {"list_tables", "get_table_schema", "query_readonly"}
+    _assert_tools_are_described(tools)
 
 
 def test_olap_tools_server_can_list_tools():
     tools = asyncio.run(create_olap_server().list_tools())
 
     assert {tool.name for tool in tools} == {"explain_query", "metric_catalog_search"}
+    _assert_tools_are_described(tools)
 
 
 def test_combined_http_server_can_list_all_tools():
@@ -39,6 +51,7 @@ def test_combined_http_server_can_list_all_tools():
         "explain_query",
         "metric_catalog_search",
     }
+    _assert_tools_are_described(tools)
 
 
 def test_stdio_servers_can_list_tools_with_real_mcp_client():

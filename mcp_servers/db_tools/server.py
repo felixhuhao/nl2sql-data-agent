@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from backend.app.execution.runner import execute_guarded_sql
 from backend.app.metadata.service import (
@@ -24,7 +27,23 @@ def create_server() -> FastMCP:
     return server
 
 
-def list_tables(datasource: str | None = None) -> dict:
+def list_tables(
+    datasource: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional datasource name. Omit to use the configured default "
+                "warehouse datasource."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """List warehouse tables available for read-only analysis.
+
+    Use this first when the agent does not know which warehouse tables exist.
+    Returns table names and semantic metadata only; it does not execute SQL and
+    does not return business rows.
+    """
     try:
         datasource_name = resolve_datasource(datasource)
     except DatasourceUnavailable as exc:
@@ -41,7 +60,31 @@ def list_tables(datasource: str | None = None) -> dict:
     )
 
 
-def get_table_schema(table_name: str, datasource: str | None = None) -> dict:
+def get_table_schema(
+    table_name: Annotated[
+        str,
+        Field(
+            description=(
+                "Exact table_name from list_tables. Do not pass a natural-language "
+                "question or partial table label."
+            )
+        ),
+    ],
+    datasource: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional datasource name. Omit to use the configured default "
+                "warehouse datasource."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Return columns and relationships for one warehouse table.
+
+    Use after list_tables or metric_catalog_search identifies a candidate table.
+    This is for schema grounding before query_readonly; it does not execute SQL.
+    """
     try:
         datasource_name = resolve_datasource(datasource)
     except DatasourceUnavailable as exc:
@@ -80,7 +123,33 @@ def get_table_schema(table_name: str, datasource: str | None = None) -> dict:
     )
 
 
-def query_readonly(sql: str, datasource: str | None = None) -> dict:
+def query_readonly(
+    sql: Annotated[
+        str,
+        Field(
+            description=(
+                "A complete read-only SELECT query. The SQL Guard rejects writes, "
+                "DDL, unsafe functions, and out-of-scope tables before execution."
+            )
+        ),
+    ],
+    datasource: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional datasource name. Omit to use the configured default "
+                "warehouse datasource."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Execute guarded read-only SQL against the warehouse.
+
+    Use for warehouse/ad-hoc analytical questions after selecting tables and
+    columns. Do not use for current operational facts such as live inventory,
+    approvals, purchase orders, or customer-order status. The guard returns
+    allowed=false instead of executing unsafe SQL.
+    """
     try:
         datasource_name = resolve_datasource(datasource)
     except DatasourceUnavailable as exc:
