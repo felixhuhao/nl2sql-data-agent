@@ -56,13 +56,16 @@ def test_streamable_http_mcp_is_open_when_token_unset(monkeypatch):
     assert status == 200
 
 
-def test_streamable_http_mcp_lists_tools_and_guards_query_with_token(monkeypatch):
+def test_streamable_http_mcp_lists_tools_from_docker_host_and_guards_query(monkeypatch):
     monkeypatch.setenv("NL2SQL_MCP_SERVICE_TOKEN", "secret")
     get_settings.cache_clear()
 
     try:
         tools, guard = asyncio.run(
-            _list_tools_and_guard_query(headers={"X-Service-Token": "secret"})
+            _list_tools_and_guard_query(
+                base_url="http://backend:8000",
+                headers={"X-Service-Token": "secret"},
+            )
         )
     finally:
         get_settings.cache_clear()
@@ -74,16 +77,16 @@ def test_streamable_http_mcp_lists_tools_and_guards_query_with_token(monkeypatch
 
 
 async def _list_tools_and_guard_query(
-    *, headers: dict[str, str]
+    *, headers: dict[str, str], base_url: str = "http://127.0.0.1:8000"
 ) -> tuple[list[str], dict]:
     async with main.lifespan(main.app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=main.app),
-            base_url="http://127.0.0.1:8000",
+            base_url=base_url,
             headers=headers,
         ) as http_client:
             async with streamable_http_client(
-                "http://127.0.0.1:8000/mcp/",
+                f"{base_url}/mcp/",
                 http_client=http_client,
             ) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:

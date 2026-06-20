@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     clickhouse_max_execution_time: int = 30
     clickhouse_max_result_rows: int = 10000
     nl2sql_mcp_service_token: str = ""
+    nl2sql_mcp_allowed_hosts: str = (
+        "127.0.0.1:8000,localhost:8000,backend:8000,nl2sql_pro-backend-1:8000"
+    )
+    nl2sql_mcp_allowed_origins: str = ""
     auth_enabled: bool = False
     auth_cookie_name: str = "nl2sql_session"
     auth_cookie_secure: bool = True
@@ -128,6 +132,16 @@ def vector_config_allows_attempt(settings: Any | None = None) -> bool:
 
 def cors_allow_origins(settings: Any | None = None) -> list[str]:
     raw_value = str(getattr(settings or get_settings(), "cors_allow_origins", "") or "")
+    return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
+
+
+def nl2sql_mcp_allowed_hosts(settings: Any | None = None) -> list[str]:
+    raw_value = str(getattr(settings or get_settings(), "nl2sql_mcp_allowed_hosts", "") or "")
+    return [host.strip() for host in raw_value.split(",") if host.strip()]
+
+
+def nl2sql_mcp_allowed_origins(settings: Any | None = None) -> list[str]:
+    raw_value = str(getattr(settings or get_settings(), "nl2sql_mcp_allowed_origins", "") or "")
     return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
 
 
