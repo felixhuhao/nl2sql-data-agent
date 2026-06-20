@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     clickhouse_max_result_rows: int = 10000
     nl2sql_mcp_service_token: str = ""
     nl2sql_mcp_allowed_hosts: str = (
-        "127.0.0.1:8000,localhost:8000,backend:8000,nl2sql_pro-backend-1:8000"
+        "127.0.0.1:8000,localhost:8000,backend:8000,nl2sql_pro-backend-1:8000,"
+        "host.docker.internal:8000,172.17.0.1:8000,172.18.0.1:8000,172.22.0.1:8000"
     )
     nl2sql_mcp_allowed_origins: str = ""
     auth_enabled: bool = False
