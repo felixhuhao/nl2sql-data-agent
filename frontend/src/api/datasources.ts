@@ -12,10 +12,19 @@ export type DatasourcesPayload = {
   default: string | null;
 };
 
+export class DatasourceApiError extends Error {
+  constructor(readonly status: number) {
+    super(`Request failed with status ${status}`);
+    this.name = "DatasourceApiError";
+  }
+}
+
 export async function listDatasources() {
-  const response = await fetch(`${API_BASE_URL}/api/datasources`);
+  const response = await fetch(`${API_BASE_URL}/api/datasources`, {
+    credentials: "include",
+  });
   if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+    throw new DatasourceApiError(response.status);
   }
   return (await response.json()) as DatasourcesPayload;
 }

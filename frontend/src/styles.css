@@ -200,6 +200,104 @@ input[type="radio"] {
   margin: 0 auto;
 }
 
+.auth-loading,
+.login-panel {
+  width: min(420px, 100%);
+  margin: min(12vh, 96px) auto 0;
+}
+
+.auth-loading {
+  color: var(--ink-faint);
+  text-align: center;
+}
+
+.login-panel {
+  display: grid;
+  gap: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: var(--space-6);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.login-panel .brand-seal {
+  width: 48px;
+  height: 48px;
+}
+
+.login-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.login-heading p,
+.login-heading h1,
+.auth-error {
+  margin: 0;
+}
+
+.login-heading p {
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.login-heading h1 {
+  color: var(--ink);
+  font-size: var(--text-2xl);
+  line-height: 1.15;
+}
+
+.login-panel label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.login-panel input {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  background: var(--surface);
+}
+
+.login-panel input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.login-panel button {
+  height: 42px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: linear-gradient(165deg, var(--accent) 0%, var(--accent-deep) 100%);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.login-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.auth-error {
+  border: 1px solid rgb(179 51 31 / 24%);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  font-size: var(--text-sm);
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -281,6 +379,29 @@ input[type="radio"] {
   border-radius: 50%;
   background: var(--jade);
   box-shadow: 0 0 0 3px var(--jade-soft);
+}
+
+.auth-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+
+.auth-strip button {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.auth-strip button:hover {
+  border-color: var(--hairline-strong);
+  color: var(--ink);
 }
 
 .topbar-actions {

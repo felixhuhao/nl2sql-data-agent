@@ -7,6 +7,7 @@ TEST_ENV_DEFAULTS = {
     "DEEPSEEK_API_KEY": "",
     "LLM_PROVIDER": "mock",
     "SEMANTIC_GUARD_MODE": "off",
+    "AUTH_ENABLED": "false",
 }
 
 for _key, _value in TEST_ENV_DEFAULTS.items():

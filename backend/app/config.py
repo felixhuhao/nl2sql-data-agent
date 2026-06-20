@@ -46,6 +46,20 @@ class Settings(BaseSettings):
     clickhouse_max_execution_time: int = 30
     clickhouse_max_result_rows: int = 10000
     nl2sql_mcp_service_token: str = ""
+    auth_enabled: bool = False
+    auth_cookie_name: str = "nl2sql_session"
+    auth_cookie_secure: bool = True
+    auth_session_ttl_seconds: int = Field(default=28800, gt=0)
+    auth_sqlite_path: Path = Field(default=PROJECT_ROOT / "data" / "auth.sqlite")
+    auth_bootstrap_username: str = "admin"
+    auth_bootstrap_password: str = ""
+    auth_login_max_attempts: int = Field(default=5, gt=0)
+    auth_login_window_seconds: int = Field(default=60, gt=0)
+    auth_login_lockout_seconds: int = Field(default=300, gt=0)
+    cors_allow_origins: str = (
+        "http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,"
+        "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    )
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / "backend" / ".env",
@@ -58,6 +72,9 @@ class Settings(BaseSettings):
 
     def resolved_sqlite_path(self) -> Path:
         return self._resolve_path(self.sqlite_path)
+
+    def resolved_auth_sqlite_path(self) -> Path:
+        return self._resolve_path(self.auth_sqlite_path)
 
     @staticmethod
     def _resolve_path(path: Path) -> Path:
@@ -107,6 +124,11 @@ def vector_enabled_mode(settings: Any | None = None) -> str:
 
 def vector_config_allows_attempt(settings: Any | None = None) -> bool:
     return vector_enabled_mode(settings) != "disabled"
+
+
+def cors_allow_origins(settings: Any | None = None) -> list[str]:
+    raw_value = str(getattr(settings or get_settings(), "cors_allow_origins", "") or "")
+    return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
 
 
 def embedding_model_name(settings: Any | None = None) -> str:

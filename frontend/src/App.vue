@@ -9,8 +9,9 @@ import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import Admin from "./Admin.vue";
+import { AuthApiError, getMe, login, logout, type AuthUser } from "./api/auth";
 import { API_BASE_URL } from "./api/config";
-import { listDatasources, type DatasourceInfo } from "./api/datasources";
+import { DatasourceApiError, listDatasources, type DatasourceInfo } from "./api/datasources";
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -195,6 +196,13 @@ const isFollowUp = ref(false);
 const changeKind = ref("none");
 const chartContainer = ref<HTMLDivElement | null>(null);
 const activeView = ref<"chat" | "admin">("chat");
+const authChecked = ref(false);
+const actor = ref<AuthUser | null>(null);
+const loginUsername = ref("");
+const loginPassword = ref("");
+const authError = ref("");
+const authCheckError = ref("");
+const isLoggingIn = ref(false);
 const llmProvider = ref("");
 const sqlCopied = ref(false);
 const exampleQuestions = [
@@ -340,10 +348,13 @@ const retrievalSourceStats = computed<RetrievalSourceStat[]>(() => {
 const hasRetrievalSources = computed(() => retrievalSourceGroups.value.length > 0);
 let chartInstance: echarts.ECharts | null = null;
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener("resize", resizeChart);
-  void fetchAgentStatus();
-  void fetchDatasources();
+  await refreshAuth();
+  if (actor.value) {
+    void fetchAgentStatus();
+    void fetchDatasources();
+  }
 });
 
 onBeforeUnmount(() => {
@@ -385,6 +396,7 @@ async function submitQuestion() {
       headers: {
         "Content-Type": "application/json",
       },
+      credentials: "include",
       body: JSON.stringify({
         question: question.value.trim(),
         datasource: selectedDatasourceName.value,
@@ -392,6 +404,10 @@ async function submitQuestion() {
       }),
     });
 
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error("请先登录");
+    }
     if (!response.ok || !response.body) {
       throw new Error(`Request failed with status ${response.status}`);
     }
@@ -447,6 +463,9 @@ async function fetchDatasources() {
         ? payload.default
         : dataSources.value[0].name;
   } catch (error) {
+    if (isUnauthorizedError(error)) {
+      handleUnauthorized();
+    }
     dataSources.value = [fallbackDatasource];
     selectedDatasourceName.value = fallbackDatasource.name;
     datasourceLoadError.value = error instanceof Error ? error.message : "数据源加载失败";
@@ -457,7 +476,9 @@ async function fetchDatasources() {
 
 async function fetchAgentStatus() {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/health`);
+    const response = await fetch(`${API_BASE_URL}/api/health`, {
+      credentials: "include",
+    });
     if (!response.ok) {
       return;
     }
@@ -466,6 +487,52 @@ async function fetchAgentStatus() {
   } catch {
     llmProvider.value = "";
   }
+}
+
+async function refreshAuth() {
+  authError.value = "";
+  authCheckError.value = "";
+  try {
+    actor.value = await getMe();
+  } catch (error) {
+    actor.value = null;
+    authCheckError.value =
+      error instanceof AuthApiError ? `认证服务异常：${error.status}` : "认证状态检查失败";
+  } finally {
+    authChecked.value = true;
+  }
+}
+
+async function submitLogin() {
+  if (!loginUsername.value.trim() || !loginPassword.value || isLoggingIn.value) {
+    return;
+  }
+  isLoggingIn.value = true;
+  authError.value = "";
+  try {
+    actor.value = await login(loginUsername.value.trim(), loginPassword.value);
+    loginPassword.value = "";
+    void fetchAgentStatus();
+    void fetchDatasources();
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : "登录失败";
+  } finally {
+    isLoggingIn.value = false;
+  }
+}
+
+async function submitLogout() {
+  actor.value = null;
+  await logout().catch(() => undefined);
+}
+
+function handleUnauthorized() {
+  actor.value = null;
+  authError.value = "登录已过期，请重新登录";
+}
+
+function isUnauthorizedError(error: unknown) {
+  return error instanceof DatasourceApiError && error.status === 401;
 }
 
 function createStepStates() {
@@ -1069,7 +1136,41 @@ function switchView(view: "chat" | "admin") {
 
 <template>
   <main class="app-shell">
-    <section class="workspace">
+    <div v-if="!authChecked" class="auth-loading" role="status">Loading</div>
+    <section v-else-if="authCheckError" class="login-panel">
+      <span class="brand-seal" aria-hidden="true">问</span>
+      <div class="login-heading">
+        <p>NL2SQL Data Agent</p>
+        <h1>认证服务暂不可用</h1>
+      </div>
+      <p class="auth-error">{{ authCheckError }}</p>
+      <button type="button" @click="refreshAuth">重试</button>
+    </section>
+    <form v-else-if="!actor" class="login-panel" @submit.prevent="submitLogin">
+      <span class="brand-seal" aria-hidden="true">问</span>
+      <div class="login-heading">
+        <p>NL2SQL Data Agent</p>
+        <h1>登录掌柜问数</h1>
+      </div>
+      <label>
+        用户名
+        <input v-model="loginUsername" autocomplete="username" name="username" />
+      </label>
+      <label>
+        密码
+        <input
+          v-model="loginPassword"
+          autocomplete="current-password"
+          name="password"
+          type="password"
+        />
+      </label>
+      <p v-if="authError" class="auth-error">{{ authError }}</p>
+      <button type="submit" :disabled="isLoggingIn">
+        {{ isLoggingIn ? "登录中" : "登录" }}
+      </button>
+    </form>
+    <section v-else class="workspace">
       <header class="topbar">
         <div class="brand">
           <span class="brand-seal" aria-hidden="true">问</span>
@@ -1119,6 +1220,10 @@ function switchView(view: "chat" | "admin") {
             </button>
           </nav>
           <span class="status-pill">{{ providerStatusLabel }}</span>
+          <div class="auth-strip">
+            <span>{{ actor.username }}</span>
+            <button type="button" @click="submitLogout">退出</button>
+          </div>
         </div>
       </header>
 
