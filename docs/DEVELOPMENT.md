@@ -81,6 +81,41 @@ EMBEDDING_MODEL=
 
 Do not commit `backend/.env`.
 
+## Auth Deployment
+
+For a single-backend VPS deployment, the built-in login system can use its
+SQLite auth store. Use one auth DB file per project and one backend process per
+auth DB file.
+
+Recommended production settings:
+
+```env
+AUTH_ENABLED=true
+AUTH_COOKIE_NAME=nl2sql_session
+AUTH_COOKIE_SECURE=true
+AUTH_SQLITE_PATH=/var/lib/nl2sql_pro/auth.sqlite
+AUTH_BOOTSTRAP_USERNAME=admin
+AUTH_BOOTSTRAP_PASSWORD=<strong first-start password>
+CORS_ALLOW_ORIGINS=https://nl2sql.example.com
+```
+
+Before first startup on the server, create the auth data directory for the
+backend service user:
+
+```bash
+sudo install -d -o <backend-user> -g <backend-user> -m 700 /var/lib/nl2sql_pro
+```
+
+On first startup, the backend creates `AUTH_BOOTSTRAP_USERNAME` only when the
+auth DB is empty and `AUTH_BOOTSTRAP_PASSWORD` is set. After the first admin
+login works, blank or remove `AUTH_BOOTSTRAP_PASSWORD` and restart the backend.
+Keep `AUTH_COOKIE_SECURE=true` behind HTTPS. Set it to `false` only for local
+HTTP manual testing.
+
+Do not run `uvicorn --workers N` against the same SQLite auth DB. If the app
+needs multiple backend replicas or horizontal scaling, move auth users/sessions
+to Postgres/Redis first.
+
 ## Data and Metadata
 
 Generate DuckDB demo data:
