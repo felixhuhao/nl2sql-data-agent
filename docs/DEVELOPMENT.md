@@ -96,6 +96,10 @@ AUTH_COOKIE_SECURE=true
 AUTH_SQLITE_PATH=/var/lib/nl2sql_pro/auth.sqlite
 AUTH_BOOTSTRAP_USERNAME=admin
 AUTH_BOOTSTRAP_PASSWORD=<strong first-start password>
+AUTH_SESSION_TTL_SECONDS=28800
+AUTH_LOGIN_MAX_ATTEMPTS=5
+AUTH_LOGIN_WINDOW_SECONDS=60
+AUTH_LOGIN_LOCKOUT_SECONDS=300
 CORS_ALLOW_ORIGINS=https://nl2sql.example.com
 ```
 
@@ -110,7 +114,14 @@ On first startup, the backend creates `AUTH_BOOTSTRAP_USERNAME` only when the
 auth DB is empty and `AUTH_BOOTSTRAP_PASSWORD` is set. After the first admin
 login works, blank or remove `AUTH_BOOTSTRAP_PASSWORD` and restart the backend.
 Keep `AUTH_COOKIE_SECURE=true` behind HTTPS. Set it to `false` only for local
-HTTP manual testing.
+HTTP manual testing. Secure cookies require HTTPS; without a reverse proxy
+terminating TLS, login can return `200` while the browser silently drops the
+session cookie and the next `/api/auth/me` returns `401`.
+
+If `AUTH_ENABLED=true`, the auth DB is empty, and `AUTH_BOOTSTRAP_PASSWORD` is
+blank, the backend intentionally fails startup with a `RuntimeError` instead of
+running a locked login screen. Blank the bootstrap password only after the first
+admin login has succeeded.
 
 Do not run `uvicorn --workers N` against the same SQLite auth DB. If the app
 needs multiple backend replicas or horizontal scaling, move auth users/sessions
