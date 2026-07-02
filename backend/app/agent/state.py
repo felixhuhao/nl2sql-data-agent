@@ -39,6 +39,7 @@ class AgentState:
     datasource_dialect: str = "duckdb"
     datasource_display_name: str = "DuckDB (本地)"
     retrieval_result: dict | None = None
+    retrieval_coverage: dict | None = None
     schema_context: str | None = None
     sql: str | None = None
     provider: str | None = None

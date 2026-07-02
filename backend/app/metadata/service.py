@@ -463,6 +463,7 @@ def build_focused_context(question: str, datasource_name: str = DEFAULT_DATASOUR
 def build_focused_context_from_retrieval(
     retrieval_result: dict,
     datasource_name: str = DEFAULT_DATASOURCE,
+    expand_join_partners: bool = True,
 ) -> str:
     if retrieval_result.get("fallback_used"):
         return build_schema_context(datasource_name=datasource_name)
@@ -484,7 +485,8 @@ def build_focused_context_from_retrieval(
         verified_query_ids = {query["id"] for query in retrieval_result.get("verified_queries", [])}
 
         relationships = _relationships_for_tables(session, allowed_tables, datasource_name=datasource_name)
-        _expand_join_partners(table_names, column_keys, relationships)
+        if expand_join_partners:
+            _expand_join_partners(table_names, column_keys, relationships)
 
         tables = _tables_by_name(session, table_names, allowed_tables, datasource_name=datasource_name)
         table_columns = _focused_columns_by_table(session, tables, column_keys, datasource_name=datasource_name)

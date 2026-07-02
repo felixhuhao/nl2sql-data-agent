@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     embedding_dimension: int | None = None
     vector_similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     value_vector_similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    retrieval_expansion_enabled: bool = False
+    retrieval_fallback_mode: str = "off"
+    retrieval_coverage_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    retrieval_coverage_strength_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    retrieval_coverage_structural_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    retrieval_expansion_max_tables: int = Field(default=3, ge=0)
+    retrieval_fact_min_dim_edges: int = Field(default=2, ge=1)
+    retrieval_full_schema_char_budget: int = Field(default=120000, ge=0)
     default_datasource: str = "duckdb_ecommerce"
     clickhouse_enabled: bool = False
     clickhouse_host: str = "localhost"
@@ -129,6 +137,16 @@ def vector_enabled_mode(settings: Any | None = None) -> str:
 
 def vector_config_allows_attempt(settings: Any | None = None) -> bool:
     return vector_enabled_mode(settings) != "disabled"
+
+
+def retrieval_fallback_mode(settings: Any | None = None) -> str:
+    value = str(getattr(settings or get_settings(), "retrieval_fallback_mode", "off") or "off").strip().casefold()
+    return "on" if value in {"1", "true", "yes", "on", "enabled", "enable"} else "off"
+
+
+def retrieval_recovery_enabled(settings: Any | None = None) -> bool:
+    settings = settings or get_settings()
+    return bool(getattr(settings, "retrieval_expansion_enabled", False)) or retrieval_fallback_mode(settings) == "on"
 
 
 def cors_allow_origins(settings: Any | None = None) -> list[str]:

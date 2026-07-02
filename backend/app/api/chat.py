@@ -167,6 +167,7 @@ def iter_chat_events(
                 "olap_description": describe_olap_intents(state.olap_intents),
                 "plan_hints": state.plan_hints,
                 "runtime_stats": state.runtime_stats,
+                "retrieval_coverage": state.retrieval_coverage,
                 "is_follow_up": state.is_follow_up,
                 "change_kind": state.change_kind,
                 "grounding_warnings": state.grounding_warnings,
@@ -258,10 +259,10 @@ def _model_dump(value):
     return value.model_dump()
 
 
-def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
+def _retrieval_step_payload(retrieval_result: dict | None, retrieval_coverage: dict | None = None) -> dict:
     retrieval_result = retrieval_result or {}
     retrieval_meta = retrieval_result.get("retrieval_meta") or {}
-    return {
+    payload = {
         "step": "retrieve_context",
         "status": "completed",
         "fallback_used": retrieval_result.get("fallback_used", False),
@@ -278,6 +279,9 @@ def _retrieval_step_payload(retrieval_result: dict | None) -> dict:
         "value_hits": retrieval_meta.get("value_hits", []),
         "retrieval_sources": retrieval_meta.get("sources", {}),
     }
+    if retrieval_coverage is not None:
+        payload["retrieval_coverage"] = retrieval_coverage
+    return payload
 
 
 def _datasource_step_payload(state: AgentState) -> dict:
@@ -304,9 +308,9 @@ def _workflow_step_payload(step: str, state: AgentState) -> dict:
     if step == "intent_guard":
         return {"step": "intent_guard", "status": "completed"}
     if step == "retrieve_context":
-        return _retrieval_step_payload(state.retrieval_result)
+        return _retrieval_step_payload(state.retrieval_result, state.retrieval_coverage)
     if step == "build_context":
-        return {"step": "build_context", "status": "completed"}
+        return {"step": "build_context", "status": "completed", "retrieval_coverage": state.retrieval_coverage}
     if step == "olap_detected":
         return _olap_step_payload(state)
     if step == "generate_sql":

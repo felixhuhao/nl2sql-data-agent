@@ -8,6 +8,10 @@ TEST_ENV_DEFAULTS = {
     "LLM_PROVIDER": "mock",
     "SEMANTIC_GUARD_MODE": "off",
     "AUTH_ENABLED": "false",
+    "CORS_ALLOW_ORIGINS": (
+        "http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,"
+        "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    ),
 }
 
 for _key, _value in TEST_ENV_DEFAULTS.items():

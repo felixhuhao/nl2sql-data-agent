@@ -84,6 +84,7 @@ class SmokeResult:
     guard_stage: str | None = None
     row_count: int | None = None
     retrieval_fallback_used: bool | None = None
+    retrieval_coverage: dict[str, Any] | None = None
     retrieval_tables: list[str] = field(default_factory=list)
     retrieval_columns: list[str] = field(default_factory=list)
     retrieval_metrics: list[str] = field(default_factory=list)
@@ -634,6 +635,7 @@ def _run_conversation_case(
 def _record_retrieval_result(result: SmokeResult, retrieval_result: dict[str, Any]) -> None:
     retrieval_meta = retrieval_result.get("retrieval_meta") or {}
     result.retrieval_fallback_used = bool(retrieval_result.get("fallback_used"))
+    result.retrieval_coverage = retrieval_result.get("retrieval_coverage")
     result.retrieval_tables = [
         table["table_name"] for table in retrieval_result.get("tables") or []
     ]
@@ -706,6 +708,7 @@ def _record_state_result(result: SmokeResult, state: AgentState) -> None:
     result.olap_intents = list(state.olap_intents)
     result.plan_hints = list(state.plan_hints)
     result.runtime_stats = state.runtime_stats
+    result.retrieval_coverage = state.retrieval_coverage or result.retrieval_coverage
     result.is_follow_up = state.is_follow_up
     result.change_kind = state.change_kind
     if state.guard_result is not None:
@@ -1583,8 +1586,8 @@ def _render_report(
             [
                 f"### {_datasource_section_title(group)}",
                 "",
-                "| Case | Status | Type | Category | Reference | Fallback | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
-                "|------|--------|------|----------|-----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
+                "| Case | Status | Type | Category | Reference | Fallback | Coverage | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
+                "|------|--------|------|----------|-----------|----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
             ]
         )
         for result in group:
@@ -1598,6 +1601,7 @@ def _render_report(
                         _md_cell(result.error_category or "-"),
                         _reference_result_label(result.reference_result_match),
                         str(result.retrieval_fallback_used),
+                        _md_cell(_format_retrieval_coverage(result.retrieval_coverage)),
                         str(result.repair_count),
                         _format_elapsed(result.elapsed_ms),
                         str(result.focused_context_chars),
@@ -1880,6 +1884,17 @@ def _format_elapsed(value: int | None) -> str:
     if value >= 1000:
         return f"{value / 1000:.1f}s"
     return f"{value}ms"
+
+
+def _format_retrieval_coverage(value: dict[str, Any] | None) -> str:
+    if not value:
+        return "-"
+    band = value.get("band", "-")
+    score = value.get("score")
+    expanded = value.get("expanded")
+    fallback_used = value.get("fallback_used")
+    score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "-"
+    return f"{band}/{score_text} expanded={expanded} fallback={fallback_used}"
 
 
 def _short_sql(value: str | None, limit: int = 140) -> str:

@@ -33,6 +33,7 @@ from backend.app.core.llm_provider import (
     SQLRepairContext,
 )
 from backend.app.execution.runner import QueryResult
+from backend.app.metadata.retrieval_coverage import RetrievalCoverage
 from backend.app.sql_guard.models import GuardResult
 from backend.app.sql_guard.scope import GuardScope
 
@@ -183,6 +184,210 @@ def test_build_context_node_unions_prior_assets(monkeypatch):
             "source": "conversation_context",
         }
     ]
+
+
+def test_build_context_node_flags_off_keeps_existing_path(monkeypatch):
+    state = AgentState(question="test", retrieval_result={"fallback_used": False})
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=False, retrieval_fallback_mode="off"),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda retrieval_result, datasource_name: "# Existing Path",
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("coverage should be inert")),
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Existing Path"
+    assert state.retrieval_coverage is None
+
+
+def test_build_context_node_expands_then_stays_focused(monkeypatch):
+    calls = {"score": 0}
+    captured = {}
+
+    def fake_score(retrieval_result, **kwargs):
+        calls["score"] += 1
+        if calls["score"] == 1:
+            return RetrievalCoverage(match_strength=0.2, structural_score=0.0, score=0.1, band="low")
+        return RetrievalCoverage(match_strength=0.8, structural_score=1.0, score=0.9, band="high")
+
+    def fake_expand(retrieval_result, datasource_name):
+        expanded = {
+            **retrieval_result,
+            "tables": [*retrieval_result.get("tables", []), {"table_name": "fact_orders"}],
+            "retrieval_coverage": {"expanded": True},
+        }
+        return expanded
+
+    def fake_build_focused_context_from_retrieval(retrieval_result, datasource_name, expand_join_partners=True):
+        captured["retrieval_result"] = retrieval_result
+        captured["expand_join_partners"] = expand_join_partners
+        return "# Expanded Focused"
+
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=True, retrieval_fallback_mode="off"),
+    )
+    monkeypatch.setattr(nodes_module, "score_coverage", fake_score)
+    monkeypatch.setattr(nodes_module, "expand_via_graph", fake_expand)
+    monkeypatch.setattr(nodes_module, "build_focused_context_from_retrieval", fake_build_focused_context_from_retrieval)
+    state = AgentState(
+        question="sales by channel",
+        retrieval_result={"fallback_used": False, "tables": [{"table_name": "dim_channels"}], "columns": []},
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Expanded Focused"
+    assert state.retrieval_coverage["band"] == "high"
+    assert state.retrieval_coverage["expanded"] is True
+    assert captured["retrieval_result"]["tables"][-1]["table_name"] == "fact_orders"
+    assert captured["expand_join_partners"] is False
+
+
+def test_build_context_node_high_confidence_keeps_legacy_join_expansion(monkeypatch):
+    captured = {}
+
+    def fake_build_focused_context_from_retrieval(retrieval_result, datasource_name, expand_join_partners=True):
+        captured["expand_join_partners"] = expand_join_partners
+        return "# High Confidence Focused"
+
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=True, retrieval_fallback_mode="off"),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: RetrievalCoverage(
+            match_strength=1.0,
+            structural_score=1.0,
+            score=1.0,
+            band="high",
+        ),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "expand_via_graph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("high confidence should not expand")),
+    )
+    monkeypatch.setattr(nodes_module, "build_focused_context_from_retrieval", fake_build_focused_context_from_retrieval)
+    state = AgentState(
+        question="sales by channel",
+        retrieval_result={"fallback_used": False, "tables": [{"table_name": "fact_orders"}], "columns": []},
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# High Confidence Focused"
+    assert captured["expand_join_partners"] is True
+
+
+def test_build_context_node_low_confidence_falls_back_when_budget_fits(monkeypatch):
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=False, retrieval_fallback_mode="on"),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: RetrievalCoverage(
+            match_strength=0.2,
+            structural_score=0.0,
+            score=0.1,
+            band="low",
+        ),
+    )
+    monkeypatch.setattr(nodes_module, "build_schema_context", lambda datasource_name: "# Full Schema")
+    monkeypatch.setattr(nodes_module, "full_schema_fits_budget", lambda full_schema_context: True)
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should use full schema")),
+    )
+    state = AgentState(
+        question="sales by channel",
+        retrieval_result={"fallback_used": False, "tables": [{"table_name": "dim_channels"}], "columns": []},
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Full Schema"
+    assert state.retrieval_coverage["fallback_used"] is True
+
+
+def test_build_context_node_over_budget_fallback_keeps_legacy_join_expansion(monkeypatch):
+    captured = {}
+
+    def fake_build_focused_context_from_retrieval(retrieval_result, datasource_name, expand_join_partners=True):
+        captured["expand_join_partners"] = expand_join_partners
+        return "# Focused Over Budget"
+
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=False, retrieval_fallback_mode="on"),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: RetrievalCoverage(
+            match_strength=0.2,
+            structural_score=0.0,
+            score=0.1,
+            band="low",
+        ),
+    )
+    monkeypatch.setattr(nodes_module, "build_schema_context", lambda datasource_name: "# Full Schema")
+    monkeypatch.setattr(nodes_module, "full_schema_fits_budget", lambda full_schema_context: False)
+    monkeypatch.setattr(nodes_module, "build_focused_context_from_retrieval", fake_build_focused_context_from_retrieval)
+    state = AgentState(
+        question="sales by channel",
+        retrieval_result={"fallback_used": False, "tables": [{"table_name": "dim_channels"}], "columns": []},
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Focused Over Budget"
+    assert state.retrieval_coverage["fallback_used"] is False
+    assert captured["expand_join_partners"] is True
+
+
+def test_build_context_node_empty_recall_fallback_is_invariant(monkeypatch):
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=True, retrieval_fallback_mode="off"),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: RetrievalCoverage(
+            match_strength=0.0,
+            structural_score=0.0,
+            score=0.0,
+            band="low",
+        ),
+    )
+    monkeypatch.setattr(nodes_module, "build_schema_context", lambda datasource_name: "# Full Schema")
+    state = AgentState(question="unknown", retrieval_result={"fallback_used": True, "tables": [], "columns": []})
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Full Schema"
+    assert state.retrieval_coverage["fallback_used"] is True
 
 
 def test_conversation_context_prompt_scopes_carried_filters_to_followups():

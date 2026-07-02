@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design — Retrieval Recall Expansion + Confidence-Triggered Fallback</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c6b7a; --line:#e2e6ea; --accent:#2d6cdf; --ok:#1c8a52; --warn:#b8860b; --bg:#fbfcfd; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.7rem; line-height:1.25; margin:0 0 4px; }
+  h2 { font-size: 1.2rem; margin:36px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size: 1.02rem; margin:22px 0 8px; }
+  code { background:#eef1f5; padding:1px 5px; border-radius:4px; font-size:.9em; }
+  pre { background:#0f1729; color:#d6e2ff; padding:16px; border-radius:8px; overflow:auto; font-size:.85rem; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  table { border-collapse: collapse; width:100%; margin:12px 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f0f4f8; }
+  .digest { background:#fff; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .digest h2 { margin-top:0; border:none; padding:0; color:var(--accent); }
+  .pill { display:inline-block; font-size:.75rem; font-weight:600; padding:2px 9px; border-radius:999px; background:#eaf1fe; color:var(--accent); }
+  .pill.status { background:#fff4e0; color:var(--warn); }
+  .lbl { font-weight:700; color:var(--ink); }
+  ul { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .muted { color:var(--muted); }
+  .rej { color:var(--warn); }
+  .chosen { color:var(--ok); font-weight:700; }
+  footer { margin-top:48px; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Retrieval Recall Expansion + Confidence-Triggered Fallback</h1>
+  <p><span class="pill">Lane: full (lightweight)</span> &nbsp; <span class="pill status">Status: In-review</span></p>
+
+  <div class="digest">
+    <h2>Digest</h2>
+    <p><span class="lbl">Change:</span> Add deterministic graph expansion of recalled tables + a hybrid coverage score that triggers full-schema fallback on <em>low</em> confidence (not just empty recall).</p>
+    <p class="lbl">Decisions (decision — why — rejected):</p>
+    <ul>
+      <li><span class="chosen">Hybrid coverage score</span> (match strength × structural joinability) — a query can have strong hits yet no joinable subgraph, or the reverse; either signal alone misses a real failure. <span class="rej">Rejected:</span> recall-strength-only, structural-only.</li>
+      <li><span class="chosen">1-hop, fanout-gated, bidirectional, capped expansion</span> — recovers fact↔dim both directions on a star schema while preserving the ~75% context reduction. <span class="rej">Rejected:</span> transitive (pulls whole star, redundant vs fallback), fact-anchored (one-directional).</li>
+      <li><span class="chosen">Two-stage recovery</span> — low → expand → re-score → full-schema only if still low; cheap deterministic recovery before paying full-schema cost. <span class="rej">Rejected:</span> direct fallback.</li>
+      <li><span class="chosen">Size-capped full-schema fallback</span> — fall back only when full schema fits a budget; else keep expanded focused context (honours the <em>Death of Schema Linking?</em> caveat).</li>
+      <li><span class="chosen">Ship behind flags, default off</span> — eval-gated; matches <code>semantic_mode</code>/<code>VECTOR_ENABLED</code>; no behaviour change until calibrated.</li>
+    </ul>
+    <p class="lbl">Risks / watch:</p>
+    <ul>
+      <li>Weights &amp; threshold are eval-calibrated, not derivable a priori.</li>
+      <li>Expansion must respect analysis-space scoping or it breaks the shared governance model.</li>
+      <li>Must be a no-op (not a crash) on datasources with no relationships.</li>
+    </ul>
+    <p class="lbl">Open questions:</p>
+    <ul><li>Exact weights/threshold and the full-schema size budget — deferred to eval calibration (tasks.md); not blocking the interface.</li></ul>
+    <p class="muted">Drill down: full design below · files in <code>docs/design/retrieval-recall-expansion/</code>.</p>
+  </div>
+
+  <h2>1. Problem / context</h2>
+  <p>Focused retrieval recalls tables/columns/metrics/aliases via rule + optional vector recall; today the only safety net is: empty recall → full-schema fallback. The real gap (schema-linking research) is <strong>non-empty but structurally incomplete</strong> recall — some tables surfaced, a needed dimension or join path missed. That context is irrevocably lost and the LLM generates over an incomplete schema with no signal anything was wrong. Highest-leverage accuracy failure, currently invisible.</p>
+
+  <h2>2. Goals</h2>
+  <p><span class="lbl">In scope:</span> deterministic graph expansion; hybrid coverage score with high|low band; two-stage recovery control flow; telemetry (score/band, expanded, fallback_used); eval cases for incomplete recall; feature flags default off.</p>
+  <p><span class="lbl">Out of scope:</span> any LLM-based schema linking (separate later item); changing rule/vector scoring; multi-hop expansion; changing SQL Guard / execution / semantic guard.</p>
+
+  <h2>3. Proposed approach</h2>
+<pre><code># Stage 1 — raw recall
+raw = retriever(question, datasource)
+
+# Stage 2 — merge carried conversation assets (as today)
+result = merge_prior_assets_into_retrieval(raw, conversation_context)
+
+# INVARIANT: empty recall always → full schema (independent of flags/budget)
+if is_empty(result):
+    state.retrieval_coverage = coverage_empty(fallback_used=True)
+    return full_schema_context(datasource)
+
+coverage = score_coverage(result, datasource)           # hybrid, on merged set
+
+# Stage 3 — deterministic expansion (recovery on low confidence)
+if coverage.band == "low" and EXPANSION_ENABLED:
+    result   = expand_via_graph(result, datasource)
+    coverage = score_coverage(result, datasource)       # re-score on expanded set
+
+# Stage 4 — NEW low-confidence fallback (gated + size-budgeted)
+if coverage.band == "low" and RETRIEVAL_FALLBACK_MODE == "on" and full_schema_fits_budget(datasource):
+    coverage.fallback_used = True
+    state.retrieval_coverage = coverage
+    return full_schema_context(datasource)
+
+# Stage 5 — render from the SAME set coverage was computed on
+state.retrieval_coverage = coverage
+return build_focused_context_from_retrieval(result, datasource)</code></pre>
+  <p>High-confidence common case is <strong>unchanged</strong> — no expansion, no extra cost. <strong>Canonical stages</strong> raw→merged→expanded→rendered mean coverage/telemetry always describe the exact rendered set. <strong>Empty recall</strong> is an unconditional invariant → full schema, matching today (no regression). <strong>Fact-role</strong> = FK-topology heuristic (source of ≥<code>FACT_MIN_DIM_EDGES</code> many_to_one edges), no metadata column or naming dependency.</p>
+
+  <h2>4. Key decisions — alternatives &amp; rationale</h2>
+
+  <h3>D1 — Coverage signal: Hybrid (chosen)</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">Hybrid (chosen)</td><td>Catches strong-but-disconnected AND weak-but-connected recalls; models the lost-context risk directly.</td><td>Two things to calibrate.</td></tr>
+    <tr><td>Recall strength only</td><td>Simplest; reuses existing scores.</td><td>Blind to structure — passes disconnected recall to the LLM.</td></tr>
+    <tr><td>Structural only</td><td>Encodes joinability directly.</td><td>Misses weak/ambiguous recall where the right tables weren't found.</td></tr>
+  </table>
+
+  <h3>D2 — Expansion depth: 1-hop bidirectional (chosen)</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">1-hop bidirectional (chosen)</td><td>Recovers fact↔dim both directions; preserves context reduction; composes with fallback.</td><td>Won't self-recover a 2-hop gap — fallback covers it.</td></tr>
+    <tr><td>Fact-anchored</td><td>Tightest; star-shaped.</td><td>One-directional; misses dim-recalled-but-not-fact recovery.</td></tr>
+    <tr><td>Transitive</td><td>Highest recall.</td><td>Pulls the whole star; erodes reduction; redundant given fallback.</td></tr>
+  </table>
+
+  <h3>D3 — Fallback flow: Two-stage recovery (chosen)</h3>
+  <p>Low → expand → re-score → full schema only if still low. Rejected direct fallback: simpler flow but more full-schema hits → higher cost/hallucination, wasting cheap recovery.</p>
+
+  <h3>D4 — Size-capped full-schema fallback (chosen)</h3>
+  <p>Fall back only when full schema fits a budget; else keep expanded focused context. Full schema rivals schema-linking <em>only when it fits</em>.</p>
+
+  <h3>D5 — Flags, default off (chosen)</h3>
+  <p>Eval-gated rollout; no behaviour change until calibrated. Matches existing conventions.</p>
+
+  <h2>5. Altitude — deferred to implementation</h2>
+  <ul>
+    <li>Function/dataclass names; <code>RetrievalCoverage</code> as dataclass vs typed dict.</li>
+    <li>SSE payload field naming/placement.</li>
+    <li>Line-level traversal code; <code>match_strength</code> normalization formula.</li>
+    <li>Calibrated values: weights, threshold, <code>MAX_TABLES</code>, full-schema size budget — set from eval.</li>
+  </ul>
+
+  <h2>6. Open questions</h2>
+  <ul>
+    <li>Final weights/threshold + full-schema size budget → eval calibration. Interface commits to their existence/type; only the numbers are open.</li>
+    <li>Whether <code>medium</code> fanout counts fractionally vs fully against the cap → default full; revisit if calibration shows over-pruning.</li>
+  </ul>
+
+  <h2>7. Status</h2>
+  <p><span class="pill status">In-review</span> — maker: Claude. Awaiting design-review (Codex) + operator sign-off. Approval: <em>not-yet</em>.</p>
+
+  <footer>
+    Research cited: Rethinking Schema Linking (arXiv 2510.14296) · Boundary-Aware NL2SQL (arXiv 2601.10318) · Death of Schema Linking? (arXiv 2408.07702).<br>
+    Files: <code>docs/design/retrieval-recall-expansion/{design.md, tasks.md, design.html}</code> · board: <code>docs/design/roadmap.md</code>.
+  </footer>
+
+</div>
+</body>
+</html>

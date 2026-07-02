@@ -3,8 +3,8 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from backend.app.metadata import retrieval
-from backend.app.metadata.models import MetaColumn, MetaTable, create_metadata_schema
+from backend.app.metadata import retrieval, retrieval_coverage
+from backend.app.metadata.models import MetaColumn, MetaRelationship, MetaTable, create_metadata_schema
 from backend.app.metadata.seed import seed_semantics
 
 
@@ -225,6 +225,124 @@ def test_ascii_term_variants_cover_common_morphology():
     assert {"branch", "update", "rank", "sale"}.issubset(terms)
 
 
+def test_score_coverage_bands_healthy_disconnected_weak_and_empty(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+    monkeypatch.setattr(
+        retrieval_coverage,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "retrieval_coverage_threshold": 0.7,
+                "retrieval_coverage_strength_weight": 0.5,
+                "retrieval_coverage_structural_weight": 0.5,
+                "retrieval_fact_min_dim_edges": 2,
+            },
+        )(),
+    )
+
+    healthy = retrieval_coverage.score_coverage(
+        {
+            "tables": [
+                {"table_name": "fact_orders", "score": 30},
+                {"table_name": "dim_channels", "score": 10},
+            ],
+            "columns": [],
+            "metrics": [{"name": "sales_amount", "score": 30}],
+            "verified_queries": [],
+        }
+    )
+    disconnected = retrieval_coverage.score_coverage(
+        {
+            "tables": [
+                {"table_name": "dim_channels", "score": 30},
+                {"table_name": "dim_regions", "score": 30},
+            ],
+            "columns": [],
+            "metrics": [{"name": "sales_amount", "score": 30}],
+            "verified_queries": [],
+        }
+    )
+    weak_connected = retrieval_coverage.score_coverage(
+        {
+            "tables": [
+                {"table_name": "fact_orders", "score": 3},
+                {"table_name": "dim_channels", "score": 3},
+            ],
+            "columns": [],
+            "metrics": [{"name": "sales_amount", "score": 3}],
+            "verified_queries": [],
+        }
+    )
+    empty = retrieval_coverage.score_coverage({"tables": [], "columns": [], "metrics": [], "verified_queries": []})
+
+    assert healthy.band == "high"
+    assert healthy.structural_score == 1.0
+    assert disconnected.band == "low"
+    assert disconnected.structural_score == 0.0
+    assert weak_connected.band == "low"
+    assert weak_connected.signals["join_connected"] is True
+    assert empty.band == "low"
+
+
+def test_expand_via_graph_skips_high_fanout_caps_and_scopes(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+    with Session(engine) as session:
+        session.add(
+            MetaRelationship(
+                source_table="dim_channels",
+                source_column="channel_key",
+                target_table="dim_regions",
+                target_column="region_key",
+                relationship_type="many_to_one",
+                confidence=1.0,
+                fanout_risk="high",
+            )
+        )
+        session.commit()
+    monkeypatch.setattr(
+        retrieval_coverage,
+        "get_settings",
+        lambda: type("Settings", (), {"retrieval_expansion_max_tables": 1})(),
+    )
+
+    result = retrieval_coverage.expand_via_graph(
+        {
+            "tables": [{"table_name": "dim_channels", "score": 30}],
+            "columns": [],
+            "metrics": [],
+            "verified_queries": [],
+        }
+    )
+
+    assert "fact_orders" in _names(result["tables"], "table_name")
+    assert "dim_regions" not in _names(result["tables"], "table_name")
+    assert ("fact_orders", "channel_key") in _column_keys(result)
+    assert ("dim_channels", "channel_key") in _column_keys(result)
+    assert result["retrieval_coverage"]["expanded"] is True
+
+
+def test_expand_via_graph_no_relationships_noops(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    with Session(engine) as session:
+        table = MetaTable(table_name="lonely_table", enabled=True)
+        session.add(table)
+        session.commit()
+    monkeypatch.setattr(
+        retrieval_coverage,
+        "get_settings",
+        lambda: type("Settings", (), {"retrieval_expansion_max_tables": 1})(),
+    )
+
+    original = {"tables": [{"table_name": "lonely_table", "score": 30}], "columns": []}
+    result = retrieval_coverage.expand_via_graph(original)
+
+    assert result == original
+
+
 def _patch_retrieval_db(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     create_metadata_schema(engine)
@@ -241,6 +359,8 @@ def _patch_retrieval_db(monkeypatch):
 
     monkeypatch.setattr(retrieval, "get_sqlite_engine", lambda: engine)
     monkeypatch.setattr(retrieval, "sqlite_session", session_scope)
+    monkeypatch.setattr(retrieval_coverage, "get_sqlite_engine", lambda: engine)
+    monkeypatch.setattr(retrieval_coverage, "sqlite_session", session_scope)
     return engine
 
 

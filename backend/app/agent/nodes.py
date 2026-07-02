@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterator
 
@@ -11,7 +12,7 @@ from backend.app.agent.explainability import build_query_explainability
 from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
 from backend.app.agent.state import AgentState
 from backend.app.agent.sql_postprocess import normalize_generated_sql
-from backend.app.config import get_settings
+from backend.app.config import get_settings, retrieval_fallback_mode, retrieval_recovery_enabled
 from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.llm_provider import (
     LLMProvider,
@@ -20,7 +21,13 @@ from backend.app.core.llm_provider import (
 )
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
 from backend.app.metadata.retrieval import retrieve_metadata_assets
-from backend.app.metadata.service import build_focused_context, build_focused_context_from_retrieval
+from backend.app.metadata.retrieval_coverage import (
+    expand_via_graph,
+    full_schema_fits_budget,
+    is_empty_retrieval,
+    score_coverage,
+)
+from backend.app.metadata.service import build_focused_context, build_focused_context_from_retrieval, build_schema_context
 from backend.app.sql_guard.guard import guard_sql
 from backend.app.sql_guard.scope import GuardScope, build_default_guard_scope
 
@@ -29,6 +36,7 @@ SchemaContextBuilder = Callable[[], str]
 Retriever = Callable[..., dict]
 ScopeBuilder = Callable[..., GuardScope]
 SQLExecutor = Callable[..., QueryResult]
+logger = logging.getLogger(__name__)
 
 
 _SQL_COMMAND_INTENT_PATTERNS = (
@@ -231,10 +239,68 @@ def build_context_node(
             state.retrieval_result,
             state.conversation_context,
         )
-        state.schema_context = build_focused_context_from_retrieval(
-            retrieval_result,
-            datasource_name=state.datasource_name,
-        )
+        settings = get_settings()
+        if retrieval_recovery_enabled(settings):
+            retrieval_result["retrieval_stage"] = "merged"
+            coverage_olap_intents = state.olap_intents or list(detect_olap_intents(state.question))
+            if is_empty_retrieval(retrieval_result):
+                state.schema_context = build_schema_context(datasource_name=state.datasource_name)
+                coverage = score_coverage(
+                    retrieval_result,
+                    datasource_name=state.datasource_name,
+                    olap_intents=coverage_olap_intents,
+                )
+                coverage.fallback_used = True
+                state.retrieval_coverage = coverage.as_dict()
+            else:
+                coverage = score_coverage(
+                    retrieval_result,
+                    datasource_name=state.datasource_name,
+                    olap_intents=coverage_olap_intents,
+                )
+                if coverage.band == "low" and bool(getattr(settings, "retrieval_expansion_enabled", False)):
+                    retrieval_result["retrieval_coverage"] = coverage.as_dict()
+                    retrieval_result = expand_via_graph(
+                        retrieval_result,
+                        datasource_name=state.datasource_name,
+                    )
+                    coverage = score_coverage(
+                        retrieval_result,
+                        datasource_name=state.datasource_name,
+                        olap_intents=coverage_olap_intents,
+                    )
+                    coverage.expanded = bool(retrieval_result.get("retrieval_coverage", {}).get("expanded"))
+
+                if coverage.band == "low" and retrieval_fallback_mode(settings) == "on":
+                    full_context = build_schema_context(datasource_name=state.datasource_name)
+                    if full_schema_fits_budget(full_context):
+                        coverage.fallback_used = True
+                        state.retrieval_coverage = coverage.as_dict()
+                        state.schema_context = full_context
+                    else:
+                        logger.info(
+                            "Skipping retrieval full-schema fallback because context exceeds budget.",
+                            extra={"datasource": state.datasource_name, "coverage": coverage.as_dict()},
+                        )
+                        state.retrieval_coverage = coverage.as_dict()
+                        state.schema_context = build_focused_context_from_retrieval(
+                            retrieval_result,
+                            datasource_name=state.datasource_name,
+                            expand_join_partners=not coverage.expanded,
+                        )
+                else:
+                    state.retrieval_coverage = coverage.as_dict()
+                    state.schema_context = build_focused_context_from_retrieval(
+                        retrieval_result,
+                        datasource_name=state.datasource_name,
+                        expand_join_partners=not coverage.expanded,
+                    )
+            state.retrieval_result = retrieval_result
+        else:
+            state.schema_context = build_focused_context_from_retrieval(
+                retrieval_result,
+                datasource_name=state.datasource_name,
+            )
     else:
         state.schema_context = build_focused_context(state.question, datasource_name=state.datasource_name)
     state.completed_steps.append("build_context")
