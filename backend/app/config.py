@@ -10,6 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DEFAULT_RANKING_LIMIT = 10
 DEFAULT_BROWSE_LIMIT = 20
+DEFAULT_LOCALE = "zh"
+SUPPORTED_LOCALES = frozenset({"zh", "en"})
 
 
 class Settings(BaseSettings):
@@ -21,9 +23,9 @@ class Settings(BaseSettings):
     llm_provider: str = "auto"
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout: float = 30.0
-    semantic_guard_mode: str = "off"
+    semantic_guard_mode: str = "warn"
     semantic_guard_timeout: float = 30.0
     sql_default_ranking_limit: int = Field(default=DEFAULT_RANKING_LIMIT, ge=1, le=500)
     sql_default_browse_limit: int = Field(default=DEFAULT_BROWSE_LIMIT, ge=1, le=500)
@@ -31,6 +33,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
     qdrant_collection_prefix: str = "nl2sql"
+    qdrant_timeout_seconds: int = Field(default=60, gt=0)
     embedding_model: str | None = None
     embedding_dimension: int | None = None
     vector_similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -43,6 +46,7 @@ class Settings(BaseSettings):
     retrieval_expansion_max_tables: int = Field(default=3, ge=0)
     retrieval_fact_min_dim_edges: int = Field(default=2, ge=1)
     retrieval_full_schema_char_budget: int = Field(default=120000, ge=0)
+    default_locale: str = DEFAULT_LOCALE
     default_datasource: str = "duckdb_ecommerce"
     clickhouse_enabled: bool = False
     clickhouse_host: str = "localhost"
@@ -119,8 +123,8 @@ def effective_llm_provider_name(settings: Any | None = None) -> str:
 
 
 def semantic_guard_mode(settings: Any | None = None) -> str:
-    value = str(getattr(settings or get_settings(), "semantic_guard_mode", "off") or "off").strip().casefold()
-    return value if value in {"off", "warn", "enforce"} else "off"
+    value = str(getattr(settings or get_settings(), "semantic_guard_mode", "warn") or "warn").strip().casefold()
+    return value if value in {"off", "warn", "enforce"} else "warn"
 
 
 def vector_enabled_mode(settings: Any | None = None) -> str:
@@ -168,3 +172,13 @@ def embedding_model_name(settings: Any | None = None) -> str:
     raw_value = getattr(settings or get_settings(), "embedding_model", None)
     value = str(raw_value or "").strip()
     return value or DEFAULT_EMBEDDING_MODEL
+
+
+def supported_locales() -> frozenset[str]:
+    return SUPPORTED_LOCALES
+
+
+def default_locale(settings: Any | None = None) -> str:
+    raw_value = str(getattr(settings or get_settings(), "default_locale", DEFAULT_LOCALE) or DEFAULT_LOCALE)
+    value = raw_value.strip().casefold()
+    return value if value in SUPPORTED_LOCALES else DEFAULT_LOCALE

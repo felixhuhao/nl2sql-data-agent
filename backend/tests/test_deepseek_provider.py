@@ -40,7 +40,7 @@ def test_deepseek_provider_posts_chat_completion_request():
     provider = DeepSeekProvider(
         api_key="test-key",
         base_url="https://api.deepseek.com",
-        model="deepseek-v4-pro",
+        model="deepseek-v4-flash",
         http_client=client,
         timeout=30,
     )
@@ -51,7 +51,7 @@ def test_deepseek_provider_posts_chat_completion_request():
     assert result.sql == "SELECT order_id FROM fact_orders"
     assert client.requests[0]["url"] == "https://api.deepseek.com/chat/completions"
     assert client.requests[0]["headers"]["Authorization"] == "Bearer test-key"
-    assert client.requests[0]["json"]["model"] == "deepseek-v4-pro"
+    assert client.requests[0]["json"]["model"] == "deepseek-v4-flash"
     assert client.requests[0]["json"]["stream"] is False
     assert client.requests[0]["json"]["messages"][0]["role"] == "system"
     assert client.requests[0]["json"]["messages"][1]["role"] == "user"

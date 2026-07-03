@@ -10,6 +10,7 @@ from sqlglot.errors import ParseError
 
 from backend.app.agent.state import AgentState
 from backend.app.connectors.registry import get_datasource_manager
+from backend.app.i18n import t
 from backend.app.metadata.semantic_overlay import TABLE_SEMANTICS
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ def explain_performance_node(state: AgentState) -> AgentState:
             explain_result,
             matched_tables=(state.explainability or {}).get("matched_tables", []),
             sql=normalized_sql,
+            locale=state.locale,
         )
 
     state.completed_steps.append("explain_plan")
@@ -66,6 +68,7 @@ def parse_plan_hints(
     explain_result: dict[str, Any],
     matched_tables: list[str] | None = None,
     sql: str = "",
+    locale: str | None = None,
 ) -> list[str]:
     lines = _explain_lines(explain_result)
     text = "\n".join(lines)
@@ -78,26 +81,26 @@ def parse_plan_hints(
         scanned = int(parts_match.group(1))
         total = int(parts_match.group(2))
         if total == 0:
-            hints.append("查询计划显示没有可扫描的 parts。")
+            hints.append(t("performance.no_parts", locale))
         elif scanned < total:
-            hints.append(f"命中分区裁剪，扫描 {scanned}/{total} parts。")
+            hints.append(t("performance.partition_pruned", locale, scanned=scanned, total=total))
         else:
-            hints.append(f"未明显命中分区裁剪，扫描 {scanned}/{total} parts。")
+            hints.append(t("performance.partition_not_pruned", locale, scanned=scanned, total=total))
     elif "partition" in text.casefold():
-        hints.append("查询计划包含分区过滤信息。")
+        hints.append(t("performance.partition_info", locale))
 
     if _uses_sorting_key(text):
-        hints.append("查询计划包含排序键相关读取。")
+        hints.append(t("performance.sorting_key", locale))
 
     join_count = _join_count(lines)
     if join_count:
-        hints.append(f"包含 {join_count} 个 JOIN。")
+        hints.append(t("performance.join_count", locale, count=join_count))
 
     if _should_suggest_time_filter(sql=sql, matched_tables=matched_tables or []):
-        hints.append("建议添加明确的时间范围过滤以减少 ClickHouse 扫描。")
+        hints.append(t("performance.suggest_time_filter", locale))
 
     if not hints:
-        hints.append("EXPLAIN 已生成，未发现明显性能风险。")
+        hints.append(t("performance.no_risk", locale))
     return hints
 
 

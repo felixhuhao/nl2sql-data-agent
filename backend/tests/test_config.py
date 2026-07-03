@@ -9,6 +9,7 @@ from backend.app.config import (
     embedding_model_name,
     effective_llm_provider_name,
     llm_provider_mode,
+    semantic_guard_mode,
     vector_config_allows_attempt,
     vector_enabled_mode,
 )
@@ -20,6 +21,8 @@ def _clear_config_env(monkeypatch):
         "LLM_PROVIDER",
         "VECTOR_ENABLED",
         "EMBEDDING_MODEL",
+        "DEEPSEEK_MODEL",
+        "SEMANTIC_GUARD_MODE",
         "SQL_DEFAULT_RANKING_LIMIT",
         "SQL_DEFAULT_BROWSE_LIMIT",
     ):
@@ -74,6 +77,17 @@ def test_vector_enabled_defaults_to_auto(monkeypatch):
     assert settings.vector_enabled == "auto"
     assert vector_enabled_mode(settings) == "auto"
     assert vector_config_allows_attempt(settings) is True
+
+
+def test_semantic_guard_defaults_to_warn(monkeypatch):
+    _clear_config_env(monkeypatch)
+    settings = Settings(_env_file=None)
+
+    assert settings.semantic_guard_mode == "warn"
+    assert semantic_guard_mode(settings) == "warn"
+    assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="")) == "warn"
+    assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="unknown")) == "warn"
+    assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="off")) == "off"
 
 
 def test_embedding_model_defaults_when_blank_or_missing(monkeypatch):

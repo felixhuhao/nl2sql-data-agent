@@ -73,6 +73,7 @@ class QdrantVectorStore:
         url: str | None = None,
         api_key: str | None = None,
         collection_prefix: str | None = None,
+        timeout: int | None = None,
         client=None,
     ) -> None:
         settings = get_settings()
@@ -81,6 +82,7 @@ class QdrantVectorStore:
         self.collection_prefix = (
             collection_prefix if collection_prefix is not None else settings.qdrant_collection_prefix
         )
+        self.timeout = timeout if timeout is not None else settings.qdrant_timeout_seconds
         self._client = client
 
     def ensure_tables(self, embedding_dimension: int) -> None:
@@ -292,6 +294,8 @@ class QdrantVectorStore:
             kwargs = {"url": self.url}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
+            if self.timeout:
+                kwargs["timeout"] = self.timeout
             self._client = _load_qdrant_client().QdrantClient(**kwargs)
         return self._client
 

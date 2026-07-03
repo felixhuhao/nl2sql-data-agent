@@ -15,6 +15,7 @@ from backend.app.agent.state import AgentState
 from backend.app.agent.conversation import ConversationContext
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider
 from backend.app.execution.runner import execute_guarded_sql
+from backend.app.i18n import resolve_locale
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.sql_guard.scope import build_default_guard_scope
@@ -54,6 +55,7 @@ def run_query_workflow(
     semantic_verifier: SemanticGroundingVerifier | None = None,
     semantic_auditor: SemanticRefutationAuditor | None = None,
     semantic_mode: str | None = None,
+    locale: str | None = None,
 ) -> AgentState:
     """Synchronous workflow driver.
 
@@ -64,6 +66,7 @@ def run_query_workflow(
     state = AgentState(
         question=question,
         datasource_name=datasource_name,
+        locale=resolve_locale(locale),
         conversation_context=conversation_context
         if conversation_context is None or conversation_context.datasource_name == datasource_name
         else None,

@@ -15,6 +15,7 @@ from backend.app.agent.schema_evidence import SchemaEvidence, build_schema_evide
 from backend.app.agent.promoted_patterns import is_pattern_promoted
 from backend.app.config import get_settings, semantic_guard_mode
 from backend.app.core.llm_provider import strip_code_fence
+from backend.app.i18n import t
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.service import build_schema_context
 
@@ -309,7 +310,7 @@ def semantic_guard_node(
             reason=f"Schema evidence unavailable: {exc}; deterministic audit abstained.",
         )
         for issue in result.issues:
-            state.grounding_warnings.append(_warning_from_issue(issue, refutation))
+            state.grounding_warnings.append(_warning_from_issue(issue, refutation, locale=state.locale))
         return state
 
     for issue in result.issues:
@@ -318,7 +319,7 @@ def semantic_guard_node(
             evidence=evidence,
             concept=_concept_for_issue(issue, unsupported_concepts),
         )
-        state.grounding_warnings.append(_warning_from_issue(issue, refutation))
+        state.grounding_warnings.append(_warning_from_issue(issue, refutation, locale=state.locale))
 
     blocking_warnings = [
         warning
@@ -327,7 +328,7 @@ def semantic_guard_node(
     ]
     if mode == "enforce" and blocking_warnings:
         state.stopped_at = "semantic_guard"
-        state.error = _semantic_block_message(blocking_warnings)
+        state.error = _semantic_block_message(blocking_warnings, locale=state.locale)
     return state
 
 
@@ -428,12 +429,17 @@ def _record_verifier_unavailable(state: AgentState, *, mode: str, reason: str) -
                 "supported": False,
                 "refutation_confirmed": False,
                 "refutation_reason": reason,
-                "message": "Semantic grounding verifier was unavailable; this result was not semantically checked.",
+                "message": t("guard.semantic_verifier_unavailable", state.locale),
             }
         )
 
 
-def _warning_from_issue(issue: SemanticGroundingIssue, refutation: RefutationAuditResult) -> GroundingWarningPayload:
+def _warning_from_issue(
+    issue: SemanticGroundingIssue,
+    refutation: RefutationAuditResult,
+    *,
+    locale: str | None = None,
+) -> GroundingWarningPayload:
     action = "used a proxy" if issue.failure_kind == "substituted" else "omitted the concept"
     if issue.failure_kind == "substituted" and issue.sql_mapping:
         detail = f" SQL mapping: {issue.sql_mapping}."
@@ -450,13 +456,20 @@ def _warning_from_issue(issue: SemanticGroundingIssue, refutation: RefutationAud
         "refutation_confirmed": refutation.confirmed,
         "refutation_reason": refutation.reason,
         "refutation_pattern": refutation.pattern,
-        "message": f"The question asked for {issue.concept!r}, but the SQL {action}.{detail} {issue.explanation}".strip(),
+        "message": t(
+            "guard.semantic_warning",
+            locale,
+            concept=repr(issue.concept),
+            action=action,
+            detail=detail,
+            explanation=issue.explanation,
+        ).strip(),
     }
 
 
-def _semantic_block_message(warnings: list[GroundingWarningPayload]) -> str:
+def _semantic_block_message(warnings: list[GroundingWarningPayload], *, locale: str | None = None) -> str:
     concepts = ", ".join(str(warning.get("concept")) for warning in warnings if warning.get("refutation_confirmed"))
-    return f'当前 schema 中没有"{concepts}"对应的字段、状态值或指标，无法安全生成 SQL。'
+    return t("guard.semantic_block", locale, concepts=concepts)
 
 
 def _validated_target(concept: RequiredConcept, evidence: SchemaEvidence) -> tuple[str | None, str, str]:

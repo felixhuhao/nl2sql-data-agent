@@ -134,7 +134,7 @@ def health() -> dict[str, str]:
     settings = get_settings()
     guard_mode = semantic_guard_mode(settings)
     verifier_available = deepseek_config_available(settings)
-    verifier_status = "disabled" if guard_mode == "off" else ("available" if verifier_available else "unavailable")
+    verifier_status = "disabled" if guard_mode == "off" else ("enabled" if verifier_available else "unavailable")
     status = "degraded" if guard_mode == "enforce" and not verifier_available else "ok"
     return {
         "status": status,

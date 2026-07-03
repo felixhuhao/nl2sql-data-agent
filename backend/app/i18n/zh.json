@@ -1,0 +1,17 @@
+{
+  "agent.result_summary": "查询返回 {row_count} 行，字段：{columns}。",
+  "agent.intent_blocked": "{intent} intent is not allowed.",
+  "agent.sql_generation_timeout": "SQL generation timed out.",
+  "agent.request_failed": "请求失败",
+  "guard.semantic_block": "当前 schema 中没有\"{concepts}\"对应的字段、状态值或指标，无法安全生成 SQL。",
+  "guard.semantic_verifier_unavailable": "Semantic grounding verifier was unavailable; this result was not semantically checked.",
+  "guard.semantic_warning": "The question asked for {concept}, but the SQL {action}.{detail} {explanation}",
+  "performance.no_parts": "查询计划显示没有可扫描的 parts。",
+  "performance.partition_pruned": "命中分区裁剪，扫描 {scanned}/{total} parts。",
+  "performance.partition_not_pruned": "未明显命中分区裁剪，扫描 {scanned}/{total} parts。",
+  "performance.partition_info": "查询计划包含分区过滤信息。",
+  "performance.sorting_key": "查询计划包含排序键相关读取。",
+  "performance.join_count": "包含 {count} 个 JOIN。",
+  "performance.suggest_time_filter": "建议添加明确的时间范围过滤以减少 ClickHouse 扫描。",
+  "performance.no_risk": "EXPLAIN 已生成，未发现明显性能风险。"
+}

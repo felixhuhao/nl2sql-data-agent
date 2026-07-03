@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Iterator
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -25,6 +25,7 @@ from backend.app.config import deepseek_config_available, get_settings, llm_prov
 from backend.app.core.deepseek_provider import DeepSeekProvider
 from backend.app.core.llm_provider import LLMProvider, MockLLMProvider, SQLGenerationResult
 from backend.app.execution.runner import execute_guarded_sql
+from backend.app.i18n import resolve_locale, t
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.api.session_store import SessionStore
@@ -43,15 +44,20 @@ class ChatQueryRequest(BaseModel):
     question: str
     datasource: str = DEFAULT_DATASOURCE
     session_id: str | None = None
+    locale: str | None = None
 
 
 @router.post("/query")
-def query_endpoint(request: ChatQueryRequest) -> StreamingResponse:
+def query_endpoint(
+    request: ChatQueryRequest,
+    accept_language: str | None = Header(default=None, alias="Accept-Language"),
+) -> StreamingResponse:
     return StreamingResponse(
         iter_chat_events(
             request.question,
             datasource_name=request.datasource,
             session_id=request.session_id,
+            locale=resolve_locale(request.locale, accept_language),
             emit_session_event=True,
         ),
         media_type="text/event-stream",
@@ -70,6 +76,7 @@ def iter_chat_events(
     semantic_auditor: SemanticRefutationAuditor | None = None,
     semantic_mode: str | None = None,
     session_id: str | None = None,
+    locale: str | None = None,
     conversation_context: ConversationContext | None = None,
     store: SessionStore = session_store,
     emit_session_event: bool = False,
@@ -81,7 +88,12 @@ def iter_chat_events(
     if context is not None and context.datasource_name != datasource_name:
         context = None
 
-    state = AgentState(question=question, datasource_name=datasource_name, conversation_context=context)
+    state = AgentState(
+        question=question,
+        datasource_name=datasource_name,
+        locale=resolve_locale(locale),
+        conversation_context=context,
+    )
     try:
         if emit_session_event:
             yield _sse_event("session", {"session_id": active_session_id})
@@ -179,7 +191,7 @@ def iter_chat_events(
             "error",
             {
                 "step": "generate_sql",
-                "reason": "SQL generation timed out.",
+                "reason": t("agent.sql_generation_timeout", state.locale),
                 "error_kind": "failure",
             },
         )
@@ -191,7 +203,7 @@ def iter_chat_events(
             "error",
             {
                 "step": _failure_step(state),
-                "reason": str(exc),
+                "reason": str(exc) or t("agent.request_failed", state.locale),
                 "error_kind": "failure",
             },
         )

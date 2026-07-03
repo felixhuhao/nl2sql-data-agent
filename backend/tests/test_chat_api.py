@@ -87,6 +87,51 @@ def test_iter_chat_events_returns_step_and_done_events_for_demo_question():
     assert all(event["data"].get("step") != "explain_plan" for event in events[:-1])
 
 
+def test_iter_chat_events_locale_does_not_change_generation_request_or_sql():
+    captured_requests = []
+
+    class CapturingProvider:
+        name = "capture"
+
+        def generate_sql(self, request):
+            captured_requests.append(request)
+            return SQLGenerationResult(
+                sql="SELECT order_id, payment_amount FROM fact_orders",
+                provider=self.name,
+            )
+
+    def fake_executor(guard_result: GuardResult, datasource_name: str) -> QueryResult:
+        assert datasource_name == "duckdb_ecommerce"
+        return QueryResult(
+            columns=["order_id", "payment_amount"],
+            rows=[["O00000001", 100]],
+            row_count=1,
+        )
+
+    results = []
+    for locale in ("zh", "en"):
+        events = _parse_events(
+            iter_chat_events(
+                "查询订单金额",
+                locale=locale,
+                provider=CapturingProvider(),
+                schema_context_builder=lambda: "# Schema Context",
+                scope_builder=_scope,
+                executor=fake_executor,
+            )
+        )
+        results.append(events[-1]["data"])
+
+    assert [request.schema_context for request in captured_requests] == ["# Schema Context", "# Schema Context"]
+    assert [request.question for request in captured_requests] == ["查询订单金额", "查询订单金额"]
+    assert [result["sql"] for result in results] == [
+        "SELECT order_id, payment_amount FROM fact_orders",
+        "SELECT order_id, payment_amount FROM fact_orders",
+    ]
+    assert results[0]["summary"] == "查询返回 1 行，字段：order_id, payment_amount。"
+    assert results[1]["summary"] == "Query returned 1 rows with columns: order_id, payment_amount."
+
+
 def test_iter_chat_events_returns_retrieve_context_step(monkeypatch):
     monkeypatch.setattr(
         nodes_module,
@@ -631,6 +676,34 @@ def test_chat_query_endpoint_passes_session_id(monkeypatch):
     assert "event: done" in response.text
 
 
+def test_chat_query_endpoint_passes_resolved_locale(monkeypatch):
+    seen_locales = []
+
+    def fake_iter_chat_events(question, datasource_name, **kwargs):
+        assert question == "hello"
+        assert datasource_name == "duckdb_ecommerce"
+        seen_locales.append(kwargs["locale"])
+        yield "event: done\ndata: {\"ok\": true}\n\n"
+
+    monkeypatch.setattr("backend.app.api.chat.iter_chat_events", fake_iter_chat_events)
+    client = TestClient(main.app)
+
+    header_response = client.post(
+        "/api/chat/query",
+        json={"question": "hello"},
+        headers={"Accept-Language": "en-US,en;q=0.9"},
+    )
+    override_response = client.post(
+        "/api/chat/query",
+        json={"question": "hello", "locale": "zh"},
+        headers={"Accept-Language": "en-US,en;q=0.9"},
+    )
+
+    assert header_response.status_code == 200
+    assert override_response.status_code == 200
+    assert seen_locales == ["en", "zh"]
+
+
 def test_datasources_endpoint_lists_available_sources(monkeypatch):
     class FakeManager:
         default_name = "duckdb_ecommerce"
@@ -679,6 +752,8 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
         "backend.app.main.effective_llm_provider_name",
         lambda: "deepseek",
     )
+    monkeypatch.setattr("backend.app.main.semantic_guard_mode", lambda settings=None: "warn")
+    monkeypatch.setattr("backend.app.main.deepseek_config_available", lambda settings=None: True)
     client = TestClient(main.app)
 
     response = client.get("/health")
@@ -687,8 +762,8 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
     assert response.json() == {
         "status": "ok",
         "llm_provider": "deepseek",
-        "semantic_guard": "off",
-        "semantic_verifier": "disabled",
+        "semantic_guard": "warn",
+        "semantic_verifier": "enabled",
     }
 
     api_response = client.get("/api/health")
@@ -696,8 +771,8 @@ def test_health_endpoint_reports_configured_llm_provider(monkeypatch):
     assert api_response.json() == {
         "status": "ok",
         "llm_provider": "deepseek",
-        "semantic_guard": "off",
-        "semantic_verifier": "disabled",
+        "semantic_guard": "warn",
+        "semantic_verifier": "enabled",
     }
 
 
@@ -706,6 +781,7 @@ def test_health_endpoint_reports_mock_when_auto_lacks_deepseek_key(monkeypatch):
         "backend.app.main.effective_llm_provider_name",
         lambda: "mock",
     )
+    monkeypatch.setattr("backend.app.main.semantic_guard_mode", lambda settings=None: "warn")
     client = TestClient(main.app)
 
     response = client.get("/api/health")
@@ -714,8 +790,8 @@ def test_health_endpoint_reports_mock_when_auto_lacks_deepseek_key(monkeypatch):
     assert response.json() == {
         "status": "ok",
         "llm_provider": "mock",
-        "semantic_guard": "off",
-        "semantic_verifier": "disabled",
+        "semantic_guard": "warn",
+        "semantic_verifier": "unavailable",
     }
 
 

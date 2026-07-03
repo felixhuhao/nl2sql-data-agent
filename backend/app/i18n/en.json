@@ -1,0 +1,17 @@
+{
+  "agent.result_summary": "Query returned {row_count} rows with columns: {columns}.",
+  "agent.intent_blocked": "{intent} intent is not allowed.",
+  "agent.sql_generation_timeout": "SQL generation timed out.",
+  "agent.request_failed": "Request failed",
+  "guard.semantic_block": "The current schema has no field, status value, or metric for \"{concepts}\", so SQL cannot be generated safely.",
+  "guard.semantic_verifier_unavailable": "Semantic grounding verifier was unavailable; this result was not semantically checked.",
+  "guard.semantic_warning": "The question asked for {concept}, but the SQL {action}.{detail} {explanation}",
+  "performance.no_parts": "The query plan shows no scanable parts.",
+  "performance.partition_pruned": "Partition pruning matched; scanned {scanned}/{total} parts.",
+  "performance.partition_not_pruned": "No clear partition pruning; scanned {scanned}/{total} parts.",
+  "performance.partition_info": "The query plan includes partition filter information.",
+  "performance.sorting_key": "The query plan includes sorting-key reads.",
+  "performance.join_count": "Includes {count} JOINs.",
+  "performance.suggest_time_filter": "Add an explicit time range filter to reduce ClickHouse scans.",
+  "performance.no_risk": "EXPLAIN was generated and no obvious performance risk was found."
+}

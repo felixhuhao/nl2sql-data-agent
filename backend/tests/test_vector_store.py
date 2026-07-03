@@ -160,6 +160,35 @@ def test_invalid_table_name_is_rejected():
         vector_store.search("bad_table", [1.0])
 
 
+def test_qdrant_client_uses_configured_timeout(monkeypatch):
+    fake_module = SimpleNamespace(QdrantClient=FakeQdrantClientFactory())
+    monkeypatch.setattr(store, "_load_qdrant_client", lambda: fake_module)
+
+    vector_store = store.QdrantVectorStore(
+        url="http://qdrant:6333",
+        api_key="test-key",
+        collection_prefix="test",
+        timeout=90,
+    )
+
+    assert vector_store._client_instance() is fake_module.QdrantClient.client
+    assert fake_module.QdrantClient.kwargs == {
+        "url": "http://qdrant:6333",
+        "api_key": "test-key",
+        "timeout": 90,
+    }
+
+
+class FakeQdrantClientFactory:
+    def __init__(self) -> None:
+        self.client = FakeQdrantClient()
+        self.kwargs = None
+
+    def __call__(self, **kwargs):
+        self.kwargs = kwargs
+        return self.client
+
+
 class FakeQdrantClient:
     def __init__(self) -> None:
         self.collections = {}

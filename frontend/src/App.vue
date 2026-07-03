@@ -8,10 +8,12 @@ import {
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import Admin from "./Admin.vue";
 import { AuthApiError, getMe, login, logout, type AuthUser } from "./api/auth";
 import { API_BASE_URL } from "./api/config";
 import { DatasourceApiError, listDatasources, type DatasourceInfo } from "./api/datasources";
+import { persistLocale, SUPPORTED_LOCALES, type SupportedLocale } from "./i18n";
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -46,21 +48,32 @@ echarts.registerTheme("ledger", {
   },
 });
 
+const { t, locale } = useI18n();
+const localeOptions = SUPPORTED_LOCALES;
+const activeLocale = computed({
+  get: () => locale.value as SupportedLocale,
+  set: (value: SupportedLocale) => {
+    locale.value = value;
+    persistLocale(value);
+    stepStates.value = createStepStates();
+  },
+});
+
 const allWorkflowSteps = [
-  { id: "datasource_selected", label: "选择数据源" },
-  { id: "intent_guard", label: "意图检查" },
-  { id: "retrieve_context", label: "检索上下文" },
-  { id: "build_context", label: "构建上下文" },
-  { id: "olap_detected", label: "分析意图" },
-  { id: "generate_sql", label: "生成 SQL" },
-  { id: "sql_guard", label: "SQL Guard" },
-  { id: "conversation_filter_verify", label: "保留过滤" },
-  { id: "semantic_guard", label: "语义校验" },
-  { id: "repair_sql", label: "SQL 修复" },
-  { id: "execute", label: "执行查询" },
-  { id: "explain_plan", label: "性能解释" },
-  { id: "summarize", label: "生成回答" },
-  { id: "recommend_chart", label: "推荐图表" },
+  { id: "datasource_selected" },
+  { id: "intent_guard" },
+  { id: "retrieve_context" },
+  { id: "build_context" },
+  { id: "olap_detected" },
+  { id: "generate_sql" },
+  { id: "sql_guard" },
+  { id: "conversation_filter_verify" },
+  { id: "semantic_guard" },
+  { id: "repair_sql" },
+  { id: "execute" },
+  { id: "explain_plan" },
+  { id: "summarize" },
+  { id: "recommend_chart" },
 ] as const;
 
 type WorkflowStepId = (typeof allWorkflowSteps)[number]["id"];
@@ -212,13 +225,13 @@ const exampleQuestions = [
   "销量最高的10个商品",
 ];
 const sourceGroupOrder = ["table", "column", "metric", "verified_query", "other"];
-const sourceGroupLabels: Record<string, string> = {
-  table: "表",
-  column: "字段",
-  metric: "指标",
-  verified_query: "验证查询",
-  other: "其他",
-};
+const sourceGroupLabels = computed<Record<string, string>>(() => ({
+  table: t("admin.table"),
+  column: t("admin.columns"),
+  metric: t("admin.tabs.metrics"),
+  verified_query: t("admin.tabs.verified"),
+  other: t("app.other"),
+}));
 const providerStatusLabel = computed(() => {
   if (llmProvider.value === "deepseek") {
     return "DeepSeek Agent Ready";
@@ -234,12 +247,12 @@ const currentDatasource = computed(
 const resultDatasource = computed(() => queryDatasource.value ?? currentDatasource.value);
 const datasourceStatusLabel = computed(() => {
   if (isLoadingDatasources.value) {
-    return "加载中";
+    return t("app.loading");
   }
   if (datasourceLoadError.value) {
-    return "加载失败";
+    return t("app.loadFailed");
   }
-  return `${dataSources.value.length} 个数据源`;
+  return t("app.datasourceCount", { count: dataSources.value.length });
 });
 const formattedElapsedMs = computed(() => {
   if (queryElapsedMs.value === null) {
@@ -249,13 +262,13 @@ const formattedElapsedMs = computed(() => {
 });
 const followUpLabel = computed(() => {
   const labels: Record<string, string> = {
-    dimension: "维度下钻",
-    filter: "值过滤",
-    metric: "指标切换",
-    time: "时间范围",
-    none: "追问",
+    dimension: t("app.followUpDimension"),
+    filter: t("app.followUpFilter"),
+    metric: t("app.followUpMetric"),
+    time: t("app.followUpTime"),
+    none: t("app.followUp"),
   };
-  return labels[changeKind.value] ?? "追问";
+  return labels[changeKind.value] ?? t("app.followUp");
 });
 const canSubmit = computed(() => question.value.trim().length > 0 && !isSubmitting.value);
 const hasActivity = computed(
@@ -317,31 +330,31 @@ const retrievalSourceStats = computed<RetrievalSourceStat[]>(() => {
   return [
     {
       id: "rule",
-      label: "规则命中",
+      label: t("app.sourceRule"),
       count: counts.rule,
       className: "source-rule",
-      title: "字段别名、指标表达式、验证查询等确定性规则命中的证据数量",
+      title: t("app.sourceRuleTitle"),
     },
     {
       id: "value",
-      label: "值命中",
+      label: t("app.sourceValue"),
       count: counts.value,
       className: "source-value",
-      title: "问题中的业务取值命中的证据数量，例如 华东、天猫",
+      title: t("app.sourceValueTitle"),
     },
     {
       id: "vector",
-      label: "向量匹配",
+      label: t("app.sourceVector"),
       count: counts.vector,
       className: "source-vector",
-      title: "语义相似度检索命中的证据数量",
+      title: t("app.sourceVectorTitle"),
     },
     {
       id: "other",
-      label: "其他证据",
+      label: t("app.sourceOther"),
       count: counts.other,
       className: "",
-      title: "其他来源的证据数量",
+      title: t("app.sourceOtherTitle"),
     },
   ].filter((stat) => stat.count > 0);
 });
@@ -395,18 +408,20 @@ async function submitQuestion() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Accept-Language": activeLocale.value,
       },
       credentials: "include",
       body: JSON.stringify({
         question: question.value.trim(),
         datasource: selectedDatasourceName.value,
         session_id: sessionId.value,
+        locale: activeLocale.value,
       }),
     });
 
     if (response.status === 401) {
       handleUnauthorized();
-      throw new Error("请先登录");
+      throw new Error(t("app.signInRequired"));
     }
     if (!response.ok || !response.body) {
       throw new Error(`Request failed with status ${response.status}`);
@@ -416,7 +431,7 @@ async function submitQuestion() {
   } catch (error) {
     failStep(undefined);
     errorKind.value = "failure";
-    errorMessage.value = error instanceof Error ? error.message : "请求失败";
+    errorMessage.value = error instanceof Error ? error.message : t("app.requestFailed");
   } finally {
     isSubmitting.value = false;
   }
@@ -468,7 +483,7 @@ async function fetchDatasources() {
     }
     dataSources.value = [fallbackDatasource];
     selectedDatasourceName.value = fallbackDatasource.name;
-    datasourceLoadError.value = error instanceof Error ? error.message : "数据源加载失败";
+    datasourceLoadError.value = error instanceof Error ? error.message : t("app.datasourceLoadFailed");
   } finally {
     isLoadingDatasources.value = false;
   }
@@ -497,7 +512,7 @@ async function refreshAuth() {
   } catch (error) {
     actor.value = null;
     authCheckError.value =
-      error instanceof AuthApiError ? `认证服务异常：${error.status}` : "认证状态检查失败";
+      error instanceof AuthApiError ? t("app.authServiceError", { status: error.status }) : t("app.authCheckFailed");
   } finally {
     authChecked.value = true;
   }
@@ -515,7 +530,7 @@ async function submitLogin() {
     void fetchAgentStatus();
     void fetchDatasources();
   } catch (error) {
-    authError.value = error instanceof Error ? error.message : "登录失败";
+    authError.value = error instanceof Error ? error.message : t("app.loginFailed");
   } finally {
     isLoggingIn.value = false;
   }
@@ -528,7 +543,7 @@ async function submitLogout() {
 
 function handleUnauthorized() {
   actor.value = null;
-  authError.value = "登录已过期，请重新登录";
+  authError.value = t("app.authExpired");
 }
 
 function isUnauthorizedError(error: unknown) {
@@ -538,6 +553,7 @@ function isUnauthorizedError(error: unknown) {
 function createStepStates() {
   return visibleWorkflowSteps().map((step) => ({
     ...step,
+    label: t(`workflow.${step.id}`),
     status: "pending" as StepStatus,
   }));
 }
@@ -628,35 +644,28 @@ function formatValueHit(hit: RetrievalValueHit) {
 }
 
 function retrievalModeLabel(vectorUsed?: boolean) {
-  return vectorUsed ? "向量检索" : "规则检索";
+  return vectorUsed ? t("app.vectorRetrieval") : t("app.ruleRetrieval");
 }
 
 function retrievalModeTitle(vectorUsed?: boolean) {
-  return vectorUsed
-    ? "本次元数据检索启用了向量语义检索，并与规则命中合并"
-    : "本次元数据检索只使用规则命中";
+  return vectorUsed ? t("app.vectorRetrievalTitle") : t("app.ruleRetrievalTitle");
 }
 
 function retrievalStatusLabel(status?: string | null) {
-  const labels: Record<string, string> = {
-    ready: "索引就绪",
-    stale: "索引需重建",
-    missing: "索引缺失",
-    disabled: "向量关闭",
-    error: "索引异常",
-  };
-  return status ? (labels[status] ?? status) : "";
+  return translatedStatus("statuses", status);
 }
 
 function retrievalStatusTitle(status?: string | null) {
-  const labels: Record<string, string> = {
-    ready: "向量索引可用",
-    stale: "元数据已变化，向量索引需要重建",
-    missing: "没有找到向量索引",
-    disabled: "向量检索未启用",
-    error: "向量检索状态检查失败",
-  };
-  return status ? (labels[status] ?? status) : "";
+  return translatedStatus("statusTitles", status);
+}
+
+function translatedStatus(group: "statuses" | "statusTitles", status?: string | null) {
+  if (!status) {
+    return "";
+  }
+  const key = `app.${group}.${status}`;
+  const translated = t(key);
+  return translated === key ? status : translated;
 }
 
 function formatDuration(milliseconds: number) {
@@ -681,7 +690,7 @@ function retrievalSourceClass(source: string) {
 
 function createSourceGroups() {
   return sourceGroupOrder.reduce<Record<string, RetrievalSourceGroup>>((groups, id) => {
-    groups[id] = { id, label: sourceGroupLabels[id], items: [] };
+    groups[id] = { id, label: sourceGroupLabels.value[id], items: [] };
     return groups;
   }, {});
 }
@@ -689,11 +698,11 @@ function createSourceGroups() {
 function formatRetrievalAsset(assetKey: string) {
   const separatorIndex = assetKey.indexOf(":");
   const rawType = separatorIndex >= 0 ? assetKey.slice(0, separatorIndex) : "other";
-  const type = sourceGroupLabels[rawType] ? rawType : "other";
+  const type = sourceGroupLabels.value[rawType] ? rawType : "other";
   const label = separatorIndex >= 0 ? assetKey.slice(separatorIndex + 1) : assetKey;
   return {
     type,
-    typeLabel: sourceGroupLabels[type],
+    typeLabel: sourceGroupLabels.value[type],
     label,
   };
 }
@@ -721,10 +730,10 @@ function retrievalSourceFamily(source: string) {
 
 function formatRetrievalSourceLabel(source: string) {
   if (source.startsWith("value:")) {
-    return `值 ${source.slice("value:".length)}`;
+    return t("app.sourceValuePrefix", { value: source.slice("value:".length) });
   }
   if (source.startsWith("vector:")) {
-    return `向量 ${source.slice("vector:".length)}`;
+    return t("app.sourceVectorPrefix", { value: source.slice("vector:".length) });
   }
   if (!source.startsWith("rule:")) {
     return source;
@@ -735,27 +744,9 @@ function formatRetrievalSourceLabel(source: string) {
   const kind = separatorIndex >= 0 ? reason.slice(0, separatorIndex) : reason;
   const detail = separatorIndex >= 0 ? reason.slice(separatorIndex + 1) : "";
   const detailText = detail ? ` ${detail}` : "";
-  const ruleLabels: Record<string, string> = {
-    alias: "别名",
-    matched_alias: "别名命中",
-    sample_value: "样本值",
-    matched_sample: "样本命中",
-    metric_expression: "指标表达式",
-    metric_time_column: "指标时间列",
-    metric_label: "指标名",
-    metric_name: "指标名",
-    metric_description: "指标描述",
-    verified_query: "验证查询",
-    verified_question_exact: "验证问法",
-    verified_question_partial: "验证问法",
-    table_name: "表名",
-    table_display_name: "表展示名",
-    table_domain: "业务域",
-    table_description: "表描述",
-    column_name: "字段名",
-    column_description: "字段描述",
-  };
-  return `${ruleLabels[kind] ?? kind.replaceAll("_", " ")}${detailText}`;
+  const key = `app.ruleReasons.${kind}`;
+  const label = t(key);
+  return `${label === key ? kind.replaceAll("_", " ") : label}${detailText}`;
 }
 
 async function readSseStream(body: ReadableStream<Uint8Array>) {
@@ -874,7 +865,7 @@ function handleSseChunk(chunk: string) {
     failStep(payload.step);
     errorStep.value = payload.step ?? "";
     errorKind.value = payload.error_kind === "blocked" ? "blocked" : "failure";
-    errorMessage.value = payload.reason ?? "请求失败";
+    errorMessage.value = payload.reason ?? t("app.requestFailed");
     explainability.value = payload.explainability ?? null;
     planHints.value = payload.plan_hints ?? planHints.value;
     runtimeStats.value = payload.runtime_stats ?? runtimeStats.value;
@@ -1072,7 +1063,7 @@ function pieSeriesData(xIndex: number, yIndex: number): PieDatum[] {
 
   const visible = data.slice(0, 7);
   const otherValue = data.slice(7).reduce((total, item) => total + item.value, 0);
-  return [...visible, { name: "其他", value: otherValue }];
+  return [...visible, { name: t("app.other"), value: otherValue }];
 }
 
 function shouldFormatPieAsPercent(data: PieDatum[]) {
@@ -1087,7 +1078,7 @@ function formatPieTooltip(params: any, asPercent: boolean) {
   const value = Number(params.value ?? 0);
   const displayValue = asPercent ? `${formatPercent(value * 100)}%` : value.toLocaleString();
   const slicePercent = Number(params.percent ?? 0);
-  return `${params.marker ?? ""}${params.name ?? ""}<br/>${params.seriesName ?? "值"}: ${displayValue} (${formatPercent(slicePercent)}%)`;
+  return `${params.marker ?? ""}${params.name ?? ""}<br/>${params.seriesName ?? t("app.value")}: ${displayValue} (${formatPercent(slicePercent)}%)`;
 }
 
 function formatPercent(value: number) {
@@ -1139,25 +1130,37 @@ function switchView(view: "chat" | "admin") {
     <div v-if="!authChecked" class="auth-loading" role="status">Loading</div>
     <section v-else-if="authCheckError" class="login-panel">
       <span class="brand-seal" aria-hidden="true">问</span>
+      <label>
+        {{ t("app.language") }}
+        <select v-model="activeLocale">
+          <option v-for="option in localeOptions" :key="option" :value="option">{{ option.toUpperCase() }}</option>
+        </select>
+      </label>
       <div class="login-heading">
         <p>NL2SQL Data Agent</p>
-        <h1>认证服务暂不可用</h1>
+        <h1>{{ t("app.authCheckFailed") }}</h1>
       </div>
       <p class="auth-error">{{ authCheckError }}</p>
-      <button type="button" @click="refreshAuth">重试</button>
+      <button type="button" @click="refreshAuth">{{ t("app.refresh") }}</button>
     </section>
     <form v-else-if="!actor" class="login-panel" @submit.prevent="submitLogin">
       <span class="brand-seal" aria-hidden="true">问</span>
+      <label>
+        {{ t("app.language") }}
+        <select v-model="activeLocale">
+          <option v-for="option in localeOptions" :key="option" :value="option">{{ option.toUpperCase() }}</option>
+        </select>
+      </label>
       <div class="login-heading">
         <p>NL2SQL Data Agent</p>
-        <h1>登录掌柜问数</h1>
+        <h1>{{ t("app.loginTitle") }}</h1>
       </div>
       <label>
-        用户名
+        {{ t("app.username") }}
         <input v-model="loginUsername" autocomplete="username" name="username" />
       </label>
       <label>
-        密码
+        {{ t("app.password") }}
         <input
           v-model="loginPassword"
           autocomplete="current-password"
@@ -1167,7 +1170,7 @@ function switchView(view: "chat" | "admin") {
       </label>
       <p v-if="authError" class="auth-error">{{ authError }}</p>
       <button type="submit" :disabled="isLoggingIn">
-        {{ isLoggingIn ? "登录中" : "登录" }}
+        {{ isLoggingIn ? t("app.loggingIn") : t("app.login") }}
       </button>
     </form>
     <section v-else class="workspace">
@@ -1175,13 +1178,19 @@ function switchView(view: "chat" | "admin") {
         <div class="brand">
           <span class="brand-seal" aria-hidden="true">问</span>
           <div class="brand-text">
-            <h1>掌柜问数</h1>
+            <h1>{{ t("app.brand") }}</h1>
             <p>NL2SQL Data Agent</p>
           </div>
         </div>
         <div class="topbar-actions">
+          <label class="datasource-select">
+            <span>{{ t("app.language") }}</span>
+            <select v-model="activeLocale">
+              <option v-for="option in localeOptions" :key="option" :value="option">{{ option.toUpperCase() }}</option>
+            </select>
+          </label>
           <div class="datasource-select">
-            <label for="datasource">数据源</label>
+            <label for="datasource">{{ t("app.datasource") }}</label>
             <select
               id="datasource"
               v-model="selectedDatasourceName"
@@ -1197,7 +1206,7 @@ function switchView(view: "chat" | "admin") {
               :disabled="isSubmitting || isLoadingDatasources"
               @click="fetchDatasources"
             >
-              刷新
+              {{ t("app.refresh") }}
             </button>
             <span class="datasource-status" :class="{ error: datasourceLoadError }">
               {{ datasourceStatusLabel }}
@@ -1209,20 +1218,20 @@ function switchView(view: "chat" | "admin") {
               :class="{ active: activeView === 'chat' }"
               @click="switchView('chat')"
             >
-              问数
+              {{ t("app.chat") }}
             </button>
             <button
               type="button"
               :class="{ active: activeView === 'admin' }"
               @click="switchView('admin')"
             >
-              管理
+              {{ t("app.admin") }}
             </button>
           </nav>
           <span class="status-pill">{{ providerStatusLabel }}</span>
           <div class="auth-strip">
             <span>{{ actor.username }}</span>
-            <button type="button" @click="submitLogout">退出</button>
+            <button type="button" @click="submitLogout">{{ t("app.logout") }}</button>
           </div>
         </div>
       </header>
@@ -1231,14 +1240,14 @@ function switchView(view: "chat" | "admin") {
         <section class="conversation-panel">
           <form class="composer" @submit.prevent="submitQuestion">
             <div class="composer-heading">
-              <label for="question">问题</label>
+              <label for="question">{{ t("app.question") }}</label>
               <button
                 type="button"
                 class="datasource-refresh"
                 :disabled="isSubmitting"
                 @click="startNewConversation"
               >
-                新对话
+                {{ t("app.newChat") }}
               </button>
             </div>
             <div class="composer-row">
@@ -1246,10 +1255,10 @@ function switchView(view: "chat" | "admin") {
                 id="question"
                 v-model="question"
                 rows="2"
-                placeholder="输入经营分析问题"
+                :placeholder="t('app.placeholder')"
               />
               <button type="submit" :class="{ 'is-loading': isSubmitting }" :disabled="!canSubmit">
-                {{ isSubmitting ? "发送中" : "发送" }}
+                {{ isSubmitting ? t("app.sending") : t("app.send") }}
               </button>
             </div>
           </form>
@@ -1257,10 +1266,10 @@ function switchView(view: "chat" | "admin") {
           <div class="result-area">
             <div v-if="!hasActivity" class="empty-state">
               <span class="empty-seal" aria-hidden="true">数</span>
-              <h2>问一句，掌柜替你算账</h2>
-              <p>用自然语言提问，自动生成 SQL、执行并解释每一步证据来源。</p>
+              <h2>{{ t("app.emptyTitle") }}</h2>
+              <p>{{ t("app.emptyBody") }}</p>
               <div class="empty-examples">
-                <span class="empty-examples-label">试试</span>
+                <span class="empty-examples-label">{{ t("app.try") }}</span>
                 <button
                   v-for="example in exampleQuestions"
                   :key="example"
@@ -1275,34 +1284,34 @@ function switchView(view: "chat" | "admin") {
 
             <div v-else class="answer-stack">
               <section v-if="datasourceLoadError" class="error-message">
-                <h2>数据源状态异常</h2>
+                <h2>{{ t("app.datasourceError") }}</h2>
                 <p>{{ datasourceLoadError }}</p>
               </section>
 
               <section v-if="errorMessage" class="error-message">
-                <h2>{{ errorKind === "blocked" ? "请求被拒绝" : "请求失败" }}</h2>
+                <h2>{{ errorKind === "blocked" ? t("app.requestBlocked") : t("app.requestFailed") }}</h2>
                 <p>{{ errorMessage }}</p>
                 <dl v-if="guardResult || errorStep" class="detail-list">
                   <div v-if="errorStep">
-                    <dt>步骤</dt>
+                    <dt>{{ t("app.step") }}</dt>
                     <dd>{{ errorStep }}</dd>
                   </div>
                   <div v-if="guardResult?.stage">
-                    <dt>Guard 阶段</dt>
+                    <dt>{{ t("app.guardStage") }}</dt>
                     <dd>{{ guardResult.stage }}</dd>
                   </div>
                   <div v-if="guardResult?.reason">
-                    <dt>原因</dt>
+                    <dt>{{ t("app.reason") }}</dt>
                     <dd>{{ guardResult.reason }}</dd>
                   </div>
                 </dl>
                 <div v-if="repairHistory.length" class="repair-summary">
-                  已尝试修复 {{ repairHistory.length }} 次
+                  {{ t("app.repairAttempts", { count: repairHistory.length }) }}
                 </div>
               </section>
 
               <section v-if="hasActivity" class="answer-section">
-                <h2>步骤流</h2>
+                <h2>{{ t("app.workflow") }}</h2>
                 <div class="step-list">
                   <span
                     v-for="step in stepStates"
@@ -1319,7 +1328,7 @@ function switchView(view: "chat" | "admin") {
                 class="answer-section"
               >
                 <div class="skeleton-card" aria-hidden="true">
-                  <span class="skeleton-caption">正在生成回答</span>
+                  <span class="skeleton-caption">{{ t("app.generating") }}</span>
                   <span class="skeleton-line lg w-60"></span>
                   <span class="skeleton-line w-90"></span>
                   <span class="skeleton-line w-80"></span>
@@ -1327,37 +1336,37 @@ function switchView(view: "chat" | "admin") {
               </section>
 
               <section v-if="sql || summary || rows.length" class="answer-section">
-                <h2>查询信息</h2>
+                <h2>{{ t("app.queryInfo") }}</h2>
                 <div class="meta-strip">
-                  <span v-if="isFollowUp" class="info-chip source-vector">追问 · {{ followUpLabel }}</span>
+                  <span v-if="isFollowUp" class="info-chip source-vector">{{ t("app.followUp") }} · {{ followUpLabel }}</span>
                   <div class="meta-item">
-                    <span class="meta-k">数据源</span>
+                    <span class="meta-k">{{ t("app.datasourceLabel") }}</span>
                     <span class="meta-v">{{ resultDatasource.display_name }}</span>
                   </div>
                   <div class="meta-item">
-                    <span class="meta-k">方言</span>
+                    <span class="meta-k">{{ t("app.dialect") }}</span>
                     <span class="meta-v">{{ resultDatasource.dialect }}</span>
                   </div>
                   <div class="meta-item">
-                    <span class="meta-k">行数</span>
+                    <span class="meta-k">{{ t("app.rows") }}</span>
                     <span class="meta-v num">{{ resultRowCount ?? rows.length }}</span>
                   </div>
                   <div class="meta-item">
-                    <span class="meta-k">耗时</span>
+                    <span class="meta-k">{{ t("app.elapsed") }}</span>
                     <span class="meta-v num">{{ formattedElapsedMs }}</span>
                   </div>
                 </div>
               </section>
 
               <section v-if="groundingWarnings.length" class="answer-section grounding-warning-section">
-                <h2>语义提示</h2>
+                <h2>{{ t("app.semanticHints") }}</h2>
                 <div
                   v-for="(warning, warningIndex) in groundingWarnings"
                   :key="`${warningIndex}-${warning.concept ?? 'semantic'}-${warning.failure_kind ?? 'warning'}`"
                   class="grounding-warning"
                 >
-                  <strong>{{ warning.concept ?? "语义校验" }}</strong>
-                  <span>{{ warning.message ?? warning.explanation ?? "当前结果可能缺少语义支撑。" }}</span>
+                  <strong>{{ warning.concept ?? t("app.semanticCheck") }}</strong>
+                  <span>{{ warning.message ?? warning.explanation ?? t("app.semanticFallback") }}</span>
                 </div>
               </section>
 
@@ -1366,7 +1375,7 @@ function switchView(view: "chat" | "admin") {
                   <header class="sql-card-head">
                     <h2>SQL</h2>
                     <button type="button" class="copy-button" @click="copySql">
-                      {{ sqlCopied ? "已复制" : "复制" }}
+                      {{ sqlCopied ? t("app.copied") : t("app.copy") }}
                     </button>
                   </header>
                   <pre>{{ sql }}</pre>
@@ -1374,17 +1383,17 @@ function switchView(view: "chat" | "admin") {
               </section>
 
               <section v-if="summary" class="answer-section answer-summary">
-                <h2>回答</h2>
+                <h2>{{ t("app.answer") }}</h2>
                 <p>{{ summary }}</p>
               </section>
 
               <section v-if="canRenderChart" class="answer-section chart-section">
-                <h2>图表</h2>
+                <h2>{{ t("app.chart") }}</h2>
                 <div ref="chartContainer" class="chart-canvas" />
               </section>
 
               <section v-if="rows.length" class="answer-section table-section">
-                <h2>结果</h2>
+                <h2>{{ t("app.result") }}</h2>
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -1407,10 +1416,10 @@ function switchView(view: "chat" | "admin") {
                 v-if="explainability || retrievalMeta || planHints.length || runtimeStats"
                 class="answer-section explain-section"
               >
-                <h2>解释信息</h2>
+                <h2>{{ t("app.explain") }}</h2>
                 <dl class="detail-list">
                   <div v-if="planHints.length || runtimeStats">
-                    <dt>性能提示</dt>
+                    <dt>{{ t("app.performanceHints") }}</dt>
                     <dd>
                       <span
                         v-for="hint in planHints"
@@ -1420,18 +1429,18 @@ function switchView(view: "chat" | "admin") {
                         {{ hint }}
                       </span>
                       <span v-if="runtimeStats?.execution_time_ms !== undefined" class="info-chip">
-                        执行耗时 {{ formatDuration(runtimeStats.execution_time_ms) }}
+                        {{ t("app.executionElapsed", { duration: formatDuration(runtimeStats.execution_time_ms) }) }}
                       </span>
                       <span v-if="runtimeStats?.rows_read !== undefined" class="info-chip">
-                        读取行 {{ runtimeStats.rows_read }}
+                        {{ t("app.rowsRead", { rows: runtimeStats.rows_read }) }}
                       </span>
                       <span v-if="runtimeStats?.bytes_read !== undefined" class="info-chip">
-                        读取字节 {{ runtimeStats.bytes_read }}
+                        {{ t("app.bytesRead", { bytes: runtimeStats.bytes_read }) }}
                       </span>
                     </dd>
                   </div>
                   <div v-if="retrievalMeta?.index_status">
-                    <dt>检索状态</dt>
+                    <dt>{{ t("app.retrievalStatus") }}</dt>
                     <dd>
                       <span
                         :class="['info-chip', retrievalMeta.vector_used ? 'source-vector' : 'source-rule']"
@@ -1451,7 +1460,7 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="retrievalMeta?.value_hits?.length">
-                    <dt>业务取值</dt>
+                    <dt>{{ t("app.businessValues") }}</dt>
                     <dd>
                       <span
                         v-for="hit in retrievalMeta.value_hits"
@@ -1463,7 +1472,7 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="hasRetrievalSources">
-                    <dt>证据来源</dt>
+                    <dt>{{ t("app.evidenceSources") }}</dt>
                     <dd class="source-panel">
                       <div class="source-summary">
                         <span
@@ -1485,7 +1494,7 @@ function switchView(view: "chat" | "admin") {
                             <span>{{ group.label }}</span>
                             <span
                               class="source-count"
-                              :title="`${group.label}类证据命中的资产数`"
+                              :title="t('app.evidenceAssetCount', { label: group.label })"
                             >
                               {{ group.items.length }}
                             </span>
@@ -1517,7 +1526,7 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="repairHistory.length">
-                    <dt>修复记录</dt>
+                    <dt>{{ t("app.repairHistory") }}</dt>
                     <dd class="repair-list">
                       <article
                         v-for="repair in repairHistory"
@@ -1548,7 +1557,7 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="explainability?.matched_tables?.length">
-                    <dt>命中表</dt>
+                    <dt>{{ t("app.matchedTables") }}</dt>
                     <dd>
                       <span
                         v-for="table in explainability?.matched_tables ?? []"
@@ -1560,7 +1569,7 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="explainability?.matched_columns?.length">
-                    <dt>命中字段</dt>
+                    <dt>{{ t("app.matchedColumns") }}</dt>
                     <dd>
                       <span
                         v-for="column in explainability?.matched_columns ?? []"
@@ -1584,13 +1593,13 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="explainability?.date_interpretation">
-                    <dt>时间解释</dt>
+                    <dt>{{ t("app.timeInterpretation") }}</dt>
                     <dd>
                       <pre>{{ JSON.stringify(explainability.date_interpretation, null, 2) }}</pre>
                     </dd>
                   </div>
                   <div v-if="guardResult">
-                    <dt>Guard 结果</dt>
+                    <dt>{{ t("app.guardResult") }}</dt>
                     <dd>
                       <span :class="['guard-pill', guardResult.allowed ? 'passed' : 'blocked']">
                         {{ guardResult.allowed ? "passed" : "blocked" }}
@@ -1604,7 +1613,7 @@ function switchView(view: "chat" | "admin") {
                     </dd>
                   </div>
                   <div v-if="guardResult?.warnings?.length">
-                    <dt>Guard 提示</dt>
+                    <dt>{{ t("app.guardWarning") }}</dt>
                     <dd>
                       <span
                         v-for="warning in guardResult.warnings"

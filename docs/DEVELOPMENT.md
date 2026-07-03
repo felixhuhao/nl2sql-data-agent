@@ -50,9 +50,12 @@ DeepSeek:
 
 ```env
 DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-v4-flash
+SEMANTIC_GUARD_MODE=warn
 ```
 
 `auto` uses DeepSeek when `DEEPSEEK_API_KEY` is configured and falls back to mock when it is missing or the DeepSeek request is unavailable. Use `LLM_PROVIDER=deepseek` only when you want DeepSeek failures to surface instead of falling back.
+Semantic grounding runs in `warn` mode by default when DeepSeek is configured. Use `SEMANTIC_GUARD_MODE=off` only for tests or emergency troubleshooting.
 
 ClickHouse:
 

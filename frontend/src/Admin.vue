@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   createAlias,
   createMetric,
@@ -34,15 +35,16 @@ import type { DatasourceInfo } from "./api/datasources";
 type AdminTab = "tables" | "metrics" | "aliases" | "verified" | "space" | "relationships" | "vector";
 type Editor = "metric" | "alias" | "verified" | "relationship" | null;
 
-const tabs: { id: AdminTab; label: string }[] = [
-  { id: "tables", label: "表字段" },
-  { id: "metrics", label: "指标" },
-  { id: "aliases", label: "别名" },
-  { id: "verified", label: "验证查询" },
-  { id: "space", label: "分析空间" },
-  { id: "relationships", label: "关系" },
-  { id: "vector", label: "向量索引" },
-];
+const { t } = useI18n();
+const tabs = computed<{ id: AdminTab; label: string }[]>(() => [
+  { id: "tables", label: t("admin.tabs.tables") },
+  { id: "metrics", label: t("admin.tabs.metrics") },
+  { id: "aliases", label: t("admin.tabs.aliases") },
+  { id: "verified", label: t("admin.tabs.verified") },
+  { id: "space", label: t("admin.tabs.space") },
+  { id: "relationships", label: t("admin.tabs.relationships") },
+  { id: "vector", label: t("admin.tabs.vector") },
+]);
 
 const props = defineProps<{
   dataSources: DatasourceInfo[];
@@ -103,16 +105,16 @@ const activeDatasourceInfo = computed(
 const selectedTableColumns = computed(() => columnsByTable.value[aliasForm.value.table_name] ?? []);
 const editorTitle = computed(() => {
   if (editor.value === "metric") {
-    return editingMetricName.value ? "编辑指标" : "新增指标";
+    return editingMetricName.value ? t("admin.editMetric") : t("admin.addMetric");
   }
   if (editor.value === "alias") {
-    return "新增别名";
+    return t("admin.addAlias");
   }
   if (editor.value === "verified") {
-    return editingVerifiedId.value ? "编辑验证查询" : "新增验证查询";
+    return editingVerifiedId.value ? t("admin.editVerified") : t("admin.addVerified");
   }
   if (editor.value === "relationship") {
-    return "编辑关系";
+    return t("admin.editRelationship");
   }
   return "";
 });
@@ -150,7 +152,7 @@ async function loadAdminData() {
     };
     await loadTableColumns(tableRows, datasource);
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "加载失败";
+    errorMessage.value = error instanceof Error ? error.message : t("admin.loadFailed");
   } finally {
     isLoading.value = false;
   }
@@ -318,13 +320,13 @@ async function saveAndRefresh(action: () => Promise<void>, closePanel = true) {
   noticeMessage.value = "";
   try {
     await action();
-    noticeMessage.value = "已保存";
+    noticeMessage.value = t("admin.saved");
     if (closePanel) {
       closeEditor();
     }
     await loadAdminData();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "保存失败";
+    errorMessage.value = error instanceof Error ? error.message : t("admin.saveFailed");
   } finally {
     isSaving.value = false;
   }
@@ -343,7 +345,7 @@ async function toggleVerifiedEnabled(query: VerifiedQuery) {
 }
 
 async function removeAlias(alias: Alias) {
-  if (!window.confirm(`删除别名 ${alias.alias}?`)) {
+  if (!window.confirm(t("admin.deleteAlias", { alias: alias.alias }))) {
     return;
   }
   await saveAndRefresh(async () => {
@@ -358,9 +360,9 @@ async function rebuildIndex() {
   try {
     await rebuildVectorIndex();
     vectorStatus.value = await getVectorIndexStatus();
-    noticeMessage.value = "索引已重建";
+    noticeMessage.value = t("admin.rebuilt");
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "重建失败";
+    errorMessage.value = error instanceof Error ? error.message : t("admin.rebuildFailed");
   } finally {
     isRebuilding.value = false;
   }
@@ -449,7 +451,7 @@ function formatColumnFlags(column: MetadataColumn) {
           <span v-if="activeDatasourceInfo?.dialect">/ {{ activeDatasourceInfo.dialect }}</span>
         </span>
         <button type="button" class="secondary-button" :disabled="isLoading" @click="loadAdminData">
-          刷新
+          {{ t("admin.refresh") }}
         </button>
       </div>
     </header>
@@ -462,10 +464,10 @@ function formatColumnFlags(column: MetadataColumn) {
         <table class="admin-table">
           <thead>
             <tr>
-              <th>表</th>
-              <th>行数</th>
+              <th>{{ t("admin.table") }}</th>
+              <th>{{ t("admin.rows") }}</th>
               <th>OLAP</th>
-              <th>字段</th>
+              <th>{{ t("admin.columns") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -513,18 +515,18 @@ function formatColumnFlags(column: MetadataColumn) {
 
     <section v-if="activeTab === 'metrics'" class="admin-section">
       <div class="admin-actions">
-        <button type="button" @click="openMetricEditor()">新增指标</button>
+        <button type="button" @click="openMetricEditor()">{{ t("admin.addMetric") }}</button>
       </div>
       <div class="admin-table-wrap">
         <table class="admin-table">
           <thead>
             <tr>
-              <th>名称</th>
-              <th>标签</th>
-              <th>表达式</th>
-              <th>时间列</th>
-              <th>状态</th>
-              <th>操作</th>
+              <th>{{ t("admin.name") }}</th>
+              <th>{{ t("admin.label") }}</th>
+              <th>{{ t("admin.expression") }}</th>
+              <th>{{ t("admin.timeColumn") }}</th>
+              <th>{{ t("admin.status") }}</th>
+              <th>{{ t("admin.operation") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -536,11 +538,11 @@ function formatColumnFlags(column: MetadataColumn) {
               <td>
                 <label class="switch-label">
                   <input type="checkbox" :checked="metric.enabled" @change="toggleMetricEnabled(metric)" />
-                  {{ metric.enabled ? "启用" : "停用" }}
+                  {{ metric.enabled ? t("admin.enabled") : t("admin.disabled") }}
                 </label>
               </td>
               <td>
-                <button type="button" class="link-button" @click="openMetricEditor(metric)">编辑</button>
+                <button type="button" class="link-button" @click="openMetricEditor(metric)">{{ t("admin.edit") }}</button>
               </td>
             </tr>
           </tbody>
@@ -550,16 +552,16 @@ function formatColumnFlags(column: MetadataColumn) {
 
     <section v-if="activeTab === 'aliases'" class="admin-section">
       <div class="admin-actions">
-        <button type="button" @click="openAliasEditor">新增别名</button>
+        <button type="button" @click="openAliasEditor">{{ t("admin.addAlias") }}</button>
       </div>
       <div class="admin-table-wrap">
         <table class="admin-table">
           <thead>
             <tr>
-              <th>表</th>
-              <th>列</th>
-              <th>别名</th>
-              <th>操作</th>
+              <th>{{ t("admin.table") }}</th>
+              <th>{{ t("admin.columns") }}</th>
+              <th>{{ t("admin.tabs.aliases") }}</th>
+              <th>{{ t("admin.operation") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -568,7 +570,7 @@ function formatColumnFlags(column: MetadataColumn) {
               <td>{{ alias.column_name }}</td>
               <td>{{ alias.alias }}</td>
               <td>
-                <button type="button" class="danger-link" @click="removeAlias(alias)">删除</button>
+                <button type="button" class="danger-link" @click="removeAlias(alias)">{{ t("admin.delete") }}</button>
               </td>
             </tr>
           </tbody>
@@ -578,18 +580,18 @@ function formatColumnFlags(column: MetadataColumn) {
 
     <section v-if="activeTab === 'verified'" class="admin-section">
       <div class="admin-actions">
-        <button type="button" @click="openVerifiedEditor()">新增验证查询</button>
+        <button type="button" @click="openVerifiedEditor()">{{ t("admin.addVerified") }}</button>
       </div>
       <div class="admin-table-wrap">
         <table class="admin-table">
           <thead>
             <tr>
               <th>ID</th>
-              <th>问题</th>
+              <th>{{ t("admin.question") }}</th>
               <th>SQL</th>
-              <th>标签</th>
-              <th>状态</th>
-              <th>操作</th>
+              <th>{{ t("admin.tags") }}</th>
+              <th>{{ t("admin.status") }}</th>
+              <th>{{ t("admin.operation") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -601,11 +603,11 @@ function formatColumnFlags(column: MetadataColumn) {
               <td>
                 <label class="switch-label">
                   <input type="checkbox" :checked="query.enabled" @change="toggleVerifiedEnabled(query)" />
-                  {{ query.enabled ? "启用" : "停用" }}
+                  {{ query.enabled ? t("admin.enabled") : t("admin.disabled") }}
                 </label>
               </td>
               <td>
-                <button type="button" class="link-button" @click="openVerifiedEditor(query)">编辑</button>
+                <button type="button" class="link-button" @click="openVerifiedEditor(query)">{{ t("admin.edit") }}</button>
               </td>
             </tr>
           </tbody>
@@ -616,7 +618,7 @@ function formatColumnFlags(column: MetadataColumn) {
     <section v-if="activeTab === 'space'" class="admin-section">
       <div class="space-grid">
         <section>
-          <h2>可问表</h2>
+          <h2>{{ t("admin.availableTables") }}</h2>
           <label v-for="table in tables" :key="table.table_name" class="check-row">
             <input
               type="checkbox"
@@ -627,7 +629,7 @@ function formatColumnFlags(column: MetadataColumn) {
           </label>
         </section>
         <section>
-          <h2>可用指标</h2>
+          <h2>{{ t("admin.availableMetrics") }}</h2>
           <label v-for="metric in metrics" :key="metric.name" class="check-row">
             <input
               type="checkbox"
@@ -638,7 +640,7 @@ function formatColumnFlags(column: MetadataColumn) {
           </label>
         </section>
         <section>
-          <h2>允许操作</h2>
+          <h2>{{ t("admin.allowedOperations") }}</h2>
           <label class="check-row">
             <input type="checkbox" checked disabled />
             <span>select</span>
@@ -646,7 +648,7 @@ function formatColumnFlags(column: MetadataColumn) {
         </section>
       </div>
       <div class="admin-actions">
-        <button type="button" :disabled="isSaving" @click="saveAnalysisSpace">保存分析空间</button>
+        <button type="button" :disabled="isSaving" @click="saveAnalysisSpace">{{ t("admin.saveSpace") }}</button>
       </div>
     </section>
 
@@ -655,12 +657,12 @@ function formatColumnFlags(column: MetadataColumn) {
         <table class="admin-table">
           <thead>
             <tr>
-              <th>关系</th>
-              <th>类型</th>
-              <th>来源</th>
-              <th>置信度</th>
-              <th>扇出风险</th>
-              <th>操作</th>
+              <th>{{ t("admin.relationship") }}</th>
+              <th>{{ t("admin.type") }}</th>
+              <th>{{ t("admin.source") }}</th>
+              <th>{{ t("admin.confidence") }}</th>
+              <th>{{ t("admin.fanoutRisk") }}</th>
+              <th>{{ t("admin.operation") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -672,7 +674,7 @@ function formatColumnFlags(column: MetadataColumn) {
               <td>{{ relationship.fanout_risk }}</td>
               <td>
                 <button type="button" class="link-button" @click="openRelationshipEditor(relationship)">
-                  编辑
+                  {{ t("admin.edit") }}
                 </button>
               </td>
             </tr>
@@ -685,7 +687,7 @@ function formatColumnFlags(column: MetadataColumn) {
       <div class="vector-status">
         <dl class="detail-list">
           <div>
-            <dt>状态</dt>
+            <dt>{{ t("admin.status") }}</dt>
             <dd>
               <span :class="['info-chip', vectorStatus?.status === 'ready' ? 'source-vector' : '']">
                 {{ vectorStatus?.status ?? "-" }}
@@ -696,19 +698,19 @@ function formatColumnFlags(column: MetadataColumn) {
             </dd>
           </div>
           <div>
-            <dt>模型</dt>
+            <dt>{{ t("admin.model") }}</dt>
             <dd>{{ vectorStatus?.embedding_model || "-" }}</dd>
           </div>
           <div>
-            <dt>维度</dt>
+            <dt>{{ t("admin.dimension") }}</dt>
             <dd>{{ vectorStatus?.embedding_dimension ?? "-" }}</dd>
           </div>
           <div>
-            <dt>构建时间</dt>
+            <dt>{{ t("admin.builtAt") }}</dt>
             <dd>{{ vectorStatus?.built_at || "-" }}</dd>
           </div>
           <div>
-            <dt>资产数</dt>
+            <dt>{{ t("admin.assetCount") }}</dt>
             <dd>{{ formatAssetCounts(vectorStatus?.asset_counts) }}</dd>
           </div>
           <div>
@@ -721,7 +723,7 @@ function formatColumnFlags(column: MetadataColumn) {
             </dd>
           </div>
           <div v-if="vectorStatus?.stale_reason">
-            <dt>提示</dt>
+            <dt>{{ t("admin.hint") }}</dt>
             <dd>{{ vectorStatus.stale_reason }}</dd>
           </div>
         </dl>
@@ -732,7 +734,7 @@ function formatColumnFlags(column: MetadataColumn) {
           :disabled="isRebuilding || !vectorStatus?.vector_enabled"
           @click="rebuildIndex"
         >
-          {{ isRebuilding ? "重建中" : "重建索引" }}
+          {{ isRebuilding ? t("admin.rebuilding") : t("admin.rebuildIndex") }}
         </button>
       </div>
     </section>
@@ -746,34 +748,34 @@ function formatColumnFlags(column: MetadataColumn) {
 
         <template v-if="editor === 'metric'">
           <label>
-            名称
+            {{ t("admin.name") }}
             <input v-model="metricForm.name" :disabled="Boolean(editingMetricName)" required />
           </label>
           <label>
-            标签
+            {{ t("admin.label") }}
             <input v-model="metricForm.label" required />
           </label>
           <label>
-            表达式
+            {{ t("admin.expression") }}
             <textarea v-model="metricForm.expression" rows="4" required />
           </label>
           <label>
-            描述
+            {{ t("admin.description") }}
             <textarea v-model="metricForm.description" rows="3" />
           </label>
           <label>
-            时间列
+            {{ t("admin.timeColumn") }}
             <input v-model="metricForm.default_time_column" placeholder="dim_date.date_value" />
           </label>
           <label>
-            维度
+            {{ t("admin.dimension") }}
             <input v-model="metricForm.allowed_dimensions" placeholder="date, channel, region" />
           </label>
         </template>
 
         <template v-if="editor === 'alias'">
           <label>
-            表
+            {{ t("admin.table") }}
             <select v-model="aliasForm.table_name" @change="aliasForm.column_name = ''">
               <option v-for="table in tables" :key="table.table_name" :value="table.table_name">
                 {{ table.table_name }}
@@ -781,16 +783,16 @@ function formatColumnFlags(column: MetadataColumn) {
             </select>
           </label>
           <label>
-            列
+            {{ t("admin.columns") }}
             <select v-model="aliasForm.column_name" required>
-              <option value="" disabled>选择列</option>
+              <option value="" disabled>{{ t("admin.chooseColumn") }}</option>
               <option v-for="column in selectedTableColumns" :key="column.column_name" :value="column.column_name">
                 {{ column.column_name }}
               </option>
             </select>
           </label>
           <label>
-            别名
+            {{ t("admin.tabs.aliases") }}
             <input v-model="aliasForm.alias" required />
           </label>
         </template>
@@ -801,7 +803,7 @@ function formatColumnFlags(column: MetadataColumn) {
             <input v-model="verifiedForm.query_id" :disabled="Boolean(editingVerifiedId)" required />
           </label>
           <label>
-            问题
+            {{ t("admin.question") }}
             <input v-model="verifiedForm.question" required />
           </label>
           <label>
@@ -809,22 +811,22 @@ function formatColumnFlags(column: MetadataColumn) {
             <textarea v-model="verifiedForm.sql" rows="7" required />
           </label>
           <label>
-            标签
+            {{ t("admin.tags") }}
             <input v-model="verifiedForm.tags" placeholder="sales, demo" />
           </label>
           <label>
-            验证者
+            {{ t("admin.validator") }}
             <input v-model="verifiedForm.verified_by" :disabled="Boolean(editingVerifiedId)" />
           </label>
         </template>
 
         <template v-if="editor === 'relationship'">
           <label>
-            置信度
+            {{ t("admin.confidence") }}
             <input v-model.number="relationshipForm.confidence" type="number" min="0" max="1" step="0.01" />
           </label>
           <label>
-            扇出风险
+            {{ t("admin.fanoutRisk") }}
             <select v-model="relationshipForm.fanout_risk">
               <option value="low">low</option>
               <option value="medium">medium</option>
@@ -832,21 +834,21 @@ function formatColumnFlags(column: MetadataColumn) {
             </select>
           </label>
           <label>
-            来源
+            {{ t("admin.source") }}
             <select v-model="relationshipForm.source">
               <option value="inferred">inferred</option>
               <option value="overlay">overlay</option>
             </select>
           </label>
           <label>
-            描述
+            {{ t("admin.description") }}
             <textarea v-model="relationshipForm.description" rows="4" />
           </label>
         </template>
 
         <footer>
-          <button type="submit" :disabled="isSaving">保存</button>
-          <button type="button" class="secondary-button" @click="closeEditor">取消</button>
+          <button type="submit" :disabled="isSaving">{{ t("admin.save") }}</button>
+          <button type="button" class="secondary-button" @click="closeEditor">{{ t("admin.cancel") }}</button>
         </footer>
       </form>
     </aside>

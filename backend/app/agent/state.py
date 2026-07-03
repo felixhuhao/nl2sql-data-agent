@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict
 
+from backend.app.config import DEFAULT_LOCALE
 from backend.app.execution.runner import QueryResult
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.sql_guard.models import GuardResult
@@ -39,6 +40,7 @@ class AgentState:
     datasource_name: str = DEFAULT_DATASOURCE
     datasource_dialect: str = "duckdb"
     datasource_display_name: str = "DuckDB (本地)"
+    locale: str = DEFAULT_LOCALE
     retrieval_result: dict | None = None
     retrieval_coverage: dict | None = None
     schema_context: str | None = None

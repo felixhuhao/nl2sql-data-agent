@@ -20,6 +20,7 @@ from backend.app.core.llm_provider import (
     SQLRepairContext,
 )
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
+from backend.app.i18n import t
 from backend.app.metadata.retrieval import retrieve_metadata_assets
 from backend.app.metadata.retrieval_coverage import (
     expand_via_graph,
@@ -214,7 +215,7 @@ def intent_guard_node(state: AgentState) -> AgentState:
     blocked_intent = _detect_blocked_intent(state.question)
     state.completed_steps.append("intent_guard")
     if blocked_intent is not None:
-        state.error = f"{blocked_intent} intent is not allowed."
+        state.error = t("agent.intent_blocked", state.locale, intent=blocked_intent)
         state.stopped_at = "intent_guard"
     return state
 
@@ -454,7 +455,7 @@ def summarize_node(state: AgentState) -> AgentState:
         raise ValueError("query_result is required before summarization.")
 
     columns = ", ".join(state.query_result.columns)
-    state.summary = f"查询返回 {state.query_result.row_count} 行，字段：{columns}。"
+    state.summary = t("agent.result_summary", state.locale, row_count=state.query_result.row_count, columns=columns)
     state.completed_steps.append("summarize")
     return state
 
