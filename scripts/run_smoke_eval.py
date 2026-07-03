@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import re
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 import yaml
@@ -15,12 +17,17 @@ import yaml
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
+UNAVAILABLE_DATASOURCE_RE = re.compile(r"\(datasource unavailable:\s*([^)]+)\)$")
+
 from backend.app.agent.conversation import build_conversation_context
-from backend.app.agent.nodes import build_context_node, generate_sql_node, olap_intent_detect_node
+from backend.app.agent.nodes import build_context_node, generate_sql_node
+from backend.app.agent.olap_intent import build_olap_hint, detect_olap_intents
 from backend.app.agent.performance import explain_performance_node
 from backend.app.agent.repair import iter_sql_repair_events
 from backend.app.agent.state import AgentState
 from backend.app.config import get_settings
+from backend.app.config import retrieval_recovery_enabled
+from backend.app.connectors.clickhouse import ClickHouseConnector
 from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.deepseek_provider import DeepSeekProvider
 from backend.app.core.llm_provider import (
@@ -32,6 +39,7 @@ from backend.app.core.llm_provider import (
 from backend.app.execution.runner import QueryResult, execute_guarded_sql
 from backend.app.metadata.models import DEFAULT_DATASOURCE
 from backend.app.metadata.retrieval import retrieve_metadata_assets
+from backend.app.metadata.retrieval_coverage import score_coverage
 from backend.app.metadata.service import build_focused_context_from_retrieval, build_schema_context
 from backend.app.sql_guard import build_default_guard_scope, guard_sql
 from backend.app.visualization.recommender import recommend_chart
@@ -84,6 +92,8 @@ class SmokeResult:
     guard_stage: str | None = None
     row_count: int | None = None
     retrieval_fallback_used: bool | None = None
+    retrieval_reference_coverage: dict[str, Any] | None = None
+    retrieval_pre_coverage: dict[str, Any] | None = None
     retrieval_coverage: dict[str, Any] | None = None
     retrieval_tables: list[str] = field(default_factory=list)
     retrieval_columns: list[str] = field(default_factory=list)
@@ -95,6 +105,8 @@ class SmokeResult:
     retrieval_value_hits: list[str] = field(default_factory=list)
     retrieval_checks: list[RetrievalCheck] = field(default_factory=list)
     focused_context_chars: int | None = None
+    flags_off_context_chars: int | None = None
+    flags_on_context_delta: int | None = None
     full_context_chars: int | None = None
     context_reduction_ratio: float | None = None
     error_category: str | None = None
@@ -198,6 +210,21 @@ def main() -> int:
         action="store_true",
         help="Run each selected case in rule-only and rule+vector modes, then write a comparison report.",
     )
+    parser.add_argument(
+        "--require-clickhouse",
+        action="store_true",
+        help="Fail if any ClickHouse-listed case is skipped because ClickHouse is unavailable.",
+    )
+    parser.add_argument(
+        "--retrieval-calibration",
+        action="store_true",
+        help="Sweep retrieval coverage thresholds and report recovery/regression tradeoffs.",
+    )
+    parser.add_argument(
+        "--retrieval-thresholds",
+        default="0.3,0.4,0.5,0.6,0.7,0.8",
+        help="Comma-separated thresholds for --retrieval-calibration.",
+    )
     args = parser.parse_args()
 
     try:
@@ -208,7 +235,17 @@ def main() -> int:
             cases,
             provider_name=args.provider,
             available_datasources=available_datasources,
+            force_retrieval_recovery=args.retrieval_calibration,
         )
+        if args.require_clickhouse and _has_unavailable_clickhouse_skip(skipped_case_ids):
+            print(
+                "error: ClickHouse is required, but at least one ClickHouse case was skipped.",
+                file=sys.stderr,
+            )
+            for skipped in skipped_case_ids:
+                if _is_unavailable_clickhouse_skip(skipped):
+                    print(f"  - {skipped}", file=sys.stderr)
+            return 1
         resources_by_datasource = _build_case_resources(selected_cases, available_datasources)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -222,6 +259,16 @@ def main() -> int:
             skipped_case_ids=skipped_case_ids,
             resources_by_datasource=resources_by_datasource,
         )
+    if args.retrieval_calibration:
+        return _run_retrieval_calibration(
+            selected_cases=selected_cases,
+            provider=provider,
+            provider_name=args.provider,
+            report_path=Path(args.report_path),
+            skipped_case_ids=skipped_case_ids,
+            resources_by_datasource=resources_by_datasource,
+            thresholds=_parse_thresholds(args.retrieval_thresholds),
+        )
 
     results = [
         _run_case(
@@ -233,6 +280,7 @@ def main() -> int:
         )
         for case in selected_cases
     ]
+    _validate_parity_anchor_results(results)
     report_path = Path(args.report_path)
     _write_report(report_path, results, provider_name=args.provider, skipped_case_ids=skipped_case_ids)
     _print_results(results, report_path, provider_name=args.provider, skipped_case_ids=skipped_case_ids)
@@ -258,6 +306,7 @@ def _run_vector_compare(
         )
         for case in selected_cases
     ]
+    _validate_parity_anchor_results(rule_results)
     vector_results = [
         _run_case(
             case,
@@ -269,6 +318,7 @@ def _run_vector_compare(
         )
         for case in selected_cases
     ]
+    _validate_parity_anchor_results(vector_results)
     _write_vector_compare_report(
         report_path,
         rule_results=rule_results,
@@ -278,6 +328,104 @@ def _run_vector_compare(
     )
     _print_vector_compare_results(rule_results, vector_results, report_path)
     return 0 if all(result.passed for result in [*rule_results, *vector_results]) else 1
+
+
+def _run_retrieval_calibration(
+    *,
+    selected_cases: list[dict[str, Any]],
+    provider: LLMProvider,
+    provider_name: str,
+    report_path: Path,
+    skipped_case_ids: list[str],
+    resources_by_datasource: dict[str, CaseResources],
+    thresholds: list[float],
+) -> int:
+    reports = []
+    all_results: list[SmokeResult] = []
+    reference_threshold = float(get_settings().retrieval_coverage_threshold)
+    for threshold in thresholds:
+        with _temporary_retrieval_recovery(threshold):
+            results = [
+                _run_case(
+                    case,
+                    resources_by_datasource[_case_datasource(case)],
+                    provider,
+                    provider_name=provider_name,
+                    use_vector=False,
+                    validate_coverage_expectations=False,
+                    reference_threshold=reference_threshold,
+                )
+                for case in selected_cases
+            ]
+        _validate_parity_anchor_results(results)
+        all_results.extend(results)
+        reports.append(_retrieval_calibration_row(threshold, results))
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        _render_retrieval_calibration_report(
+            reports,
+            provider_name=provider_name,
+            skipped_case_ids=skipped_case_ids,
+            reference_threshold=reference_threshold,
+        ),
+        encoding="utf-8",
+    )
+    print(f"retrieval calibration thresholds: {', '.join(str(row['threshold']) for row in reports)}")
+    print(f"reference holdout threshold: {reference_threshold}")
+    for row in reports:
+        print(
+            "threshold="
+            f"{row['threshold']}: recovery={row['recovery_passed']}/{row['recovery_cases']} "
+            f"fallback_paths={row['fallback_path_passed']}/{row['fallback_path_cases']} "
+            f"high_conf_regressions={row['high_conf_regressions']}/{row['high_conf_cases']}"
+        )
+    print(f"report: {report_path}")
+    return 0 if all(result.passed for result in all_results) else 1
+
+
+@contextmanager
+def _temporary_retrieval_recovery(threshold: float) -> Iterator[None]:
+    settings = get_settings()
+    original = {
+        "retrieval_expansion_enabled": settings.retrieval_expansion_enabled,
+        "retrieval_fallback_mode": settings.retrieval_fallback_mode,
+        "retrieval_coverage_threshold": settings.retrieval_coverage_threshold,
+    }
+    settings.retrieval_expansion_enabled = True
+    settings.retrieval_fallback_mode = "on"
+    settings.retrieval_coverage_threshold = threshold
+    try:
+        yield
+    finally:
+        for name, value in original.items():
+            setattr(settings, name, value)
+
+
+@contextmanager
+def _temporary_retrieval_threshold(threshold: float) -> Iterator[None]:
+    settings = get_settings()
+    original = settings.retrieval_coverage_threshold
+    settings.retrieval_coverage_threshold = threshold
+    try:
+        yield
+    finally:
+        settings.retrieval_coverage_threshold = original
+
+
+def _parse_thresholds(raw_value: str) -> list[float]:
+    thresholds = []
+    for item in raw_value.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        threshold = float(value)
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError("retrieval thresholds must be between 0 and 1.")
+        thresholds.append(threshold)
+    if not thresholds:
+        raise ValueError("at least one retrieval threshold is required.")
+    return thresholds
 
 
 def _load_cases(path: Path) -> list[dict[str, Any]]:
@@ -302,6 +450,8 @@ def _filter_cases(
     cases: list[dict[str, Any]],
     provider_name: str,
     available_datasources: dict[str, DatasourceRef],
+    *,
+    force_retrieval_recovery: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     selected_cases = []
     skipped_case_ids = []
@@ -309,14 +459,23 @@ def _filter_cases(
         case_provider = case.get("provider", "both")
         if case_provider not in {"both", "mock", "real"}:
             raise ValueError(f"Unknown case provider {case_provider!r} in {case['id']}.")
-        datasource_name = _case_datasource(case)
-        if datasource_name not in available_datasources:
-            skipped_case_ids.append(f"{case['id']} (datasource unavailable: {datasource_name})")
-            continue
         if not _case_matches_provider(case_provider, provider_name):
             skipped_case_ids.append(f"{case['id']} (provider={case_provider})")
             continue
-        selected_cases.append(case)
+        if (
+            case.get("requires_retrieval_recovery")
+            and not force_retrieval_recovery
+            and not retrieval_recovery_enabled()
+        ):
+            skipped_case_ids.append(f"{case['id']} (requires retrieval recovery)")
+            continue
+        for datasource_name in _case_datasources(case):
+            if datasource_name not in available_datasources:
+                skipped_case_ids.append(f"{case['id']} (datasource unavailable: {datasource_name})")
+                continue
+            selected_case = dict(case)
+            selected_case["_selected_datasource"] = datasource_name
+            selected_cases.append(selected_case)
     return selected_cases, skipped_case_ids
 
 
@@ -329,7 +488,41 @@ def _case_matches_provider(case_provider: str, provider_name: str) -> bool:
 
 
 def _case_datasource(case: dict[str, Any]) -> str:
-    return str(case.get("datasource") or DEFAULT_DATASOURCE)
+    return str(case.get("_selected_datasource") or _case_datasources(case)[0])
+
+
+def _case_datasources(case: dict[str, Any]) -> list[str]:
+    if "datasource" in case and "datasources" in case:
+        raise ValueError(f"Case {case['id']} cannot set both 'datasource' and 'datasources'.")
+    if "datasource" in case:
+        datasource_name = str(case.get("datasource") or "").strip()
+        if not datasource_name:
+            raise ValueError(f"Case {case['id']} has a blank datasource.")
+        return [datasource_name]
+    if "datasources" in case:
+        datasources = case.get("datasources")
+        if not isinstance(datasources, list) or not datasources:
+            raise ValueError(f"Case {case['id']} datasources must be a non-empty list.")
+        normalized = [str(datasource).strip() for datasource in datasources]
+        if any(not datasource for datasource in normalized):
+            raise ValueError(f"Case {case['id']} datasources cannot contain blanks.")
+        return normalized
+    return [DEFAULT_DATASOURCE]
+
+
+def _has_unavailable_clickhouse_skip(skipped_case_ids: list[str]) -> bool:
+    return any(_is_unavailable_clickhouse_skip(skipped) for skipped in skipped_case_ids)
+
+
+def _is_unavailable_clickhouse_skip(skipped: str) -> bool:
+    return _unavailable_datasource_name(skipped) == ClickHouseConnector.name
+
+
+def _unavailable_datasource_name(skipped: str) -> str | None:
+    match = UNAVAILABLE_DATASOURCE_RE.search(skipped)
+    if match is None:
+        return None
+    return match.group(1).strip()
 
 
 def _available_datasources() -> dict[str, DatasourceRef]:
@@ -366,6 +559,8 @@ def _run_case(
     provider_name: str,
     use_vector: bool | None = None,
     validate_vector_expectations: bool = False,
+    validate_coverage_expectations: bool = True,
+    reference_threshold: float | None = None,
 ) -> SmokeResult:
     if case.get("type") == "conversation":
         return _run_conversation_case(
@@ -389,8 +584,8 @@ def _run_case(
     try:
         expected = case.get("expected", {})
         try:
-            retrieval_result = retrieve_metadata_assets(
-                case["question"],
+            retrieval_result = _case_retrieval_result(
+                case,
                 use_vector=use_vector,
                 datasource_name=datasource.name,
             )
@@ -398,20 +593,31 @@ def _run_case(
             _validate_retrieval(result, retrieval_result, expected.get("retrieval") or {})
             if validate_vector_expectations:
                 _validate_vector_retrieval(result, expected.get("vector") or {})
-            schema_context = build_focused_context_from_retrieval(
-                retrieval_result,
+            olap_intents = [str(intent) for intent in detect_olap_intents(case["question"])]
+            if reference_threshold is not None:
+                with _temporary_retrieval_threshold(reference_threshold):
+                    reference_coverage = score_coverage(
+                        {**copy.deepcopy(retrieval_result), "retrieval_stage": "merged"},
+                        datasource_name=datasource.name,
+                        olap_intents=olap_intents,
+                    )
+                result.retrieval_reference_coverage = reference_coverage.as_dict()
+            pre_coverage = score_coverage(
+                {**copy.deepcopy(retrieval_result), "retrieval_stage": "merged"},
+                datasource_name=datasource.name,
+                olap_intents=olap_intents,
+            )
+            result.retrieval_pre_coverage = pre_coverage.as_dict()
+            flags_off_context = build_focused_context_from_retrieval(
+                copy.deepcopy(retrieval_result),
                 datasource_name=datasource.name,
             )
         except Exception as exc:
             result.fail(f"retrieval/context failed: {exc}", "retrieval_miss")
             return result
 
-        result.focused_context_chars = len(schema_context)
+        result.flags_off_context_chars = len(flags_off_context)
         result.full_context_chars = len(resources.full_schema_context)
-        result.context_reduction_ratio = _context_reduction_ratio(
-            focused_chars=result.focused_context_chars,
-            full_chars=result.full_context_chars,
-        )
 
         state = AgentState(
             question=case["question"],
@@ -419,9 +625,28 @@ def _run_case(
             datasource_dialect=datasource.dialect,
             datasource_display_name=datasource.display_name,
             retrieval_result=retrieval_result,
-            schema_context=schema_context,
+            olap_intents=olap_intents,
         )
-        olap_intent_detect_node(state)
+        try:
+            build_context_node(state)
+        except Exception as exc:
+            result.fail(f"context recovery failed: {exc}", "retrieval_miss")
+            return result
+        result.focused_context_chars = len(state.schema_context or "")
+        result.flags_on_context_delta = (
+            result.focused_context_chars - result.flags_off_context_chars
+            if result.flags_off_context_chars is not None
+            else None
+        )
+        result.full_context_chars = len(resources.full_schema_context)
+        result.context_reduction_ratio = _context_reduction_ratio(
+            focused_chars=result.focused_context_chars,
+            full_chars=result.full_context_chars,
+        )
+        _record_state_result(result, state)
+        if validate_coverage_expectations:
+            _validate_coverage_expectations(result, expected.get("coverage") or {})
+        _set_olap_hint(state)
         case_provider = _case_provider(case, provider=provider, provider_name=provider_name)
         try:
             generate_sql_node(state, provider=case_provider)
@@ -517,6 +742,20 @@ def _run_case(
         result.elapsed_ms = round((time.perf_counter() - started_at) * 1000)
 
 
+def _set_olap_hint(state: AgentState) -> None:
+    metrics = []
+    if state.retrieval_result is not None:
+        metrics = state.retrieval_result.get("metrics", [])
+    if not state.olap_intents:
+        state.olap_intents = list(detect_olap_intents(state.question))
+    state.olap_hint = build_olap_hint(
+        state.olap_intents,
+        datasource_dialect=state.datasource_dialect,
+        matched_metrics=metrics,
+    )
+    state.completed_steps.append("olap_detected")
+
+
 def _run_conversation_case(
     case: dict[str, Any],
     resources: CaseResources,
@@ -565,7 +804,7 @@ def _run_conversation_case(
                 result.fail(f"conversation retrieval/context failed: {exc}", "retrieval_miss")
                 return result
 
-            olap_intent_detect_node(state)
+            _set_olap_hint(state)
             try:
                 generate_sql_node(state, provider=provider)
             except Exception as exc:
@@ -677,6 +916,32 @@ def _case_provider(
     return provider
 
 
+def _case_retrieval_result(
+    case: dict[str, Any],
+    *,
+    use_vector: bool | None,
+    datasource_name: str,
+) -> dict[str, Any]:
+    fixture = case.get("retrieval_fixture")
+    if fixture is not None:
+        if not isinstance(fixture, dict):
+            raise ValueError(f"Case {case['id']} retrieval_fixture must be a mapping.")
+        result = copy.deepcopy(fixture)
+        result.setdefault("question", case["question"])
+        result.setdefault("datasource", datasource_name)
+        result.setdefault("tables", [])
+        result.setdefault("columns", [])
+        result.setdefault("metrics", [])
+        result.setdefault("verified_queries", [])
+        result.setdefault("retrieval_meta", {})
+        return result
+    return retrieve_metadata_assets(
+        case["question"],
+        use_vector=use_vector,
+        datasource_name=datasource_name,
+    )
+
+
 def _run_guard_only_case(
     *,
     result: SmokeResult,
@@ -709,6 +974,8 @@ def _record_state_result(result: SmokeResult, state: AgentState) -> None:
     result.plan_hints = list(state.plan_hints)
     result.runtime_stats = state.runtime_stats
     result.retrieval_coverage = state.retrieval_coverage or result.retrieval_coverage
+    if result.retrieval_coverage is not None:
+        result.retrieval_fallback_used = bool(result.retrieval_coverage.get("fallback_used"))
     result.is_follow_up = state.is_follow_up
     result.change_kind = state.change_kind
     if state.guard_result is not None:
@@ -824,6 +1091,86 @@ def _validate_retrieval(
         expected=expected.get("required_verified_queries") or [],
         actual=result.retrieval_verified_queries,
     )
+
+
+def _validate_coverage_expectations(result: SmokeResult, expected: dict[str, Any]) -> None:
+    if not expected:
+        return
+
+    _validate_coverage_value(
+        result,
+        label="pre_band",
+        expected=expected.get("pre_band"),
+        actual=(result.retrieval_pre_coverage or {}).get("band"),
+    )
+    _validate_coverage_value(
+        result,
+        label="post_band",
+        expected=expected.get("post_band"),
+        actual=(result.retrieval_coverage or {}).get("band"),
+    )
+    _validate_coverage_value(
+        result,
+        label="expanded",
+        expected=expected.get("expanded"),
+        actual=(result.retrieval_coverage or {}).get("expanded"),
+    )
+    _validate_coverage_value(
+        result,
+        label="fallback_used",
+        expected=expected.get("fallback_used"),
+        actual=(result.retrieval_coverage or {}).get("fallback_used"),
+    )
+
+
+def _validate_coverage_value(
+    result: SmokeResult,
+    *,
+    label: str,
+    expected: Any,
+    actual: Any,
+) -> None:
+    if expected is None:
+        return
+    if actual != expected:
+        result.fail(
+            f"expected coverage {label} {expected!r}, got {actual!r}",
+            "retrieval_coverage_mismatch",
+        )
+
+
+def _validate_parity_anchor_results(results: list[SmokeResult]) -> None:
+    by_case_id: dict[str, list[SmokeResult]] = {}
+    for result in results:
+        by_case_id.setdefault(result.case_id, []).append(result)
+
+    for case_id, group in by_case_id.items():
+        if len(group) <= 1:
+            continue
+        bands = {
+            result.datasource_name: (result.retrieval_coverage or {}).get("band")
+            for result in group
+        }
+        missing_band_datasources = [
+            datasource_name for datasource_name, band in bands.items() if band is None
+        ]
+        if len(missing_band_datasources) == len(bands):
+            continue
+        if missing_band_datasources:
+            for result in group:
+                result.fail(
+                    f"parity anchor missing coverage band for {case_id}: {missing_band_datasources}",
+                    "retrieval_coverage_mismatch",
+                )
+            continue
+        unique_bands = set(bands.values())
+        if len(unique_bands) <= 1:
+            continue
+        for result in group:
+            result.fail(
+                f"parity anchor coverage band mismatch for {case_id}: {bands}",
+                "retrieval_coverage_mismatch",
+            )
 
 
 def _validate_vector_retrieval(
@@ -1295,7 +1642,9 @@ def _print_results(
     summary = _summary_metrics(results)
     print(
         "focused context: "
+        f"flags_off_avg={summary['avg_flags_off_context_chars']} chars, "
         f"avg={summary['avg_focused_context_chars']} chars, "
+        f"avg_delta={summary['avg_flags_on_context_delta']:+d}, "
         f"full={summary['full_context_chars']} chars, "
         f"avg_reduction={_format_percent(summary['avg_context_reduction_ratio'])}, "
         f"fallback={summary['fallback_cases']}/{len(results)}, "
@@ -1445,6 +1794,116 @@ def _render_vector_compare_report(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _retrieval_calibration_row(threshold: float, results: list[SmokeResult]) -> dict[str, Any]:
+    recovery_cases = [
+        result
+        for result in results
+        if "missing_join_path" in result.tags or "missing_dimension" in result.tags
+    ]
+    fallback_path_cases = [
+        result for result in results if "dangling_no_fact" in result.tags
+    ]
+    high_conf_cases = [
+        result
+        for result in results
+        if not _is_retrieval_closeout_case(result)
+        and _reference_coverage(result).get("band") == "high"
+    ]
+    high_conf_regressions = [
+        result
+        for result in high_conf_cases
+        if (result.retrieval_coverage or {}).get("band") != "high"
+        or (result.flags_on_context_delta not in (None, 0))
+    ]
+    return {
+        "threshold": threshold,
+        "total_cases": len(results),
+        "passed_cases": sum(1 for result in results if result.passed),
+        "recovery_cases": len(recovery_cases),
+        "recovery_passed": sum(1 for result in recovery_cases if _recovery_path_succeeded(result)),
+        "fallback_path_cases": len(fallback_path_cases),
+        "fallback_path_passed": sum(1 for result in fallback_path_cases if _fallback_path_succeeded(result)),
+        "high_conf_cases": len(high_conf_cases),
+        "high_conf_regressions": len(high_conf_regressions),
+        "high_conf_regression_cases": [result.case_id for result in high_conf_regressions],
+        "avg_flags_on_context_delta": _average_int(
+            [
+                result.flags_on_context_delta
+                for result in results
+                if result.flags_on_context_delta is not None
+            ]
+        ),
+        "fallback_cases": sum(1 for result in results if result.retrieval_fallback_used),
+    }
+
+
+def _recovery_path_succeeded(result: SmokeResult) -> bool:
+    coverage = result.retrieval_coverage or {}
+    return (
+        coverage.get("band") == "high"
+        and coverage.get("expanded") is True
+        and coverage.get("fallback_used") is False
+    )
+
+
+def _fallback_path_succeeded(result: SmokeResult) -> bool:
+    coverage = result.retrieval_coverage or {}
+    return coverage.get("band") == "low" and coverage.get("fallback_used") is True
+
+
+def _is_retrieval_closeout_case(result: SmokeResult) -> bool:
+    return "retrieval_closeout" in result.tags
+
+
+def _reference_coverage(result: SmokeResult) -> dict[str, Any]:
+    return result.retrieval_reference_coverage or result.retrieval_pre_coverage or {}
+
+
+def _render_retrieval_calibration_report(
+    rows: list[dict[str, Any]],
+    *,
+    provider_name: str,
+    skipped_case_ids: list[str],
+    reference_threshold: float,
+) -> str:
+    lines = [
+        "# Retrieval Calibration Report",
+        "",
+        "## Summary",
+        "",
+        f"- Provider: {provider_name}",
+        f"- Skipped cases: {len(skipped_case_ids)}",
+        f"- Reference holdout threshold: {reference_threshold}",
+        "",
+        "| Threshold | Passed | Recovery | Fallback Paths | High-conf regressions | Fallback cases | Avg context delta | Regression cases |",
+        "|-----------|--------|----------|----------------|-----------------------|----------------|-------------------|------------------|",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row["threshold"]),
+                    f"{row['passed_cases']}/{row['total_cases']}",
+                    f"{row['recovery_passed']}/{row['recovery_cases']}",
+                    f"{row['fallback_path_passed']}/{row['fallback_path_cases']}",
+                    f"{row['high_conf_regressions']}/{row['high_conf_cases']}",
+                    str(row["fallback_cases"]),
+                    _format_signed_int(row["avg_flags_on_context_delta"]),
+                    _md_cell(", ".join(row["high_conf_regression_cases"]) or "-"),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(["", "## Skipped Cases", ""])
+    if skipped_case_ids:
+        for case_id in skipped_case_ids:
+            lines.append(f"- {case_id}")
+    else:
+        lines.append("No skipped cases.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _render_report(
     results: list[SmokeResult],
     provider_name: str,
@@ -1473,7 +1932,9 @@ def _render_report(
         f"- Repair cases: {summary['repair_cases']}/{summary['total_cases']}",
         f"- Total repair attempts: {summary['total_repair_attempts']}",
         f"- Full schema context chars: {summary['full_context_chars']}",
+        f"- Avg flags-off focused context chars: {summary['avg_flags_off_context_chars']}",
         f"- Avg focused context chars: {summary['avg_focused_context_chars']}",
+        f"- Avg flags-on context delta: {summary['avg_flags_on_context_delta']:+d}",
         f"- Avg focused context reduction: {_format_percent(summary['avg_context_reduction_ratio'])}",
         f"- Avg elapsed: {_format_elapsed(summary['avg_elapsed_ms'])}",
         f"- Chart recommendations: {_format_distribution(chart_distribution)}",
@@ -1586,7 +2047,7 @@ def _render_report(
             [
                 f"### {_datasource_section_title(group)}",
                 "",
-                "| Case | Status | Type | Category | Reference | Fallback | Coverage | Repairs | Elapsed | Focused Chars | Reduction | Guard | Rows | Chart | SQL |",
+                "| Case | Status | Type | Category | Reference | Fallback | Coverage | Repairs | Elapsed | Focused Chars (off→on) | Reduction | Guard | Rows | Chart | SQL |",
                 "|------|--------|------|----------|-----------|----------|----------|---------|---------|---------------|-----------|-------|------|-------|-----|",
             ]
         )
@@ -1601,10 +2062,10 @@ def _render_report(
                         _md_cell(result.error_category or "-"),
                         _reference_result_label(result.reference_result_match),
                         str(result.retrieval_fallback_used),
-                        _md_cell(_format_retrieval_coverage(result.retrieval_coverage)),
+                        _md_cell(_format_coverage_transition(result)),
                         str(result.repair_count),
                         _format_elapsed(result.elapsed_ms),
-                        str(result.focused_context_chars),
+                        _format_context_chars(result),
                         _format_percent(result.context_reduction_ratio),
                         _md_cell(result.guard_stage or "-"),
                         str(result.row_count) if result.row_count is not None else "-",
@@ -1658,6 +2119,8 @@ def _render_report(
                     f"- Columns: {', '.join(result.retrieval_columns) or '-'}",
                     f"- Metrics: {', '.join(result.retrieval_metrics) or '-'}",
                     f"- Verified queries: {', '.join(result.retrieval_verified_queries) or '-'}",
+                    f"- Coverage: {_format_coverage_transition(result)}",
+                    f"- Focused context chars: {_format_context_chars(result)}",
                 ]
             )
             if result.retrieval_checks:
@@ -1676,6 +2139,16 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
         result.focused_context_chars
         for result in results
         if result.focused_context_chars is not None
+    ]
+    flags_off_lengths = [
+        result.flags_off_context_chars
+        for result in results
+        if result.flags_off_context_chars is not None
+    ]
+    flags_on_deltas = [
+        result.flags_on_context_delta
+        for result in results
+        if result.flags_on_context_delta is not None
     ]
     reductions = [
         result.context_reduction_ratio
@@ -1696,7 +2169,9 @@ def _summary_metrics(results: list[SmokeResult]) -> dict[str, Any]:
         "repair_cases": sum(1 for result in results if result.repair_count > 0),
         "total_repair_attempts": sum(result.repair_count for result in results),
         "full_context_chars": _average_int(full_lengths),
+        "avg_flags_off_context_chars": _average_int(flags_off_lengths),
         "avg_focused_context_chars": _average_int(focused_lengths),
+        "avg_flags_on_context_delta": _average_int(flags_on_deltas),
         "avg_context_reduction_ratio": _average_float(reductions),
         "avg_elapsed_ms": _average_int(
             [result.elapsed_ms for result in results if result.elapsed_ms is not None]
@@ -1895,6 +2370,29 @@ def _format_retrieval_coverage(value: dict[str, Any] | None) -> str:
     fallback_used = value.get("fallback_used")
     score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "-"
     return f"{band}/{score_text} expanded={expanded} fallback={fallback_used}"
+
+
+def _format_coverage_transition(result: SmokeResult) -> str:
+    post = _format_retrieval_coverage(result.retrieval_coverage)
+    pre = _format_retrieval_coverage(result.retrieval_pre_coverage)
+    if pre == "-":
+        return post
+    return f"{pre} -> {post}"
+
+
+def _format_context_chars(result: SmokeResult) -> str:
+    if result.focused_context_chars is None:
+        return "-"
+    if result.flags_off_context_chars is None or result.flags_on_context_delta is None:
+        return str(result.focused_context_chars)
+    return (
+        f"{result.flags_off_context_chars}->{result.focused_context_chars} "
+        f"({_format_signed_int(result.flags_on_context_delta)})"
+    )
+
+
+def _format_signed_int(value: int) -> str:
+    return f"{value:+d}"
 
 
 def _short_sql(value: str | None, limit: int = 140) -> str:

@@ -35,6 +35,233 @@ def test_filter_cases_skips_unavailable_datasource():
     assert skipped == ["clickhouse (datasource unavailable: clickhouse_ecommerce)"]
 
 
+def test_case_datasources_preserves_legacy_scalar_and_validates_conflict():
+    assert runner._case_datasources({"id": "legacy", "datasource": "clickhouse_ecommerce"}) == [
+        "clickhouse_ecommerce"
+    ]
+    assert runner._case_datasources(
+        {"id": "plural", "datasources": ["duckdb_ecommerce", "clickhouse_ecommerce"]}
+    ) == ["duckdb_ecommerce", "clickhouse_ecommerce"]
+
+    try:
+        runner._case_datasources(
+            {
+                "id": "bad",
+                "datasource": "duckdb_ecommerce",
+                "datasources": ["clickhouse_ecommerce"],
+            }
+        )
+    except ValueError as exc:
+        assert "cannot set both" in str(exc)
+    else:
+        raise AssertionError("expected datasource/datasources conflict to fail")
+
+
+def test_filter_cases_expands_plural_datasources():
+    cases = [
+        {
+            "id": "parity",
+            "question": "销售额",
+            "datasources": ["duckdb_ecommerce", "clickhouse_ecommerce"],
+        }
+    ]
+    available = {
+        "duckdb_ecommerce": runner.DatasourceRef(
+            name="duckdb_ecommerce",
+            dialect="duckdb",
+            display_name="DuckDB (本地)",
+        ),
+        "clickhouse_ecommerce": runner.DatasourceRef(
+            name="clickhouse_ecommerce",
+            dialect="clickhouse",
+            display_name="ClickHouse (OLAP)",
+        ),
+    }
+
+    selected, skipped = runner._filter_cases(
+        cases,
+        provider_name="mock",
+        available_datasources=available,
+    )
+
+    assert skipped == []
+    assert [case["_selected_datasource"] for case in selected] == [
+        "duckdb_ecommerce",
+        "clickhouse_ecommerce",
+    ]
+
+
+def test_require_clickhouse_detects_unavailable_clickhouse_skip():
+    assert runner._has_unavailable_clickhouse_skip(
+        ["case (datasource unavailable: clickhouse_ecommerce)"]
+    )
+    assert not runner._has_unavailable_clickhouse_skip(["case (provider=real)"])
+    assert not runner._has_unavailable_clickhouse_skip(
+        ["case (datasource unavailable: not_clickhouse_ecommerce)"]
+    )
+
+
+def test_validate_coverage_expectations_checks_pre_and_post_fields():
+    result = runner.SmokeResult(
+        case_id="coverage_case",
+        case_type="normal",
+        question="销售额",
+        retrieval_pre_coverage={"band": "low"},
+        retrieval_coverage={"band": "high", "expanded": True, "fallback_used": False},
+    )
+
+    runner._validate_coverage_expectations(
+        result,
+        {
+            "pre_band": "low",
+            "post_band": "high",
+            "expanded": True,
+            "fallback_used": False,
+        },
+    )
+
+    assert result.passed is True
+
+
+def test_validate_coverage_expectations_fails_mismatch():
+    result = runner.SmokeResult(
+        case_id="coverage_case",
+        case_type="normal",
+        question="销售额",
+        retrieval_pre_coverage={"band": "high"},
+        retrieval_coverage={"band": "high", "expanded": False, "fallback_used": False},
+    )
+
+    runner._validate_coverage_expectations(result, {"pre_band": "low", "expanded": True})
+
+    assert result.passed is False
+    assert result.error_category == "retrieval_coverage_mismatch"
+
+
+def test_validate_parity_anchor_results_fails_band_divergence():
+    duckdb_result = runner.SmokeResult(
+        case_id="parity",
+        case_type="normal",
+        question="销售额",
+        datasource_name="duckdb_ecommerce",
+        retrieval_coverage={"band": "high"},
+    )
+    clickhouse_result = runner.SmokeResult(
+        case_id="parity",
+        case_type="normal",
+        question="销售额",
+        datasource_name="clickhouse_ecommerce",
+        retrieval_coverage={"band": "low"},
+    )
+
+    runner._validate_parity_anchor_results([duckdb_result, clickhouse_result])
+
+    assert duckdb_result.passed is False
+    assert clickhouse_result.passed is False
+    assert duckdb_result.error_category == "retrieval_coverage_mismatch"
+
+
+def test_validate_parity_anchor_results_fails_missing_band():
+    duckdb_result = runner.SmokeResult(
+        case_id="parity",
+        case_type="normal",
+        question="销售额",
+        datasource_name="duckdb_ecommerce",
+        retrieval_coverage={"band": "high"},
+    )
+    clickhouse_result = runner.SmokeResult(
+        case_id="parity",
+        case_type="normal",
+        question="销售额",
+        datasource_name="clickhouse_ecommerce",
+        retrieval_coverage=None,
+    )
+
+    runner._validate_parity_anchor_results([duckdb_result, clickhouse_result])
+
+    assert duckdb_result.passed is False
+    assert clickhouse_result.passed is False
+    assert "missing coverage band" in duckdb_result.messages[0]
+
+
+def test_validate_parity_anchor_results_skips_when_all_bands_missing():
+    duckdb_result = runner.SmokeResult(
+        case_id="parity",
+        case_type="normal",
+        question="销售额",
+        datasource_name="duckdb_ecommerce",
+        retrieval_coverage=None,
+    )
+    clickhouse_result = runner.SmokeResult(
+        case_id="parity",
+        case_type="normal",
+        question="销售额",
+        datasource_name="clickhouse_ecommerce",
+        retrieval_coverage=None,
+    )
+
+    runner._validate_parity_anchor_results([duckdb_result, clickhouse_result])
+
+    assert duckdb_result.passed is True
+    assert clickhouse_result.passed is True
+
+
+def test_retrieval_calibration_row_tracks_recovery_and_high_conf_regression():
+    recovery = runner.SmokeResult(
+        case_id="recover",
+        case_type="normal",
+        question="销量",
+        tags=["retrieval_closeout", "missing_join_path"],
+        passed=True,
+        retrieval_pre_coverage={"band": "low"},
+        retrieval_coverage={"band": "high", "expanded": True, "fallback_used": False},
+        flags_on_context_delta=10,
+    )
+    fallback = runner.SmokeResult(
+        case_id="fallback",
+        case_type="normal",
+        question="渠道",
+        tags=["retrieval_closeout", "dangling_no_fact"],
+        passed=True,
+        retrieval_pre_coverage={"band": "low"},
+        retrieval_coverage={"band": "low", "expanded": True, "fallback_used": True},
+        retrieval_fallback_used=True,
+        flags_on_context_delta=100,
+    )
+    high_conf = runner.SmokeResult(
+        case_id="high_conf",
+        case_type="normal",
+        question="销售额",
+        tags=[],
+        passed=True,
+        retrieval_reference_coverage={"band": "high"},
+        retrieval_pre_coverage={"band": "high"},
+        retrieval_coverage={"band": "high", "expanded": False, "fallback_used": False},
+        flags_on_context_delta=0,
+    )
+    boundary_regression = runner.SmokeResult(
+        case_id="boundary_regression",
+        case_type="normal",
+        question="销售额",
+        tags=[],
+        passed=True,
+        retrieval_reference_coverage={"band": "high"},
+        retrieval_pre_coverage={"band": "low"},
+        retrieval_coverage={"band": "high", "expanded": True, "fallback_used": False},
+        flags_on_context_delta=5,
+    )
+
+    row = runner._retrieval_calibration_row(
+        0.8,
+        [recovery, fallback, high_conf, boundary_regression],
+    )
+
+    assert row["recovery_passed"] == 1
+    assert row["fallback_path_passed"] == 1
+    assert row["high_conf_regressions"] == 1
+    assert row["high_conf_regression_cases"] == ["boundary_regression"]
+
+
 def test_render_report_groups_cases_by_datasource():
     duckdb_result = runner.SmokeResult(
         case_id="duck_case",
@@ -62,6 +289,25 @@ def test_render_report_groups_cases_by_datasource():
     assert "## Datasource Summary" in report
     assert "### DuckDB (本地) - 1 cases" in report
     assert "### ClickHouse (OLAP) - 1 cases" in report
+
+
+def test_render_report_includes_coverage_transition_and_context_delta():
+    result = runner.SmokeResult(
+        case_id="coverage_case",
+        case_type="normal",
+        question="销售额",
+        retrieval_pre_coverage={"band": "low", "score": 0.5},
+        retrieval_coverage={"band": "high", "score": 1.0, "expanded": True, "fallback_used": False},
+        focused_context_chars=150,
+        flags_off_context_chars=100,
+        flags_on_context_delta=50,
+    )
+
+    report = runner._render_report([result], provider_name="mock", skipped_case_ids=[])
+
+    assert "Avg flags-off focused context chars" in report
+    assert "low/0.50 expanded=None fallback=None -> high/1.00 expanded=True fallback=False" in report
+    assert "100->150 (+50)" in report
 
 
 def test_validate_dialect_hints_flags_duckdb_syntax():

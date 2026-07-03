@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design — Retrieval Expansion Closeout</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c6b7a; --line:#e2e6ea; --accent:#2d6cdf; --ok:#1c8a52; --warn:#b8860b; --bg:#fbfcfd; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.7rem; line-height:1.25; margin:0 0 4px; }
+  h2 { font-size: 1.2rem; margin:36px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size: 1.02rem; margin:22px 0 8px; }
+  code { background:#eef1f5; padding:1px 5px; border-radius:4px; font-size:.9em; }
+  table { border-collapse: collapse; width:100%; margin:12px 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f0f4f8; }
+  .digest { background:#fff; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .digest h2 { margin-top:0; border:none; padding:0; color:var(--accent); }
+  .pill { display:inline-block; font-size:.75rem; font-weight:600; padding:2px 9px; border-radius:999px; background:#eaf1fe; color:var(--accent); }
+  .pill.status { background:#fff4e0; color:var(--warn); }
+  .lbl { font-weight:700; }
+  ul { margin:8px 0; padding-left:22px; } li { margin:5px 0; }
+  .muted { color:var(--muted); } .rej { color:var(--warn); } .chosen { color:var(--ok); font-weight:700; }
+  footer { margin-top:48px; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Retrieval Expansion Closeout</h1>
+  <p><span class="pill">Lane: full (lightweight)</span> &nbsp; <span class="pill status">Status: In-progress</span></p>
+
+  <div class="digest">
+    <h2>Digest</h2>
+    <p style="background:#eef7f0;border-left:3px solid var(--ok);padding:10px 14px;border-radius:6px;margin-top:0"><span class="lbl">Bottom line — approve this if you agree that:</span> flipping the expansion flags on should be gated by <strong>recovery-first / zero-regression</strong> calibration against purpose-built incomplete-recall cases, and a <strong>small additive CH set + parity anchors + a hard CH-up closeout gate</strong> proves datasource-agnosticism without running every case on ClickHouse.</p>
+    <p><span class="lbl">Change:</span> Close out <code>retrieval-recall-expansion</code>: build the incomplete-recall cases that trigger the new paths, calibrate threshold/weights defensibly, and restructure the eval harness so ClickHouse validation is cheap but honest.</p>
+    <p class="lbl">Decisions (decision — why — rejected):</p>
+    <ul>
+      <li><span class="chosen">(A) Incomplete-recall case contract</span> — each case scores <code>band=low</code> pre-expansion and isolates one archetype (missing-dimension / missing-join-path / dangling-no-fact). <span class="rej">Rejected:</span> ad-hoc cases (untriggerable, non-distinct).</li>
+      <li><span class="chosen">(B) Recovery-first under hard zero-regression</span> — maximize recovery subject to no high-confidence regression; matches feature intent, simplest to defend. <span class="rej">Rejected:</span> balanced (arbitrary weighting), precision-first (under-recovers).</li>
+      <li><span class="chosen">(B) Single-threshold tuning · fixed weight prior · existing corpus as large-N regression holdout · dark→canary telemetry</span> — removes the overfit surface at N≈12. <span class="rej">Rejected:</span> holdout split (noise at N≈12), both (false rigor).</li>
+      <li><span class="chosen">(C) Additive targeted CH set + parity anchors + runner-enforced CH-up closeout gate</span> — cheap CH smoke, still proves agnosticism, turns the silent-skip gotcha into a hard fail. <span class="rej">Rejected:</span> clean partition (loses parity), status-quo (skips masked green).</li>
+    </ul>
+    <p class="lbl">Risks / watch:</p>
+    <ul>
+      <li>Recover-vs-fallback cases must be labelled and asserted distinctly.</li>
+      <li>Parity-anchor divergence is a real bug signal, not flakiness.</li>
+      <li>Calibrated numbers stay provisional until canary telemetry confirms.</li>
+    </ul>
+    <p class="lbl">Open questions:</p>
+    <ul><li>Exact threshold + weight-prior ratio (pinned during calibration); parity-anchor count (2 vs 3).</li></ul>
+    <p class="muted">Drill down: full design in <code>design.md</code> · tasks in <code>tasks.md</code>.</p>
+  </div>
+
+  <h2>1. Problem / context</h2>
+  <p><code>retrieval-recall-expansion</code> shipped <strong>dark and uncalibrated</strong> — flags off, guessed threshold/weights, and validation only hit a <code>band=high</code> case so expansion/fallback have <strong>zero e2e evidence</strong> and nothing to calibrate against. ClickHouse validation was skipped (CH down), which the project's own gotcha warns masks failures behind green DuckDB smoke. This design closes those gaps via three design-worthy decisions (A/B/C); the rest is execution in <code>tasks.md</code>.</p>
+
+  <h2>2. Goals</h2>
+  <p><span class="lbl">In scope:</span> (A) incomplete-recall case validity contract; (B) calibration methodology (objective + anti-overfit) that flips flags on; (C) datasource-partitioned harness (tagging, runner selection, targeted CH set, parity anchors, CH-up closeout gate).</p>
+  <p><span class="lbl">Out of scope — self-explanatory (tasks.md):</span> e2e expansion/fallback validation cases; flags-off/on context-size delta; status + SPEC hygiene.</p>
+  <p><span class="lbl">Non-goals:</span> changing the coverage/expansion algorithm; LLM retrieval; new connectors.</p>
+
+  <h2>3. Key decisions</h2>
+
+  <h3>(A) Incomplete-recall case contract — light</h3>
+  <table>
+    <tr><th>archetype</th><th>recall shape</th><th>expected path</th></tr>
+    <tr><td><code>missing_dimension</code></td><td>fact recalled; needed dim absent</td><td>expansion recovers (<code>expanded=true</code>, post <code>high</code>)</td></tr>
+    <tr><td><code>missing_join_path</code></td><td>two tables, no connecting edge</td><td>dangling → recover if 1-hop edge exists, else fallback</td></tr>
+    <tr><td><code>dangling_no_fact</code></td><td>non-fact only, no metric intent</td><td>stays <code>low</code> → fallback (<code>fallback_used=true</code>)</td></tr>
+  </table>
+  <p>Each case carries <code>expected.coverage</code> (pre/post band, expanded, fallback_used) so the runner asserts the <em>path taken</em>. This is the shared foundation for B and the e2e cases.</p>
+
+  <h3>(B) Calibration methodology — core</h3>
+  <p><span class="lbl">Objective:</span> maximize recovery over <code>missing_dimension</code>/<code>missing_join_path</code> <strong>subject to zero regression</strong> on high-confidence cases (band stays <code>high</code>, context size unchanged).</p>
+  <p><span class="lbl">Anti-overfit (N≈12):</span> (1) fix weight prior <code>w_struct&gt;w_strength</code>, constants for <code>MAX_TABLES</code>/budget; (2) tune the single threshold; (3) bind zero-regression to the 51+ existing high-confidence cases (large-N holdout); (4) dark→canary→tune via emitted <code>band</code>/<code>expanded</code>/<code>fallback_used</code> telemetry.</p>
+  <p><span class="lbl">Reporting:</span> per threshold — recovery rate · regression count (must be 0) · context-size delta. Flags flip on only at target recovery + 0 regression; chosen numbers written back to the sibling design.</p>
+
+  <h3>(C) Datasource-partitioned harness — structural</h3>
+  <ul>
+    <li><span class="lbl">Compatibility:</span> legacy scalar <code>datasource: X</code> (instance name, e.g. <code>clickhouse_ecommerce</code>) normalizes to <code>[X]</code> — zero migration; plural <code>datasources: [X, Y]</code> for parity cases; both keys → error; neither → <code>[duckdb_ecommerce]</code>.</li>
+    <li><span class="lbl">Runner:</span> <code>_case_datasource</code> → <code>_case_datasources</code>; run per available listed datasource; unavailable → explicit SKIP, never a pass.</li>
+    <li><span class="lbl">CH set:</span> small, targeted — CH OLAP metadata through coverage + the three new paths on CH-synced metadata (~4-5 cases).</li>
+    <li><span class="lbl">Parity anchors:</span> 2-3 <code>[duckdb_ecommerce, clickhouse_ecommerce]</code> cases; assert band matches across datasources.</li>
+    <li><span class="lbl">Closeout gate:</span> <code>--require-clickhouse</code>-style mode fails if a CH case is SKIPPED due to CH down — converts the skip gotcha into a hard failure.</li>
+  </ul>
+
+  <h2>4. Alternatives &amp; rationale</h2>
+  <h3>(B) Calibration objective</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">Recovery-first / zero-regression (chosen)</td><td>Matches intent; defensible single constraint; honest "0 regression on 51+".</td><td>Recovery capped by constraint — mitigated by canary tuning.</td></tr>
+    <tr><td>Balanced score</td><td>One number to optimize.</td><td>Arbitrary recovery↔size weighting.</td></tr>
+    <tr><td>Precision-first</td><td>Fewest spurious fallbacks.</td><td>Under-recovers — undercuts the feature.</td></tr>
+  </table>
+  <h3>(B) Anti-overfitting</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">Conservative threshold + telemetry, single-knob (chosen)</td><td>Removes overfit surface; reuses corpus + telemetry; fits staged rollout.</td><td>No precise offline threshold pre-canary — fine at this N.</td></tr>
+    <tr><td>Holdout split</td><td>Offline rigor.</td><td>Meaningless at N≈12.</td></tr>
+    <tr><td>Both</td><td>—</td><td>Holdout weakness for extra work.</td></tr>
+  </table>
+  <h3>(C) CH set structure</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">Additive targeted + parity anchors (chosen)</td><td>Cheap CH smoke; proves agnosticism; keeps parity signal; closeout gate kills the gotcha.</td><td>A few more cases than a pure split.</td></tr>
+    <tr><td>Clean partition</td><td>Cheapest live smoke.</td><td>Loses cross-dialect parity detection.</td></tr>
+  </table>
+
+  <h2>5. Altitude — deferred to implementation</h2>
+  <ul>
+    <li>YAML key spelling; runner flag names; report/SKIP formatting.</li>
+    <li>Weight-prior ratio and threshold value (pinned by the calibration run).</li>
+    <li>Parity-anchor exact count (2 vs 3).</li>
+  </ul>
+
+  <h2>6. Open questions</h2>
+  <ul>
+    <li>Final threshold + weight-prior ratio → calibration execution (writes back to sibling design).</li>
+    <li>Closeout gate as runner flag vs CI-only profile → default flag; revisit for CI.</li>
+  </ul>
+
+  <h2>7. Status</h2>
+  <p><span class="pill status">In-progress</span> — maker: Claude. Reviewer: Codex, REVIEWER-CLEAR round 2. Operator approved; implementation started. Approval: felixhuhao — approved.</p>
+
+  <footer>Files: <code>docs/design/retrieval-expansion-closeout/{design.md, tasks.md, design.html}</code> · board: <code>docs/design/roadmap.md</code> · sibling: <code>docs/design/retrieval-recall-expansion/</code>.</footer>
+</div>
+</body>
+</html>

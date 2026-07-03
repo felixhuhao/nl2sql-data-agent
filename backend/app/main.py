@@ -3,10 +3,11 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp
 from starlette.responses import JSONResponse
 
 from backend.app.api.auth import router as auth_router
@@ -124,7 +125,7 @@ app.include_router(chat_router, dependencies=auth_dependency)
 app.include_router(metadata_router, dependencies=auth_dependency)
 
 if create_mcp_http_app is not None:
-    app.mount("/mcp", ServiceTokenMiddleware(create_mcp_http_app()))
+    app.mount("/mcp", cast(ASGIApp, ServiceTokenMiddleware(create_mcp_http_app())))
 
 
 @app.get("/health")

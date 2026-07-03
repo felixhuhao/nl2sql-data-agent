@@ -23,7 +23,7 @@ from backend.app.agent.semantic_grounding import (
     SemanticRefutationAuditor,
     analyze_sql_semantic_facts,
 )
-from backend.app.agent.state import AgentState
+from backend.app.agent.state import AgentState, GroundingWarningPayload, SemanticGuardResult
 from backend.app.config import get_settings
 from backend.app.connectors.registry import get_datasource_manager
 from backend.app.core.deepseek_provider import DeepSeekProvider
@@ -65,9 +65,9 @@ class SemanticEvalResult:
     expected_warning: bool | None = None
     verifier_unavailable: bool = False
     semantic_ok: bool | None = None
-    warnings: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[GroundingWarningPayload] = field(default_factory=list)
     required_concepts: list[dict[str, Any]] = field(default_factory=list)
-    semantic_guard_result: dict[str, Any] | None = None
+    semantic_guard_result: SemanticGuardResult | None = None
     error: str | None = None
     elapsed_ms: int | None = None
     inconclusive: bool = False

@@ -36,6 +36,40 @@ Eval 的目标不是给项目贴一个 pass rate，而是回答三个问题：
     join_paths: [...]
 ```
 
+Datasource targeting supports both the legacy scalar shape and the new parity shape:
+
+```yaml
+datasource: clickhouse_ecommerce        # legacy singleton, still valid
+datasources: [duckdb_ecommerce, clickhouse_ecommerce]  # parity anchor
+```
+
+Rules:
+
+- `datasource` normalizes to a singleton list.
+- `datasources` runs the same case once per listed datasource.
+- Setting both keys is invalid and fails fast.
+- Setting neither defaults to `duckdb_ecommerce`.
+- Values are datasource instance names, not dialect nicknames.
+
+Retrieval closeout cases may also use deterministic retrieval fixtures and coverage expectations:
+
+```yaml
+requires_retrieval_recovery: true
+retrieval_fixture:
+  tables: [...]
+  columns: [...]
+expected:
+  coverage:
+    pre_band: low
+    post_band: high
+    expanded: true
+    fallback_used: false
+```
+
+`requires_retrieval_recovery` cases are skipped unless retrieval recovery is enabled, except in calibration mode. This keeps default flags-off smoke stable while allowing closeout runs to assert the expansion/fallback paths.
+
+Retrieval fixtures intentionally stub only the recalled assets. Coverage scoring and graph expansion still read the live seeded metadata relationships for the selected datasource. That means incomplete-recall fixtures are deterministic about **what was recalled**, but their structural validity depends on the seeded relationship graph remaining consistent with the archetype. If seed relationships change, the `expected.coverage.pre_band` / `post_band` assertions should fail loudly and the fixture must be updated with the new graph shape in mind.
+
 ## Mock Provider
 
 Mock 模式直接注入 `mock_sql`，用于稳定验证：
@@ -139,7 +173,36 @@ Full-corpus runs are reserved for checkpoint validation because workflow cases c
 - Failure Details
 - Retrieval Details
 
-关键指标包括 pass rate、fallback count、repair count、focused context chars、focused context reduction、reference result matches、chart distribution 和 per-datasource pass rate。
+关键指标包括 pass rate、fallback count、repair count、flags-off vs flags-on focused context chars/delta、focused context reduction、retrieval coverage transition、reference result matches、chart distribution 和 per-datasource pass rate。
+
+## Retrieval Expansion Closeout
+
+Retrieval recovery validation adds three runner behaviors:
+
+- **Coverage path assertions**: `expected.coverage` checks pre-expansion band, post-context band, `expanded`, and `fallback_used`.
+- **Parity anchors**: any case expanded across multiple datasources must have the same final coverage band across those datasource runs; divergence fails the case group.
+- **ClickHouse closeout gate**: `--require-clickhouse` fails if any ClickHouse-listed case is skipped because ClickHouse is unavailable.
+
+Useful commands:
+
+```bash
+PYTHONPATH=. RETRIEVAL_EXPANSION_ENABLED=true RETRIEVAL_FALLBACK_MODE=on \
+  python scripts/run_smoke_eval.py --provider mock
+
+PYTHONPATH=. python scripts/run_smoke_eval.py \
+  --provider mock \
+  --retrieval-calibration \
+  --retrieval-thresholds 0.5,0.6,0.7 \
+  --report-path evals/reports/retrieval_calibration.md
+
+PYTHONPATH=. python scripts/run_smoke_eval.py \
+  --provider mock \
+  --require-clickhouse
+```
+
+Calibration mode temporarily enables retrieval expansion/fallback in-process and sweeps the supplied thresholds. The report records recovery cases, fallback-path cases, high-confidence regressions, fallback count, and average context delta. Candidate thresholds are observations, not pass/fail expectations.
+
+The high-confidence holdout is fixed at the reference threshold loaded from settings before the sweep starts. Swept thresholds may reclassify those cases to low and trigger expansion/fallback; if that changes the final band or focused-context size, calibration reports it as a high-confidence regression.
 
 ## 当前结果口径
 

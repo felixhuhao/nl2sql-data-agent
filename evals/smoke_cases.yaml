@@ -1916,3 +1916,112 @@ cases:
       should_execute: false
       guard_stage: function_guard
       reason_contains: INSERT INTO FUNCTION url is not allowed
+
+  - id: retrieval_closeout_missing_join_path_recovers
+    type: normal
+    question: 按渠道统计商品销量
+    tags: [retrieval_closeout, missing_join_path]
+    provider: mock
+    requires_retrieval_recovery: true
+    retrieval_fixture:
+      tables:
+        - table_name: dim_channels
+          source: fixture
+          score: 30
+          reasons: [fixture:dim_recalled]
+        - table_name: fact_order_items
+          source: fixture
+          score: 30
+          reasons: [fixture:fact_recalled]
+      columns:
+        - table_name: dim_channels
+          column_name: channel_name
+          source: fixture
+          score: 30
+          reasons: [fixture:dimension]
+          matched_aliases: []
+        - table_name: fact_order_items
+          column_name: quantity
+          source: fixture
+          score: 30
+          reasons: [fixture:metric_source]
+          matched_aliases: []
+      metrics:
+        - name: quantity_sold
+          label: 销量
+          expression: SUM(fact_order_items.quantity)
+          source: fixture
+          score: 30
+          reasons: [fixture:metric_intent]
+      verified_queries: []
+    mock_sql: >-
+      SELECT c.channel_name, SUM(i.quantity) AS quantity_sold
+      FROM fact_order_items i
+      JOIN fact_orders o ON i.order_id = o.order_id
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      GROUP BY c.channel_name
+      ORDER BY quantity_sold DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      coverage:
+        pre_band: low
+        post_band: high
+        expanded: true
+        fallback_used: false
+      result_columns: [channel_name, quantity_sold]
+      min_row_count: 1
+      chart_type: bar
+
+  - id: retrieval_closeout_dangling_no_fact_falls_back
+    type: normal
+    question: 列出渠道名称
+    tags: [retrieval_closeout, dangling_no_fact]
+    provider: mock
+    requires_retrieval_recovery: true
+    retrieval_fixture:
+      tables:
+        - table_name: dim_channels
+          source: fixture
+          score: 0.1
+          reasons: [fixture:dimension_only]
+      columns:
+        - table_name: dim_channels
+          column_name: channel_name
+          source: fixture
+          score: 0.1
+          reasons: [fixture:dimension_only]
+          matched_aliases: []
+      metrics: []
+      verified_queries: []
+    mock_sql: >-
+      SELECT channel_name
+      FROM dim_channels
+      ORDER BY channel_name
+    expected:
+      should_execute: true
+      matched_query_id: null
+      coverage:
+        pre_band: low
+        post_band: low
+        expanded: true
+        fallback_used: true
+      result_columns: [channel_name]
+      min_row_count: 1
+      chart_type: table
+
+  - id: retrieval_closeout_parity_order_count
+    type: normal
+    datasources: [duckdb_ecommerce, clickhouse_ecommerce]
+    question: 统计订单总数
+    tags: [retrieval_closeout, parity_anchor]
+    provider: mock
+    mock_sql: >-
+      SELECT COUNT(*) AS order_count
+      FROM fact_orders
+    expected:
+      should_execute: true
+      matched_query_id: null
+      result_columns: [order_count]
+      min_row_count: 1
+      chart_type: table

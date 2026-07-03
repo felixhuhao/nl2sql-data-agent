@@ -211,7 +211,7 @@ class AutoLLMProvider:
     def generate_sql(self, request) -> SQLGenerationResult:
         try:
             return self._primary.generate_sql(request)
-        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+        except (httpx.RequestError, httpx.HTTPStatusError):
             logger.warning("DeepSeek provider unavailable; falling back to mock.", exc_info=True)
             return self._fallback.generate_sql(request)
         except ValueError as exc:

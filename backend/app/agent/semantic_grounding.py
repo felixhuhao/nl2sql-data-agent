@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from typing import Protocol, TypeGuard
 
 import sqlglot
 from sqlglot import exp
@@ -454,7 +454,7 @@ def _warning_from_issue(issue: SemanticGroundingIssue, refutation: RefutationAud
     }
 
 
-def _semantic_block_message(warnings: list[dict]) -> str:
+def _semantic_block_message(warnings: list[GroundingWarningPayload]) -> str:
     concepts = ", ".join(str(warning.get("concept")) for warning in warnings if warning.get("refutation_confirmed"))
     return f'当前 schema 中没有"{concepts}"对应的字段、状态值或指标，无法安全生成 SQL。'
 
@@ -722,7 +722,7 @@ def _is_forced_false_expression(expression: exp.Expression) -> bool:
     return False
 
 
-def _is_literal(value: object) -> bool:
+def _is_literal(value: object) -> TypeGuard[exp.Literal]:
     return isinstance(value, exp.Literal)
 
 

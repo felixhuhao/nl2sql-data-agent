@@ -29,6 +29,7 @@ class GroundingWarningPayload(TypedDict, total=False):
     explanation: str
     refutation_confirmed: bool
     refutation_reason: str
+    refutation_pattern: str | None
     message: str
 
 

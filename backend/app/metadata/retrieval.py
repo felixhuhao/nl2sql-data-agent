@@ -374,7 +374,7 @@ def _match_verified_query(
 def _add_table_match(
     matches: dict[str, dict],
     table: MetaTable,
-    score: int,
+    score: float,
     reason: str,
     source: str,
 ) -> None:
@@ -402,7 +402,7 @@ def _add_table_match(
 def _add_synthetic_table_match(
     matches: dict[str, dict],
     table_name: str,
-    score: int,
+    score: float,
     reason: str,
     source: str,
 ) -> None:
@@ -412,7 +412,7 @@ def _add_synthetic_table_match(
 def _add_column_match(
     matches: dict[tuple[str, str], dict],
     column: MetaColumn,
-    score: int,
+    score: float,
     reason: str,
     matched_alias: str | None = None,
 ) -> None:
@@ -441,7 +441,7 @@ def _add_synthetic_column_match(
     matches: dict[tuple[str, str], dict],
     table_name: str,
     column_name: str,
-    score: int,
+    score: float,
     reason: str,
 ) -> None:
     _add_match(
@@ -453,7 +453,7 @@ def _add_synthetic_column_match(
     )
 
 
-def _add_metric_match(matches: dict[str, dict], metric: MetaMetric, score: int, reason: str) -> None:
+def _add_metric_match(matches: dict[str, dict], metric: MetaMetric, score: float, reason: str) -> None:
     _add_match(
         matches,
         metric.name,
@@ -474,7 +474,7 @@ def _add_metric_match(matches: dict[str, dict], metric: MetaMetric, score: int, 
 def _add_verified_query_match(
     matches: dict[str, dict],
     query: MetaVerifiedQuery,
-    score: int,
+    score: float,
     reasons: list[str],
 ) -> None:
     _add_match(
@@ -499,7 +499,7 @@ def _add_match(
     matches: dict[Any, dict],
     key: Any,
     payload: dict,
-    score: int,
+    score: float,
     reason: str,
     source: str | None = None,
 ) -> None:
