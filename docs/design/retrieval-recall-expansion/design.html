@@ -35,7 +35,7 @@
 <div class="wrap">
 
   <h1>Retrieval Recall Expansion + Confidence-Triggered Fallback</h1>
-  <p><span class="pill">Lane: full (lightweight)</span> &nbsp; <span class="pill status">Status: Done</span></p>
+  <p><span class="pill">Lane: full (lightweight)</span> &nbsp; <span class="pill status">Status: Validated, default-off</span></p>
 
   <div class="digest">
     <h2>Digest</h2>
@@ -46,7 +46,7 @@
       <li><span class="chosen">1-hop, fanout-gated, bidirectional, capped expansion</span> — recovers fact↔dim both directions on a star schema while preserving the ~75% context reduction. <span class="rej">Rejected:</span> transitive (pulls whole star, redundant vs fallback), fact-anchored (one-directional).</li>
       <li><span class="chosen">Two-stage recovery</span> — low → expand → re-score → full-schema only if still low; cheap deterministic recovery before paying full-schema cost. <span class="rej">Rejected:</span> direct fallback.</li>
       <li><span class="chosen">Size-capped full-schema fallback</span> — fall back only when full schema fits a budget; else keep expanded focused context (honours the <em>Death of Schema Linking?</em> caveat).</li>
-      <li><span class="chosen">Calibrated defaults on, rollback flags retained</span> — threshold <code>0.7</code> showed 0/61 high-confidence regressions; operators can still disable expansion/fallback for parity checks or emergency rollback.</li>
+      <li><span class="chosen">Default off pending vector/hybrid recalibration</span> — rule-only threshold <code>0.7</code> showed 0/61 high-confidence regressions, but vector/hybrid recall exposed over-fallback on structurally complete queries.</li>
     </ul>
     <p class="lbl">Risks / watch:</p>
     <ul>
@@ -54,8 +54,8 @@
       <li>Expansion must respect analysis-space scoping or it breaks the shared governance model.</li>
       <li>Must be a no-op (not a crash) on datasources with no relationships.</li>
     </ul>
-    <p class="lbl">Calibrated defaults:</p>
-    <ul><li><code>w_strength=0.5</code>, <code>w_struct=0.5</code>, threshold <code>0.7</code>, max expansion tables <code>3</code>, full-schema budget <code>120000</code>. Known follow-up: <code>missing_dimension</code> scorer behavior.</li></ul>
+    <p class="lbl">Safety rollback:</p>
+    <ul><li>Defaults are <code>RETRIEVAL_EXPANSION_ENABLED=false</code> and <code>RETRIEVAL_FALLBACK_MODE=off</code> pending vector/hybrid coverage recalibration.</li></ul>
     <p class="muted">Drill down: full design below · files in <code>docs/design/retrieval-recall-expansion/</code>.</p>
   </div>
 
@@ -63,7 +63,7 @@
   <p>Focused retrieval recalls tables/columns/metrics/aliases via rule + optional vector recall; today the only safety net is: empty recall → full-schema fallback. The real gap (schema-linking research) is <strong>non-empty but structurally incomplete</strong> recall — some tables surfaced, a needed dimension or join path missed. That context is irrevocably lost and the LLM generates over an incomplete schema with no signal anything was wrong. Highest-leverage accuracy failure, currently invisible.</p>
 
   <h2>2. Goals</h2>
-  <p><span class="lbl">In scope:</span> deterministic graph expansion; hybrid coverage score with high|low band; two-stage recovery control flow; telemetry (score/band, expanded, fallback_used); eval cases for incomplete recall; feature flags default on after calibration with rollback support.</p>
+  <p><span class="lbl">In scope:</span> deterministic graph expansion; hybrid coverage score with high|low band; two-stage recovery control flow; telemetry (score/band, expanded, fallback_used); eval cases for incomplete recall; feature flags default off pending recalibration with explicit opt-in support.</p>
   <p><span class="lbl">Out of scope:</span> any LLM-based schema linking (separate later item); changing rule/vector scoring; multi-hop expansion; changing SQL Guard / execution / semantic guard.</p>
 
   <h2>3. Proposed approach</h2>
@@ -120,25 +120,25 @@ return build_focused_context_from_retrieval(result, datasource)</code></pre>
   <h3>D4 — Size-capped full-schema fallback (chosen)</h3>
   <p>Fall back only when full schema fits a budget; else keep expanded focused context. Full schema rivals schema-linking <em>only when it fits</em>.</p>
 
-  <h3>D5 — Enable calibrated defaults with rollback flags (chosen)</h3>
-  <p>Initial implementation shipped dark behind flags for eval calibration. After closeout calibration at threshold <code>0.7</code> showed 0/61 high-confidence regressions, the product default is enabled while keeping <code>RETRIEVAL_EXPANSION_ENABLED=false</code> and <code>RETRIEVAL_FALLBACK_MODE=off</code> available for parity tests and emergency rollback.</p>
+  <h3>D5 — Keep broad default off pending vector/hybrid recalibration (chosen)</h3>
+  <p>Initial rule-only closeout calibration at threshold <code>0.7</code> showed 0/61 high-confidence regressions, but vector/hybrid recall later exposed an efficiency regression: structurally complete recall can score low because hybrid scores are already normalized. Keep <code>RETRIEVAL_EXPANSION_ENABLED=false</code> and <code>RETRIEVAL_FALLBACK_MODE=off</code> as product defaults until the scorer is recalibrated for both rule and hybrid paths.</p>
 
   <h2>5. Altitude — deferred to implementation</h2>
   <ul>
     <li>Function/dataclass names; <code>RetrievalCoverage</code> as dataclass vs typed dict.</li>
     <li>SSE payload field naming/placement.</li>
     <li>Line-level traversal code; <code>match_strength</code> normalization formula.</li>
-    <li>Calibrated values: <code>w_strength=0.5</code>, <code>w_struct=0.5</code>, threshold <code>0.7</code>, <code>MAX_TABLES=3</code>, full-schema budget <code>120000</code>.</li>
+    <li>Last tested values: <code>w_strength=0.5</code>, <code>w_struct=0.5</code>, threshold <code>0.7</code>, <code>MAX_TABLES=3</code>, full-schema budget <code>120000</code>.</li>
   </ul>
 
   <h2>6. Open questions</h2>
   <ul>
-    <li><code>missing_dimension</code> recovery remains a scorer follow-up: fact-only metric intent currently scores structurally high before expansion.</li>
+    <li>Vector/hybrid coverage scoring needs recalibration because normalized hybrid scores can over-trigger full-schema fallback.</li>
     <li>Whether <code>medium</code> fanout counts fractionally vs fully against the cap → default full; revisit if calibration shows over-pruning.</li>
   </ul>
 
   <h2>7. Status</h2>
-  <p><span class="pill status">Done</span> — maker: Claude. Reviewer: Codex, APPROVED round 2. Defaults enabled after closeout calibration. Approval: felixhuhao — approved.</p>
+  <p><span class="pill status">Validated, default-off</span> — maker: Claude. Reviewer: Codex, APPROVED round 2. Defaults rolled back pending vector/hybrid scorer recalibration. Approval: felixhuhao — approved.</p>
 
   <footer>
     Research cited: Rethinking Schema Linking (arXiv 2510.14296) · Boundary-Aware NL2SQL (arXiv 2601.10318) · Death of Schema Linking? (arXiv 2408.07702).<br>

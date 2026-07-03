@@ -18,7 +18,7 @@ Implementer checklist (design altitude — tasks, not line-level code). Design: 
 - [x] Integrate two-stage recovery in `retrieve_context_node` / `build_context_node` per the design pseudocode.
 - [x] `full_schema_fits_budget(datasource)` gate; keep expanded focused context when full schema is over budget.
 - [x] Preserve empty-recall → fallback parity (no regression).
-- [x] Gate the whole path behind `RETRIEVAL_EXPANSION_ENABLED` / `RETRIEVAL_FALLBACK_MODE`; defaults enabled after calibration with rollback support.
+- [x] Gate the whole path behind `RETRIEVAL_EXPANSION_ENABLED` / `RETRIEVAL_FALLBACK_MODE`; defaults off pending vector/hybrid coverage recalibration with explicit opt-in support.
 
 ## 4. Telemetry
 - [x] Carry `retrieval_coverage` on `AgentState`.
@@ -30,7 +30,7 @@ Implementer checklist (design altitude — tasks, not line-level code). Design: 
 - [ ] Add `missing_dimension` cases once scorer behavior makes fact-only metric intent score pre-expansion `low`.
 - [x] Run eval to **calibrate** weights, threshold, `MAX_TABLES`, and the full-schema size budget.
 - [x] Verify high-confidence cases are unchanged (0/61 high-confidence regressions at threshold `0.7`).
-- [x] Enable flags once calibration meets target (document chosen values back into design.md open questions).
+- [ ] Enable flags by default once calibration covers both rule-only and vector/hybrid retrieval without over-triggering fallback.
 
 ## 6. Tests
 - [x] Unit: `score_coverage` bands on strong-disconnected, weak-connected, empty, and healthy recalls.

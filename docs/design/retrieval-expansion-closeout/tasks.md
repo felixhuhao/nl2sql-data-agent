@@ -16,7 +16,7 @@ Implementer checklist (design altitude). Design: [design.md](design.md). Sibling
 - [x] Sweep the single threshold; for each: record recovery rate (incomplete-recall) · regression count (high-confidence, must be 0) · context-size delta.
 - [x] Bind zero-regression to the full existing corpus (51 DuckDB + CH high-confidence cases).
 - [x] Pick the threshold meeting recovery target with 0 regression; write chosen values back into `../retrieval-recall-expansion/design.md` open questions.
-- [x] Enable flags (`RETRIEVAL_EXPANSION_ENABLED`, `RETRIEVAL_FALLBACK_MODE`) by default after calibration; keep explicit rollback overrides documented.
+- [ ] Enable flags (`RETRIEVAL_EXPANSION_ENABLED`, `RETRIEVAL_FALLBACK_MODE`) by default after vector/hybrid coverage recalibration; keep explicit opt-in documented meanwhile.
 
 ## 3. Datasource-partitioned harness (pillar C)
 - [x] Add plural `datasources: [...]` to the case schema; **legacy scalar `datasource: X` normalizes to `[X]`** (zero migration for existing DuckDB + 25 CH cases).
@@ -31,7 +31,7 @@ Implementer checklist (design altitude). Design: [design.md](design.md). Sibling
 - [ ] e2e validation cases that fire `expanded=true` and `fallback_used=true` end-to-end (mirror the existing Playwright/SSE evidence format in `../retrieval-recall-expansion/validation.md`).
 - [x] Add flags-off vs flags-on focused-context-size delta row to the eval report.
 - [x] Run the CH-up closeout smoke with live ClickHouse; capture evidence.
-- [x] Status hygiene: move `retrieval-recall-expansion` to Done once flags on + closeout green; update `SPEC.md`.
+- [x] Status hygiene: document safety rollback and keep `retrieval-recall-expansion` default-off pending vector/hybrid recalibration; update `SPEC.md`.
 
 ## 5. Tests
 - [x] Runner unit: datasource selection, SKIP surfacing, closeout-gate hard-fail on CH-down.

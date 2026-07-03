@@ -94,14 +94,21 @@ def test_semantic_guard_defaults_to_warn(monkeypatch):
     assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="off")) == "off"
 
 
-def test_retrieval_recovery_defaults_to_enabled(monkeypatch):
+def test_retrieval_recovery_defaults_to_disabled(monkeypatch):
     _clear_config_env(monkeypatch)
     settings = Settings(_env_file=None)
 
-    assert settings.retrieval_expansion_enabled is True
-    assert settings.retrieval_fallback_mode == "on"
-    assert retrieval_fallback_mode(settings) == "on"
-    assert retrieval_recovery_enabled(settings) is True
+    assert settings.retrieval_expansion_enabled is False
+    assert settings.retrieval_fallback_mode == "off"
+    assert retrieval_fallback_mode(settings) == "off"
+    assert retrieval_recovery_enabled(settings) is False
+    assert retrieval_fallback_mode(SimpleNamespace(retrieval_fallback_mode="on")) == "on"
+    assert retrieval_recovery_enabled(
+        SimpleNamespace(retrieval_expansion_enabled=True, retrieval_fallback_mode="off")
+    ) is True
+    assert retrieval_recovery_enabled(
+        SimpleNamespace(retrieval_expansion_enabled=False, retrieval_fallback_mode="on")
+    ) is True
     assert retrieval_fallback_mode(SimpleNamespace(retrieval_fallback_mode="off")) == "off"
     assert retrieval_recovery_enabled(
         SimpleNamespace(retrieval_expansion_enabled=False, retrieval_fallback_mode="off")

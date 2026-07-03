@@ -1,7 +1,7 @@
 # Design — Retrieval Expansion Closeout (eval cases · calibration · datasource partitioning)
 
 ## Digest
-- **Bottom line:** Approve if you agree that flipping the expansion flags on should be gated by **recovery-first / zero-regression** calibration against purpose-built incomplete-recall cases, and that a **small additive CH set + parity anchors + a hard CH-up closeout gate** proves datasource-agnosticism without running every case on ClickHouse.
+- **Bottom line:** Approve if you agree that any broad expansion default should be gated by **recovery-first / zero-regression** calibration against purpose-built incomplete-recall cases, and that a **small additive CH set + parity anchors + a hard CH-up closeout gate** proves datasource-agnosticism without running every case on ClickHouse.
 - **Change:** Close out `retrieval-recall-expansion` by making its deferred eval work real — build the incomplete-recall cases that trigger the new paths, calibrate threshold/weights defensibly, and restructure the eval harness so ClickHouse validation is cheap but honest.  ·  **Lane:** full (lightweight)  ·  **Status:** Validated
 - **Decisions:**
   - **(A) Incomplete-recall case contract** — each case must score `band=low` *before* expansion and isolate one archetype (missing-dimension / missing-join-path / dangling-no-fact) — why: calibration and e2e validation both stand on these; an invalid case that scores `high` proves nothing — rejected: ad-hoc cases (untriggerable, non-distinct).
@@ -9,7 +9,7 @@
   - **(B-anti-overfit) Single-threshold tuning against a fixed weight prior + existing corpus as large-N regression holdout + dark→canary telemetry** — why: only ~a dozen recovery cases, so fixing weights before threshold tuning and binding zero-regression to the 51+ existing cases removes the overfit surface — rejected: holdout split (meaningless at N≈12), both (false rigor).
   - **(C) Datasource-partitioned harness: additive targeted CH set + parity anchors + runner-enforced CH-up closeout gate** — why: keeps live CH smoke cheap while still proving datasource-agnosticism and turning the silent-skip gotcha into a hard failure; **legacy scalar `datasource:` cases preserved (normalized to singleton), zero migration** — rejected: clean partition (loses cross-dialect parity), status-quo (skips masked as green).
 - **Risks / watch:** an incomplete-recall case that expansion *should* recover vs one that must fall back must be labelled and asserted distinctly; parity-anchor divergence is a real bug signal, not flakiness; the calibrated numbers remain provisional until canary telemetry confirms.
-- **Calibrated defaults:** threshold `0.7`; weights `w_strength=0.5`, `w_struct=0.5`; `MAX_TABLES=3`; full-schema budget `120000`. Evidence: 0/61 high-confidence regressions; recovery evidence covers `missing_join_path`; fallback evidence covers `dangling_no_fact`; `missing_dimension` remains a scorer follow-up.
+- **Safety rollback:** broad defaults are off pending vector/hybrid coverage recalibration. Last tested values: threshold `0.7`; weights `w_strength=0.5`, `w_struct=0.5`; `MAX_TABLES=3`; full-schema budget `120000`.
 - **Drill down:** full design below · pros/cons in `design.html`.
 
 ---
@@ -24,7 +24,7 @@ This design closes those gaps. It carries **three design-worthy decisions (A/B/C
 
 **In scope (design decisions):**
 - (A) A validity contract for incomplete-recall eval cases.
-- (B) A calibration methodology (objective + anti-overfitting) that yields defensible threshold/weights and flips the flags on.
+- (B) A calibration methodology (objective + anti-overfitting) that yields defensible threshold/weights and decides whether broad defaults can flip on.
 - (C) A datasource-partitioned eval harness: case tagging, per-datasource runner selection, a small targeted CH set, parity anchors, and a runner-enforced CH-up closeout gate.
 
 **Out of scope — self-explanatory execution (tracked in `tasks.md`, no design decision):**
@@ -56,7 +56,7 @@ Commit: each case carries `expected.coverage` (pre-band, post-band, `expanded`, 
 1. **Fix the weights**, don't co-tune. Calibration fixed `w_strength=0.5` and `w_struct=0.5`; keep `MAX_TABLES` and full-schema budget at conservative constants.
 2. **Tune a single free parameter** — the threshold.
 3. **Bind zero-regression to the large corpus.** The 51 DuckDB + CH high-confidence smoke cases are the "must stay `high`" holdout (large N, defensible). Place the threshold to satisfy that hard, then recover as much as it allows.
-4. **Dark → canary → tune.** The original rollout path was dark first, then canary. After calibration, the flags are enabled by default; continue using emitted `band`/`expanded`/`fallback_used` telemetry to tune only if high-confidence traffic remains undisturbed.
+4. **Dark → canary → tune.** The original rollout path was dark first, then canary. Keep broad defaults off until calibration covers both rule-only and vector/hybrid retrieval paths; use emitted `band`/`expanded`/`fallback_used` telemetry to tune only if high-confidence traffic remains undisturbed.
 
 **Reporting contract:** calibration output states, per candidate threshold: recovery rate on incomplete-recall cases · regression count on high-confidence cases (must be 0) · context-size delta flags-off vs on. Flags flip on only when recovery meets target **and** regression is 0. Chosen numbers are written back into `retrieval-recall-expansion/design.md` open questions.
 
@@ -109,10 +109,10 @@ Commit: each case carries `expected.coverage` (pre-band, post-band, `expanded`, 
 
 ## 6. Open questions
 
-- `missing_dimension` recovery remains a scorer follow-up because fact-only metric intent currently scores structurally high before expansion.
+- Vector/hybrid coverage scoring needs recalibration because normalized hybrid scores can over-trigger full-schema fallback on structurally complete recalls.
 - Whether the CH-up closeout gate later becomes a CI profile instead of a runner flag.
 
 ## 7. Status
 
-`Done` — maker: Claude. Reviewer: Codex, REVIEWER-CLEAR round 2 (zero BLOCKING). Operator approved; implementation completed, validation passed, and calibrated defaults are enabled.
+`Validated, default-off` — maker: Claude. Reviewer: Codex, REVIEWER-CLEAR round 2 (zero BLOCKING). Operator approved; implementation completed and validation passed for rule-only closeout paths. Broad defaults rolled back pending vector/hybrid coverage recalibration.
 Approval: felixhuhao — `approved`.

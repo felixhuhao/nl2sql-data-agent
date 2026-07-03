@@ -7,11 +7,11 @@
   - **Expansion = 1-hop, fanout-gated, bidirectional, capped** — why: covers fact↔dim recovery both directions on a star schema while preserving the ~75% focused-context reduction — rejected: transitive (pulls whole star, redundant given fallback), fact-anchored (one-directional, misses dim→fact recovery).
   - **Two-stage recovery** — low confidence → expand → re-score → full-schema fallback only if still low — why: lets cheap deterministic expansion recover before paying full-schema token/hallucination cost — rejected: direct fallback (more full-schema hits, higher cost/hallucination).
   - **Full-schema fallback is itself size-capped** — fall back only when full schema fits a context budget; else keep best expanded focused context — why: honours the *Death of Schema Linking?* caveat (full schema helps only when it fits).
-  - **Ships with calibrated defaults on and explicit rollback flags** — why: calibration showed 0/61 high-confidence regressions at threshold `0.7`; operators can still disable expansion/fallback for parity checks or emergency rollback.
+  - **Ships behind rollback flags, default off pending recalibration** — why: rule-only calibration showed 0/61 high-confidence regressions, but vector/hybrid recall exposed over-fallback on structurally complete queries; keep the feature available but not broad by default.
   - **Fact-role = FK-topology heuristic** (source of ≥`FACT_MIN_DIM_EDGES` many_to_one edges), not a metadata column or name prefix — why: objectively implementable across datasources without a migration or naming dependency — rejected: new `role` column (migration), name-prefix-only (fragile for new sources).
   - **Empty-recall fallback is an unconditional invariant** — why: preserves today's behaviour exactly; the new flags/budget gate only the new non-empty low-confidence fallback.
 - **Risks / watch:** score weights & threshold are eval-calibrated (not derivable a priori); expansion must respect analysis-space scoping or it breaks the shared governance model; must be a no-op (not a crash) on datasources with no relationships; coverage/telemetry always describes one defined retrieval stage (the rendered set), never a mix.
-- **Calibrated defaults:** `w_strength=0.5`, `w_struct=0.5`, `RETRIEVAL_COVERAGE_THRESHOLD=0.7`, `RETRIEVAL_EXPANSION_MAX_TABLES=3`, `RETRIEVAL_FULL_SCHEMA_CHAR_BUDGET=120000`. Current evidence: 0/61 high-confidence regressions; recovery/fallback evidence remains thin and `missing_dimension` is a known scorer follow-up.
+- **Safety rollback:** defaults are off pending vector/hybrid coverage recalibration. Last tested constants: `w_strength=0.5`, `w_struct=0.5`, `RETRIEVAL_COVERAGE_THRESHOLD=0.7`, `RETRIEVAL_EXPANSION_MAX_TABLES=3`, `RETRIEVAL_FULL_SCHEMA_CHAR_BUDGET=120000`.
 - **Drill down:** full design below · pros/cons in `design.html`.
 
 ---
@@ -30,7 +30,7 @@ The gap (per schema-linking research, e.g. [Rethinking Schema Linking](https://a
 - **Two-stage recovery** control flow in the retrieve/build-context path: expand on low confidence, re-score, full-schema fallback only if still low.
 - **Telemetry**: coverage score/band, expansion-used, fallback-used exposed on `AgentState` / SSE / eval report.
 - **Eval cases** for structurally-incomplete recall, to calibrate the threshold.
-- **Feature flags**, default on after calibration, with explicit rollback support.
+- **Feature flags**, default off pending vector/hybrid coverage recalibration, with explicit opt-in support.
 
 **Out of scope (non-goals):**
 - Any LLM-based schema linking/expansion (that is a separate later roadmap item; this step is deterministic only).
@@ -139,22 +139,22 @@ Low confidence → expand → re-score → full schema only if still low. Reject
 ### D4 — Full-schema fallback is size-capped (chosen)
 Fall back to full schema only when it fits a context budget; otherwise keep the best expanded focused context. Rationale: [Death of Schema Linking?](https://arxiv.org/pdf/2408.07702) — full schema rivals schema-linking *only when it fits*; an over-budget dump degrades accuracy.
 
-### D5 — Enable calibrated defaults with rollback flags (chosen)
-Initial implementation shipped dark behind flags for eval calibration. After closeout calibration at threshold `0.7` showed 0/61 high-confidence regressions, the product default is enabled while keeping `RETRIEVAL_EXPANSION_ENABLED=false` and `RETRIEVAL_FALLBACK_MODE=off` available for parity tests and emergency rollback.
+### D5 — Keep broad default off pending vector/hybrid recalibration (chosen)
+Initial rule-only closeout calibration at threshold `0.7` showed 0/61 high-confidence regressions, but vector/hybrid recall later exposed an efficiency regression: structurally complete recall can score low because hybrid scores are already normalized. Keep `RETRIEVAL_EXPANSION_ENABLED=false` and `RETRIEVAL_FALLBACK_MODE=off` as product defaults until the scorer is recalibrated for both rule and hybrid paths.
 
 ## 5. Altitude — deferred to implementation (Codex)
 
 - Exact function/dataclass names and whether `RetrievalCoverage` is a dataclass vs typed dict.
 - SSE payload field naming and where in the event schema coverage lands.
 - Line-level traversal code and the normalization formula for `match_strength`.
-- **Calibrated values**: `w_strength=0.5`, `w_struct=0.5`, `RETRIEVAL_COVERAGE_THRESHOLD=0.7`, `RETRIEVAL_EXPANSION_MAX_TABLES=3`, full-schema size budget `120000`.
+- **Last tested values**: `w_strength=0.5`, `w_struct=0.5`, `RETRIEVAL_COVERAGE_THRESHOLD=0.7`, `RETRIEVAL_EXPANSION_MAX_TABLES=3`, full-schema size budget `120000`.
 
 ## 6. Open questions
 
-- `missing_dimension` recovery remains a scorer follow-up: fact-only metric intent currently scores structurally high, so that archetype does not enter the low-confidence recovery path.
+- Vector/hybrid coverage scoring needs recalibration: hybrid scores are normalized before coverage scoring, which can over-trigger full-schema fallback on structurally complete recalls.
 - Whether `medium` fanout edges should count fractionally vs fully against the cap → default full; revisit only if calibration shows over-pruning.
 
 ## 7. Status
 
-`Done` — maker: Claude. Reviewer: Codex, APPROVED round 2 (zero BLOCKING). Revised against all three round-1 `BLOCKING` findings (empty-recall invariant, canonical retrieval stages, fact-role heuristic). Defaults enabled after closeout calibration.
+`Validated, default-off` — maker: Claude. Reviewer: Codex, APPROVED round 2 (zero BLOCKING). Revised against all three round-1 `BLOCKING` findings (empty-recall invariant, canonical retrieval stages, fact-role heuristic). Defaults rolled back pending vector/hybrid scorer recalibration.
 Approval: felixhuhao — `approved`.

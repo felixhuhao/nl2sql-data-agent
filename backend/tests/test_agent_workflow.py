@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 import backend.app.agent.nodes as nodes_module
-from backend.app.config import Settings
 from backend.app.agent.conversation import (
     ConversationContext,
     FilterPredicate,
@@ -315,17 +314,19 @@ def test_build_context_node_high_confidence_keeps_legacy_join_expansion(monkeypa
     assert captured["expand_join_partners"] is True
 
 
-def test_build_context_node_default_settings_high_confidence_stays_focused(monkeypatch):
+def test_build_context_node_enabled_recovery_high_confidence_stays_focused(monkeypatch):
     captured = {}
 
     def fake_build_focused_context_from_retrieval(retrieval_result, datasource_name, expand_join_partners=True):
         captured["retrieval_result"] = retrieval_result
         captured["expand_join_partners"] = expand_join_partners
-        return "# Default High Confidence Focused"
+        return "# Enabled High Confidence Focused"
 
-    for env_name in ("RETRIEVAL_EXPANSION_ENABLED", "RETRIEVAL_FALLBACK_MODE"):
-        monkeypatch.delenv(env_name, raising=False)
-    monkeypatch.setattr(nodes_module, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=True, retrieval_fallback_mode="on"),
+    )
     monkeypatch.setattr(
         nodes_module,
         "score_coverage",
@@ -354,14 +355,14 @@ def test_build_context_node_default_settings_high_confidence_stays_focused(monke
 
     build_context_node(state)
 
-    assert state.schema_context == "# Default High Confidence Focused"
+    assert state.schema_context == "# Enabled High Confidence Focused"
     assert state.retrieval_coverage["band"] == "high"
     assert state.retrieval_coverage["fallback_used"] is False
     assert captured["retrieval_result"]["retrieval_stage"] == "merged"
     assert captured["expand_join_partners"] is True
 
 
-def test_build_context_node_default_settings_low_confidence_expands_then_falls_back(monkeypatch):
+def test_build_context_node_enabled_recovery_low_confidence_expands_then_falls_back(monkeypatch):
     calls = {"expand": 0}
 
     def fake_expand(retrieval_result, datasource_name):
@@ -372,9 +373,11 @@ def test_build_context_node_default_settings_low_confidence_expands_then_falls_b
             "retrieval_coverage": {"expanded": True},
         }
 
-    for env_name in ("RETRIEVAL_EXPANSION_ENABLED", "RETRIEVAL_FALLBACK_MODE"):
-        monkeypatch.delenv(env_name, raising=False)
-    monkeypatch.setattr(nodes_module, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(retrieval_expansion_enabled=True, retrieval_fallback_mode="on"),
+    )
     monkeypatch.setattr(
         nodes_module,
         "score_coverage",
