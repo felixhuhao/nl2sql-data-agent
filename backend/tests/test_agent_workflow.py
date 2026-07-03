@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import backend.app.agent.nodes as nodes_module
+from backend.app.config import Settings
 from backend.app.agent.conversation import (
     ConversationContext,
     FilterPredicate,
@@ -139,6 +140,16 @@ def test_build_context_node_uses_retrieval_result(monkeypatch):
     state = AgentState(question="test", retrieval_result={"fallback_used": False})
     monkeypatch.setattr(
         nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            retrieval_expansion_enabled=False,
+            retrieval_fallback_mode="off",
+            sql_default_ranking_limit=10,
+            sql_default_browse_limit=20,
+        ),
+    )
+    monkeypatch.setattr(
+        nodes_module,
         "build_focused_context_from_retrieval",
         lambda retrieval_result, datasource_name: f"# Focused {datasource_name} {retrieval_result['fallback_used']}",
     )
@@ -157,6 +168,16 @@ def test_build_context_node_unions_prior_assets(monkeypatch):
         captured["datasource_name"] = datasource_name
         return "# Focused Context"
 
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            retrieval_expansion_enabled=False,
+            retrieval_fallback_mode="off",
+            sql_default_ranking_limit=10,
+            sql_default_browse_limit=20,
+        ),
+    )
     monkeypatch.setattr(nodes_module, "build_focused_context_from_retrieval", fake_build_focused_context_from_retrieval)
     state = AgentState(
         question="改成最近90天",
@@ -292,6 +313,99 @@ def test_build_context_node_high_confidence_keeps_legacy_join_expansion(monkeypa
 
     assert state.schema_context == "# High Confidence Focused"
     assert captured["expand_join_partners"] is True
+
+
+def test_build_context_node_default_settings_high_confidence_stays_focused(monkeypatch):
+    captured = {}
+
+    def fake_build_focused_context_from_retrieval(retrieval_result, datasource_name, expand_join_partners=True):
+        captured["retrieval_result"] = retrieval_result
+        captured["expand_join_partners"] = expand_join_partners
+        return "# Default High Confidence Focused"
+
+    for env_name in ("RETRIEVAL_EXPANSION_ENABLED", "RETRIEVAL_FALLBACK_MODE"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(nodes_module, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: RetrievalCoverage(
+            match_strength=1.0,
+            structural_score=1.0,
+            score=1.0,
+            band="high",
+        ),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "expand_via_graph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("high confidence should not expand")),
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "build_schema_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("high confidence should not fallback")),
+    )
+    monkeypatch.setattr(nodes_module, "build_focused_context_from_retrieval", fake_build_focused_context_from_retrieval)
+    state = AgentState(
+        question="sales by channel",
+        retrieval_result={"fallback_used": False, "tables": [{"table_name": "fact_orders"}], "columns": []},
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Default High Confidence Focused"
+    assert state.retrieval_coverage["band"] == "high"
+    assert state.retrieval_coverage["fallback_used"] is False
+    assert captured["retrieval_result"]["retrieval_stage"] == "merged"
+    assert captured["expand_join_partners"] is True
+
+
+def test_build_context_node_default_settings_low_confidence_expands_then_falls_back(monkeypatch):
+    calls = {"expand": 0}
+
+    def fake_expand(retrieval_result, datasource_name):
+        calls["expand"] += 1
+        return {
+            **retrieval_result,
+            "tables": [*retrieval_result.get("tables", []), {"table_name": "fact_orders"}],
+            "retrieval_coverage": {"expanded": True},
+        }
+
+    for env_name in ("RETRIEVAL_EXPANSION_ENABLED", "RETRIEVAL_FALLBACK_MODE"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(nodes_module, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setattr(
+        nodes_module,
+        "score_coverage",
+        lambda *args, **kwargs: RetrievalCoverage(
+            match_strength=0.2,
+            structural_score=0.0,
+            score=0.1,
+            band="low",
+        ),
+    )
+    monkeypatch.setattr(nodes_module, "expand_via_graph", fake_expand)
+    monkeypatch.setattr(nodes_module, "build_schema_context", lambda datasource_name: "# Full Schema")
+    monkeypatch.setattr(nodes_module, "full_schema_fits_budget", lambda full_schema_context: True)
+    monkeypatch.setattr(
+        nodes_module,
+        "build_focused_context_from_retrieval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("low confidence should fallback")),
+    )
+    state = AgentState(
+        question="sales by channel",
+        retrieval_result={"fallback_used": False, "tables": [{"table_name": "dim_channels"}], "columns": []},
+    )
+
+    build_context_node(state)
+
+    assert state.schema_context == "# Full Schema"
+    assert state.retrieval_coverage["band"] == "low"
+    assert state.retrieval_coverage["expanded"] is True
+    assert state.retrieval_coverage["fallback_used"] is True
+    assert state.retrieval_result["tables"][-1]["table_name"] == "fact_orders"
+    assert calls["expand"] == 1
 
 
 def test_build_context_node_low_confidence_falls_back_when_budget_fits(monkeypatch):
@@ -1082,6 +1196,16 @@ def test_run_query_workflow_default_uses_retrieval_and_focused_context(monkeypat
         nodes_module,
         "build_focused_context_from_retrieval",
         lambda retrieval_result, datasource_name: f"# Focused Context {datasource_name}",
+    )
+    monkeypatch.setattr(
+        nodes_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            retrieval_expansion_enabled=False,
+            retrieval_fallback_mode="off",
+            sql_default_ranking_limit=10,
+            sql_default_browse_limit=20,
+        ),
     )
 
     state = run_query_workflow(

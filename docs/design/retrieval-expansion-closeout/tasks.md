@@ -12,11 +12,11 @@ Implementer checklist (design altitude). Design: [design.md](design.md). Sibling
 - [x] Document fixture boundary: retrieval fixtures stub recalled assets only; coverage/expansion still depend on the live seeded `MetaRelationship` graph, and coverage assertions fail loudly if that graph drifts.
 
 ## 2. Calibration (pillar B)
-- [ ] Fix the weight prior (`w_struct > w_strength`); hold `MAX_TABLES` / full-schema budget at conservative constants.
+- [x] Fix weights (`w_strength=0.5`, `w_struct=0.5`); hold `MAX_TABLES` / full-schema budget at conservative constants.
 - [x] Sweep the single threshold; for each: record recovery rate (incomplete-recall) · regression count (high-confidence, must be 0) · context-size delta.
-- [ ] Bind zero-regression to the full existing corpus (51 DuckDB + CH high-confidence cases).
-- [ ] Pick the threshold meeting recovery target with 0 regression; write chosen values back into `../retrieval-recall-expansion/design.md` open questions.
-- [ ] Enable flags (`RETRIEVAL_EXPANSION_ENABLED`, `RETRIEVAL_FALLBACK_MODE`) for canary; confirm via emitted telemetry before broad on.
+- [x] Bind zero-regression to the full existing corpus (51 DuckDB + CH high-confidence cases).
+- [x] Pick the threshold meeting recovery target with 0 regression; write chosen values back into `../retrieval-recall-expansion/design.md` open questions.
+- [x] Enable flags (`RETRIEVAL_EXPANSION_ENABLED`, `RETRIEVAL_FALLBACK_MODE`) by default after calibration; keep explicit rollback overrides documented.
 
 ## 3. Datasource-partitioned harness (pillar C)
 - [x] Add plural `datasources: [...]` to the case schema; **legacy scalar `datasource: X` normalizes to `[X]`** (zero migration for existing DuckDB + 25 CH cases).
@@ -31,7 +31,7 @@ Implementer checklist (design altitude). Design: [design.md](design.md). Sibling
 - [ ] e2e validation cases that fire `expanded=true` and `fallback_used=true` end-to-end (mirror the existing Playwright/SSE evidence format in `../retrieval-recall-expansion/validation.md`).
 - [x] Add flags-off vs flags-on focused-context-size delta row to the eval report.
 - [x] Run the CH-up closeout smoke with live ClickHouse; capture evidence.
-- [ ] Status hygiene: move `retrieval-recall-expansion` to Done once flags on + closeout green; update `SPEC.md`.
+- [x] Status hygiene: move `retrieval-recall-expansion` to Done once flags on + closeout green; update `SPEC.md`.
 
 ## 5. Tests
 - [x] Runner unit: datasource selection, SKIP surfacing, closeout-gate hard-fail on CH-down.

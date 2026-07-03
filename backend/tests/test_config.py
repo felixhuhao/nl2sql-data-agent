@@ -9,6 +9,8 @@ from backend.app.config import (
     embedding_model_name,
     effective_llm_provider_name,
     llm_provider_mode,
+    retrieval_fallback_mode,
+    retrieval_recovery_enabled,
     semantic_guard_mode,
     vector_config_allows_attempt,
     vector_enabled_mode,
@@ -23,6 +25,8 @@ def _clear_config_env(monkeypatch):
         "EMBEDDING_MODEL",
         "DEEPSEEK_MODEL",
         "SEMANTIC_GUARD_MODE",
+        "RETRIEVAL_EXPANSION_ENABLED",
+        "RETRIEVAL_FALLBACK_MODE",
         "SQL_DEFAULT_RANKING_LIMIT",
         "SQL_DEFAULT_BROWSE_LIMIT",
     ):
@@ -88,6 +92,20 @@ def test_semantic_guard_defaults_to_warn(monkeypatch):
     assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="")) == "warn"
     assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="unknown")) == "warn"
     assert semantic_guard_mode(SimpleNamespace(semantic_guard_mode="off")) == "off"
+
+
+def test_retrieval_recovery_defaults_to_enabled(monkeypatch):
+    _clear_config_env(monkeypatch)
+    settings = Settings(_env_file=None)
+
+    assert settings.retrieval_expansion_enabled is True
+    assert settings.retrieval_fallback_mode == "on"
+    assert retrieval_fallback_mode(settings) == "on"
+    assert retrieval_recovery_enabled(settings) is True
+    assert retrieval_fallback_mode(SimpleNamespace(retrieval_fallback_mode="off")) == "off"
+    assert retrieval_recovery_enabled(
+        SimpleNamespace(retrieval_expansion_enabled=False, retrieval_fallback_mode="off")
+    ) is False
 
 
 def test_embedding_model_defaults_when_blank_or_missing(monkeypatch):

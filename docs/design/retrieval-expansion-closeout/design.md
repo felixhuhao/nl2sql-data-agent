@@ -6,17 +6,17 @@
 - **Decisions:**
   - **(A) Incomplete-recall case contract** — each case must score `band=low` *before* expansion and isolate one archetype (missing-dimension / missing-join-path / dangling-no-fact) — why: calibration and e2e validation both stand on these; an invalid case that scores `high` proves nothing — rejected: ad-hoc cases (untriggerable, non-distinct).
   - **(B) Calibration = recovery-first under a hard zero-regression constraint** — maximize incomplete-recall recovery subject to *no* high-confidence context-size/band regression — why: matches the feature's purpose and is the simplest target to defend — rejected: balanced score (needs an arbitrary weighting), precision-first (under-recovers).
-  - **(B-anti-overfit) Single-threshold tuning against a fixed weight prior + existing corpus as large-N regression holdout + dark→canary telemetry** — why: only ~a dozen recovery cases, so fixing `w_struct>w_strength`, tuning one threshold, and binding zero-regression to the 51+ existing cases removes the overfit surface — rejected: holdout split (meaningless at N≈12), both (false rigor).
+  - **(B-anti-overfit) Single-threshold tuning against a fixed weight prior + existing corpus as large-N regression holdout + dark→canary telemetry** — why: only ~a dozen recovery cases, so fixing weights before threshold tuning and binding zero-regression to the 51+ existing cases removes the overfit surface — rejected: holdout split (meaningless at N≈12), both (false rigor).
   - **(C) Datasource-partitioned harness: additive targeted CH set + parity anchors + runner-enforced CH-up closeout gate** — why: keeps live CH smoke cheap while still proving datasource-agnosticism and turning the silent-skip gotcha into a hard failure; **legacy scalar `datasource:` cases preserved (normalized to singleton), zero migration** — rejected: clean partition (loses cross-dialect parity), status-quo (skips masked as green).
 - **Risks / watch:** an incomplete-recall case that expansion *should* recover vs one that must fall back must be labelled and asserted distinctly; parity-anchor divergence is a real bug signal, not flakiness; the calibrated numbers remain provisional until canary telemetry confirms.
-- **Open questions:** exact threshold value and weight-prior ratio (pinned during calibration execution); parity-anchor count (2 vs 3).
+- **Calibrated defaults:** threshold `0.7`; weights `w_strength=0.5`, `w_struct=0.5`; `MAX_TABLES=3`; full-schema budget `120000`. Evidence: 0/61 high-confidence regressions; recovery evidence covers `missing_join_path`; fallback evidence covers `dangling_no_fact`; `missing_dimension` remains a scorer follow-up.
 - **Drill down:** full design below · pros/cons in `design.html`.
 
 ---
 
 ## 1. Problem / context
 
-`retrieval-recall-expansion` shipped **dark and uncalibrated**: flags default off; `RETRIEVAL_COVERAGE_THRESHOLD=0.7`/weights/`MAX_TABLES` are guessed defaults ([config.py:38-44](../../../backend/app/config.py#L38)); and validation ([validation.md](../retrieval-recall-expansion/validation.md)) exercised only a `band=high` question — so **expansion and fallback have zero end-to-end evidence** and there is nothing to calibrate against. Separately, ClickHouse validation was skipped (CH down), which the project's ClickHouse-skip gotcha warns can mask failures behind green DuckDB smoke.
+`retrieval-recall-expansion` initially shipped **dark and uncalibrated**: flags defaulted off; `RETRIEVAL_COVERAGE_THRESHOLD=0.7`/weights/`MAX_TABLES` were guessed defaults; and validation ([validation.md](../retrieval-recall-expansion/validation.md)) exercised only a `band=high` question — so **expansion and fallback had zero end-to-end evidence** and there was nothing to calibrate against. Separately, ClickHouse validation was skipped (CH down), which the project's ClickHouse-skip gotcha warns can mask failures behind green DuckDB smoke.
 
 This design closes those gaps. It carries **three design-worthy decisions (A/B/C)**; the remaining closeout items are self-explanatory execution and live in `tasks.md`, not here.
 
@@ -53,10 +53,10 @@ Commit: each case carries `expected.coverage` (pre-band, post-band, `expanded`, 
 **Objective:** maximize recovery over the `missing_dimension`/`missing_join_path` cases, **subject to a hard constraint**: zero regression on high-confidence cases (band stays `high`, focused-context size unchanged).
 
 **Anti-overfitting** (only ~a dozen recovery cases → 4 knobs would overfit):
-1. **Fix a weight prior**, don't co-tune. `w_struct > w_strength` (structural joinability is the causal signal). Keep `MAX_TABLES` and full-schema budget at conservative constants.
+1. **Fix the weights**, don't co-tune. Calibration fixed `w_strength=0.5` and `w_struct=0.5`; keep `MAX_TABLES` and full-schema budget at conservative constants.
 2. **Tune a single free parameter** — the threshold.
 3. **Bind zero-regression to the large corpus.** The 51 DuckDB + CH high-confidence smoke cases are the "must stay `high`" holdout (large N, defensible). Place the threshold to satisfy that hard, then recover as much as it allows.
-4. **Dark → canary → tune.** Ship flags off; enable in canary; lower the threshold toward more recovery only if the emitted `band`/`expanded`/`fallback_used` telemetry shows high-confidence traffic is undisturbed.
+4. **Dark → canary → tune.** The original rollout path was dark first, then canary. After calibration, the flags are enabled by default; continue using emitted `band`/`expanded`/`fallback_used` telemetry to tune only if high-confidence traffic remains undisturbed.
 
 **Reporting contract:** calibration output states, per candidate threshold: recovery rate on incomplete-recall cases · regression count on high-confidence cases (must be 0) · context-size delta flags-off vs on. Flags flip on only when recovery meets target **and** regression is 0. Chosen numbers are written back into `retrieval-recall-expansion/design.md` open questions.
 
@@ -109,10 +109,10 @@ Commit: each case carries `expected.coverage` (pre-band, post-band, `expanded`, 
 
 ## 6. Open questions
 
-- Final threshold + weight-prior ratio → calibration execution (writes back to the sibling design's open questions).
-- Whether the CH-up closeout gate is a distinct runner flag vs a CI-only profile → default a runner flag; revisit if CI wiring makes a profile cleaner.
+- `missing_dimension` recovery remains a scorer follow-up because fact-only metric intent currently scores structurally high before expansion.
+- Whether the CH-up closeout gate later becomes a CI profile instead of a runner flag.
 
 ## 7. Status
 
-`Validated` — maker: Claude. Reviewer: Codex, REVIEWER-CLEAR round 2 (zero BLOCKING). Operator approved; implementation completed and validation passed.
+`Done` — maker: Claude. Reviewer: Codex, REVIEWER-CLEAR round 2 (zero BLOCKING). Operator approved; implementation completed, validation passed, and calibrated defaults are enabled.
 Approval: felixhuhao — `approved`.

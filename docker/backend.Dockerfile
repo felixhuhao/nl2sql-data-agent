@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -9,11 +11,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-RUN python -m pip install --upgrade pip
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip
 
 COPY backend/pyproject.toml /tmp/backend-pyproject.toml
-RUN python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-RUN python -c 'import subprocess, sys, tomllib; data = tomllib.load(open("/tmp/backend-pyproject.toml", "rb")); deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["vector"] + data["project"]["optional-dependencies"]["mcp"]; subprocess.check_call([sys.executable, "-m", "pip", "install", *deps])'
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -c 'import subprocess, sys, tomllib; data = tomllib.load(open("/tmp/backend-pyproject.toml", "rb")); deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["vector"] + data["project"]["optional-dependencies"]["mcp"]; subprocess.check_call([sys.executable, "-m", "pip", "install", *deps])'
 
 COPY backend /app/backend
 COPY mcp_servers /app/mcp_servers
