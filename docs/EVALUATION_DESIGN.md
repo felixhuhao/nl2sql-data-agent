@@ -225,6 +225,42 @@ ClickHouse 未启用时，ClickHouse case 会标记为 skipped，而不是失败
 - 如果 `result_mismatch` 增多，先看 reference result match，再判断是 SQL 真错还是评测期望过窄。
 - 如果 `chart_mismatch` 增多，检查 recommender 和 OLAP intent。
 
+## 方法学定位：与市场标准对照（2026）
+
+### NL2SQL 评测的通用度量
+
+业界主要用三种度量，可信度递增：
+
+- **Exact Match (EM)**：预测 SQL 与 gold SQL 的字符串/AST 是否等价。已基本弃用作主度量——一个问题有多种正确写法（join、alias、列序不同），EM 会大量误杀。
+- **Execution Accuracy (EX)**：执行预测 SQL 与 gold SQL，比较结果集。**当前主流度量**，对语法差异鲁棒。
+- **Test-Suite Accuracy**：EX 的弱点是 false positive（错 SQL 在单个实例上凑巧返回对的行）。Test-suite 在多个 fuzz 过的 DB 实例上执行，只有真正正确的查询才处处通过。Spider 自 2020 起的官方度量，研究级严谨基线。
+- BIRD 另加 **Valid Efficiency Score (VES)**：不仅正确，还要高效。
+
+公开 benchmark：Spider（10,181 问 / 200 DB，EM 已近饱和 ~91%）、BIRD（12,751 对，脏数据+效率，EX ~73%）、Spider 2.0（agentic、企业级，仅 ~21%，是当前真正前沿）。
+
+企业/生产实践：从生产 query log 构建 golden dataset，按难度/类型分层，用 observability 持续补充失败样本；对歧义题用带 rubric 的 LLM-as-judge；做 module-level 评测（NL2SQLBench 拆 schema-selection / candidate-generation / query-revision；NL2SQL360 多角度打分），定位失败发生在哪一阶段。
+
+### 本项目的对齐关系
+
+| 市场实践 | 本项目 |
+|---|---|
+| Execution Accuracy（非 EM） | ✅ real eval 执行 actual vs reference SQL 比 **normalized 结果集**（行序不敏感、数值容差、列投影），刻意避开字符串比较，即标准 EX。 |
+| Golden set | ✅ 人工 curated YAML：`smoke_cases.yaml`、`semantic_guard_cases.yaml`。 |
+| Module-level 归因 | ✅ **强项**——`error_category` 把失败拆到 retrieval/generation/guard/execution/chart，与 NL2SQLBench/NL2SQL360 主张一致，多数自建 eval 没有。 |
+| 确定性回归 vs 真实模型 | ✅ Mock provider（回归基线）与 DeepSeek real eval 分离"系统 bug"与"模型波动"。 |
+| 区分评测器误杀与真错 | ✅ `result_mismatch` + reference-result-match 追踪。 |
+
+方法学上，项目独立落到了正确度量（EX + 结果等价）与新兴最佳实践（module-level 归因），高于一般自建 eval 的中位水平。
+
+### 已知取舍（接受）
+
+- **规模**：约 50 smoke + 18 real case，vs Spider/BIRD 数千条。足够做回归 harness，不构成统计意义上的 accuracy 主张——本 doc 定位 eval 为"工程仪表盘"而非 pass rate，正是出于此。
+- **无 test-suite accuracy**：单 DB 实例，理论上存在 EX false positive。当前 curated 规模下风险低，但如实记录。
+- **未跑公开 benchmark**：无法给出"BIRD X%"这类外部可识别数字。若需对外数字，最小动作是对 **BIRD 子集**跑一遍流水线。
+- **无 LLM-as-judge**：改用确定性结果等价——在适用范围内更严格，但无法评判开放式/歧义答案。
+
+结论：评测方法本身健全且成熟；缺口集中在**规模与外部可比性**，非方法问题。需要生产真实性时，标准做法是用真实 query log 按难度分层扩充 golden set。
+
 ## 技术说明
 
 > 我把 eval 做成了工程仪表盘，而不是几条手工样例。Mock eval 保证系统确定性回归，real eval 验证真实模型表现。失败会按 retrieval、generation、Guard、execution、chart 等阶段归因；真实 SQL 用执行结果做等价判断，避免把同义 SQL 误判失败。

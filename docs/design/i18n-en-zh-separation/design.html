@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design — i18n: EN/ZH Separation</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c6b7a; --line:#e2e6ea; --accent:#2d6cdf; --ok:#1c8a52; --warn:#b8860b; --bg:#fbfcfd; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.7rem; line-height:1.25; margin:0 0 4px; }
+  h2 { font-size: 1.2rem; margin:36px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size: 1.02rem; margin:22px 0 8px; }
+  code { background:#eef1f5; padding:1px 5px; border-radius:4px; font-size:.9em; }
+  table { border-collapse: collapse; width:100%; margin:12px 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f0f4f8; }
+  .digest { background:#fff; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .digest h2 { margin-top:0; border:none; padding:0; color:var(--accent); }
+  .pill { display:inline-block; font-size:.75rem; font-weight:600; padding:2px 9px; border-radius:999px; background:#eaf1fe; color:var(--accent); }
+  .pill.status { background:#fff4e0; color:var(--warn); }
+  .lbl { font-weight:700; }
+  ul { margin:8px 0; padding-left:22px; } li { margin:5px 0; }
+  .muted { color:var(--muted); } .rej { color:var(--warn); } .chosen { color:var(--ok); font-weight:700; }
+  footer { margin-top:48px; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>i18n — EN/ZH Separation</h1>
+  <p><span class="pill">Lane: full (lightweight)</span> &nbsp; <span class="pill status">Status: In-review</span></p>
+
+  <div class="digest">
+    <h2>Digest</h2>
+    <p style="background:#eef7f0;border-left:3px solid var(--ok);padding:10px 14px;border-radius:6px;margin-top:0"><span class="lbl">Bottom line — approve this if you agree that:</span> i18n is <strong>output-presentation only</strong> — Chinese NLU (intent/OLAP/date/alias) and business metadata (metric labels, aliases) stay bilingual/as-is and are <em>not</em> localized — with locale resolved once at the API boundary and <strong>default locale <code>zh</code></strong> so current behaviour (and the closeout's validation) is preserved while EN is added.</p>
+    <p><span class="lbl">Change:</span> Separate mixed EN/ZH into a proper i18n layer: symbolic keys with parallel <code>zh</code>/<code>en</code> catalogs, locale from <code>Accept-Language</code> (+ request override), threaded to output nodes only.</p>
+    <p class="lbl">Decisions (decision — why — rejected):</p>
+    <ul>
+      <li><span class="chosen">(A) Scope = output only; NLU + domain data OUT</span> — localizing NLU would break Chinese <em>input</em> handling. <span class="rej">Rejected:</span> "extract all Chinese", domain-data localization.</li>
+      <li><span class="chosen">(B) Resolve once at API boundary → <code>AgentState.locale</code> → output nodes</span> — single point; generation stays locale-independent. <span class="rej">Rejected:</span> per-signature threading, global/context-var.</li>
+      <li><span class="chosen">(C) Symbolic keys + zh/en catalogs; backend JSON+resolver, frontend vue-i18n</span> — greenfield, small; no compile step. <span class="rej">Rejected:</span> gettext/.po (overkill), inline conditionals (status quo).</li>
+      <li><span class="chosen">(D) Default locale <code>zh</code></span> — preserves every existing output + the closeout's <code>查询返回 5 行</code> validation; EN additive. <span class="rej">Rejected:</span> default <code>en</code> (churn + breaks sibling).</li>
+    </ul>
+    <p class="lbl">Risks / watch:</p>
+    <ul>
+      <li>Scope boundary is correctness-critical — an NLU string moved to a catalog silently breaks Chinese input.</li>
+      <li>Locale must not leak into schema context / generated SQL (presentation only).</li>
+      <li>Missing key must fall back, never crash.</li>
+    </ul>
+    <p class="lbl">Open questions:</p>
+    <ul><li>MCP locale surfacing (default <code>zh</code> for now); supported set stays <code>{zh, en}</code>.</li></ul>
+    <p class="muted">Drill down: full design in <code>design.md</code> · tasks in <code>tasks.md</code>.</p>
+  </div>
+
+  <h2>1. Problem / context</h2>
+  <p>EN/ZH mixed across backend + frontend with no i18n layer (Vue 3, no vue-i18n; no backend gettext/Babel). The CJK strings are <strong>three different concerns</strong> needing opposite treatment:</p>
+  <table>
+    <tr><th>Category</th><th>Examples</th><th>Treatment</th></tr>
+    <tr><td><span class="chosen">Output / presentation</span></td><td>result summary <code>查询返回 N 行</code>; semantic block <code>当前 schema 中没有…</code>; perf hints; frontend UI</td><td>i18n (this change)</td></tr>
+    <tr><td>Input / NLU</td><td>OLAP phrase detection; intent verbs <code>删除/清空</code>; Chinese date rules; alias matching</td><td>NOT i18n — bilingual always</td></tr>
+    <tr><td>Domain data</td><td>metric labels <code>销售额/客单价</code>, aliases, display names; verified queries</td><td>metadata content — not catalog</td></tr>
+  </table>
+  <p>The trap: "extract all Chinese" would move the NLU patterns and break Chinese input. The scope taxonomy is the design's core value.</p>
+
+  <h2>2. Goals</h2>
+  <p><span class="lbl">In scope:</span> (A) scope taxonomy; (B) locale resolution + propagation to output nodes; (C) catalog mechanism (backend JSON + frontend vue-i18n); (D) default-locale choice.</p>
+  <p><span class="lbl">Out of scope:</span> localizing NLU patterns; localizing domain data; changing generated SQL / schema context / column names; languages beyond zh/en.</p>
+
+  <h2>3. Key decisions</h2>
+  <h3>(A) Scope taxonomy — the crux</h3>
+  <p><span class="lbl">Localized:</span> result summary, semantic-guard block, intent blocked message, performance/plan hints, other API messages, all frontend UI chrome. <span class="lbl">Excluded (must not touch):</span> Input/NLU + Domain-data categories — not presentation; the system accepts Chinese input and carries Chinese business terms regardless of output locale.</p>
+  <h3>(B) Locale resolution + propagation</h3>
+  <p>Resolve once at the API boundary (<code>Accept-Language</code> + request <code>locale</code> override → <code>{zh,en}</code> → default). Carry as <code>AgentState.locale</code>; output nodes read it. <strong>Generation is locale-independent</strong> — schema context, prompts, SQL unchanged by locale.</p>
+  <h3>(C) Catalog mechanism</h3>
+  <p>Backend <code>backend/app/i18n/{zh,en}.json</code> + resolver <code>t(key, locale, **params)</code> (missing key → fallback → raw key, logged). Frontend <code>vue-i18n</code> with zh/en message files; UI switcher persisted in <code>localStorage</code>, locale sent to backend. Independent per-layer catalogs, shared key convention.</p>
+  <h3>(D) Default locale = zh</h3>
+  <p>Existing Chinese output stays identical with no locale supplied; current tests + the sibling closeout validation hold. EN is additive — dissolves the coupling.</p>
+
+  <h2>4. Alternatives &amp; rationale</h2>
+  <h3>(A) Scope boundary</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">Output-only; NLU+data out (chosen)</td><td>Safe; matches the three-concern reality; no input-handling risk.</td><td>Chinese remains in NLU/data (correct — not UI).</td></tr>
+    <tr><td>Output + domain-data localization</td><td>"Fully localized" labels.</td><td>Touches semantic layer/metadata; conflates data with UI.</td></tr>
+  </table>
+  <h3>(B) Propagation</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">Resolve-once → AgentState.locale (chosen)</td><td>Single point; explicit; test-friendly; generation clean.</td><td>One new state field.</td></tr>
+    <tr><td>Thread through signatures</td><td>Explicit per call.</td><td>Churns many signatures for a presentation concern.</td></tr>
+    <tr><td>Global / context-var</td><td>No signature changes.</td><td>Implicit; hostile to tests + concurrency.</td></tr>
+  </table>
+  <h3>(C) Catalog mechanism</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">JSON + resolver / vue-i18n (chosen)</td><td>No compile step; tiny; shared key convention; frontend-standard.</td><td>Hand-rolled backend resolver (trivial).</td></tr>
+    <tr><td>gettext / Babel .po</td><td>Industry standard; pluralization tooling.</td><td>Compilation + tooling overhead, disproportionate.</td></tr>
+    <tr><td>Inline conditionals</td><td>No new files.</td><td>This is the status quo — unmaintainable.</td></tr>
+  </table>
+
+  <h2>5. Altitude — deferred to implementation</h2>
+  <ul>
+    <li>Exact symbolic key names + JSON layout.</li>
+    <li>vue-i18n wiring, UI switcher placement, Accept-Language parsing.</li>
+    <li>Concrete enumeration of Output-category strings (from the committed taxonomy).</li>
+  </ul>
+
+  <h2>6. Open questions</h2>
+  <ul>
+    <li>MCP locale surfacing → default zh for now.</li>
+    <li>Supported set stays {zh, en}; more languages later, additive.</li>
+  </ul>
+
+  <h2>7. Status</h2>
+  <p><span class="pill status">In-review</span> — maker: Claude. Separate slice from <code>retrieval-expansion-closeout</code> (coupling dissolved by decision D). Awaiting design-review + operator sign-off. Approval: <em>not-yet</em>.</p>
+
+  <footer>Files: <code>docs/design/i18n-en-zh-separation/{design.md, tasks.md, design.html}</code> · board: <code>docs/design/roadmap.md</code>.</footer>
+</div>
+</body>
+</html>

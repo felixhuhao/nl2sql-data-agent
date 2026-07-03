@@ -1,0 +1,21 @@
+{
+  "mcp_args": [
+    "-y",
+    "@playwright/mcp@latest",
+    "--executable-path",
+    "/home/hao/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome",
+    "--headless"
+  ],
+  "navigate": "### Ran Playwright code\n```js\nawait page.goto('http://127.0.0.1:5174/');\n```\n### Page\n- Page URL: http://127.0.0.1:5174/\n- Page Title: 掌柜问数 · NL2SQL Data Agent\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-02T11-31-52-699Z.yml)",
+  "initial_snapshot": "### Page\n- Page URL: http://127.0.0.1:5174/\n- Page Title: 掌柜问数 · NL2SQL Data Agent\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](docs/design/retrieval-recall-expansion/evidence/mcp-chat-initial.md)\n### Events\n- New console entries: .playwright-mcp/console-2026-07-02T11-31-52-394Z.log#L1",
+  "initial_screenshot": "### Result\n- [Screenshot of full page](docs/design/retrieval-recall-expansion/evidence/mcp-chat-initial.png)\n### Ran Playwright code\n```js\n// Screenshot full page and save it as docs/design/retrieval-recall-expansion/evidence/mcp-chat-initial.png\nawait page.screenshot({\n  fullPage: true,\n  path: 'docs/design/retrieval-recall-expansion/evidence/mcp-chat-initial.png',\n  scale: 'css',\n  type: 'png'\n});\n```",
+  "type": "### Ran Playwright code\n```js\nawait page.locator('textarea').fill('按渠道统计最近30天销售额');\n```",
+  "filled_screenshot": "### Result\n- [Screenshot of full page](docs/design/retrieval-recall-expansion/evidence/mcp-chat-filled.png)\n### Ran Playwright code\n```js\n// Screenshot full page and save it as docs/design/retrieval-recall-expansion/evidence/mcp-chat-filled.png\nawait page.screenshot({\n  fullPage: true,\n  path: 'docs/design/retrieval-recall-expansion/evidence/mcp-chat-filled.png',\n  scale: 'css',\n  type: 'png'\n});\n```",
+  "click": "### Ran Playwright code\n```js\nawait page.locator('button[type=\"submit\"]').click();\n```\n### Page\n- Page URL: http://127.0.0.1:5174/\n- Page Title: 掌柜问数 · NL2SQL Data Agent\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-02T11-31-54-495Z.yml)",
+  "wait": "### Result\nWaited for 查询返回 5 行\n### Ran Playwright code\n```js\nawait page.getByText(\"查询返回 5 行\").first().waitFor({ state: 'visible' });\n```\n### Page\n- Page URL: http://127.0.0.1:5174/\n- Page Title: 掌柜问数 · NL2SQL Data Agent\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-02T11-31-54-507Z.yml)",
+  "result_snapshot": "### Page\n- Page URL: http://127.0.0.1:5174/\n- Page Title: 掌柜问数 · NL2SQL Data Agent\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](docs/design/retrieval-recall-expansion/evidence/mcp-chat-result.md)",
+  "result_screenshot": "### Result\n- [Screenshot of full page](docs/design/retrieval-recall-expansion/evidence/mcp-chat-result.png)\n### Ran Playwright code\n```js\n// Screenshot full page and save it as docs/design/retrieval-recall-expansion/evidence/mcp-chat-result.png\nawait page.screenshot({\n  fullPage: true,\n  path: 'docs/design/retrieval-recall-expansion/evidence/mcp-chat-result.png',\n  scale: 'css',\n  type: 'png'\n});\n```",
+  "console": "### Result\nTotal messages: 3 (Errors: 1, Warnings: 0)\nReturning 1 messages for level \"warning\"\n\n[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5174/favicon.ico:0",
+  "network": "### Result\n- [Network](docs/design/retrieval-recall-expansion/evidence/mcp-network.md)",
+  "close": "### Result\nNo open tabs. Navigate to a URL to create one.\n### Ran Playwright code\n```js\nawait page.close()\n```"
+}

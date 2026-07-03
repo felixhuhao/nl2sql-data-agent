@@ -1,0 +1,43 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: 问
+        - generic [ref=e8]:
+          - heading "掌柜问数" [level=1] [ref=e9]
+          - paragraph [ref=e10]: NL2SQL Data Agent
+      - generic [ref=e11]:
+        - generic [ref=e12]:
+          - generic [ref=e13]: 数据源
+          - combobox "数据源" [ref=e14] [cursor=pointer]:
+            - option "DuckDB (本地)" [selected]
+          - button "刷新" [ref=e15] [cursor=pointer]
+          - generic [ref=e16]: 1 个数据源
+        - navigation "view switcher" [ref=e17]:
+          - button "问数" [ref=e18] [cursor=pointer]
+          - button "管理" [ref=e19] [cursor=pointer]
+        - generic [ref=e20]: Mock Agent Ready
+        - generic [ref=e21]:
+          - generic [ref=e22]: local
+          - button "退出" [ref=e23] [cursor=pointer]
+    - region "chat workspace" [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - generic [ref=e27]:
+            - generic [ref=e28]: 问题
+            - button "新对话" [ref=e29] [cursor=pointer]
+          - generic [ref=e30]:
+            - textbox "问题" [ref=e31]:
+              - /placeholder: 输入经营分析问题
+              - text: 查询最近30天每日销售额和订单数
+            - button "发送" [ref=e32] [cursor=pointer]
+        - generic [ref=e34]:
+          - generic [ref=e35]: 数
+          - heading "问一句，掌柜替你算账" [level=2] [ref=e36]
+          - paragraph [ref=e37]: 用自然语言提问，自动生成 SQL、执行并解释每一步证据来源。
+          - generic [ref=e38]:
+            - generic [ref=e39]: 试试
+            - button "查询最近30天每日销售额和订单数" [ref=e40] [cursor=pointer]
+            - button "各渠道本月销售额占比" [ref=e41] [cursor=pointer]
+            - button "按地区拆分销售额" [ref=e42] [cursor=pointer]
+            - button "销量最高的10个商品" [ref=e43] [cursor=pointer]

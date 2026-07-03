@@ -120,14 +120,14 @@ step datasource_selected → step intent_guard → step retrieve_context → ste
 设计要点：
 
 - **节点用普通函数 + 依赖注入**（`provider` / `retriever` / `scope_builder` / `executor` 均为可注入参数），不强依赖 LangGraph runtime，使每个节点可独立单测。
-- **状态用扁平 dataclass** `AgentState`（`agent/state.py`），节点读写显式字段；终态包含 `query_result`、`guard_result`、`explainability`、`plan_hints`、`chart_recommendation`、`repair_history` 等。
+- **状态用扁平 dataclass** `AgentState`（`agent/state.py`），节点读写显式字段；终态包含 `query_result`、`guard_result`、`explainability`、`plan_hints`、`chart_recommendation`、`repair_history`、`retrieval_coverage`、`locale` 等。`locale` 在 API 边界解析，只影响输出呈现（i18n），不影响 schema context/prompt/SQL。
 - **修复闭环**：Guard 可修复阶段（scope/syntax/function/fanout/cost）和可修复执行错误（parser/catalog/binder）触发 `repair_sql`，最多 2 次，且修复后的 SQL **必须再次过 Guard**；`operation_guard`（如 DELETE）不可修复，直接 error。
 - **解释信息规则生成**（`explainability.py`），不让 LLM 编造命中的表/字段/join/时间解释。
 
 ## 6. 语义层与检索
 
 - **落库而非临场扫库**：`sync.py` 从数据源 introspection 同步表/字段/类型/row count/sample values 与推断关系（带 `source`/`confidence`/`fanout_risk`），写入 SQLite（`metadata/models.py` 定义 `meta_tables` 等表）。`seed.py` 提供初始语义资产。
-- **检索**：`retrieval.py::retrieve_metadata_assets` 做规则检索（表名/字段名/中文别名/指标/verified query/sample values），按 analysis space 白名单过滤并打分排序；命中为空时回退全量 schema context（`fallback_used`）。
+- **检索**：`retrieval.py::retrieve_metadata_assets` 做规则检索（表名/字段名/中文别名/指标/verified query/sample values），按 analysis space 白名单过滤并打分排序。召回后 `retrieval_coverage.py` 计算 hybrid coverage（match strength × structural joinability）；`low` band 触发确定性 graph expansion（`MetaRelationship` 1-hop 双向、fanout-gated、capped），re-score 后仍 `low` 且 full schema 在 budget 内则回退全量 schema（`fallback_used`）；空召回始终回退（历史不变量）。恢复路径由 `RETRIEVAL_EXPANSION_ENABLED`/`RETRIEVAL_FALLBACK_MODE` 门控，默认 off，经 eval 校准后开启。
 - **混合召回**：`hybrid.py` + `vector/*`（Qdrant + sentence-transformers）在 `settings.vector_enabled` 允许时与规则得分融合；Docker Compose 默认启动 Qdrant，索引不可用时自动降级到规则召回。
 - **聚焦上下文**：`service.py::build_focused_context_from_retrieval` 只把命中的表/列/指标/join path/示例 SQL 放进 prompt，避免全量 schema dump。
 - **管理与校验**：`service.py` 提供指标/别名/verified query/analysis space/relationship 的 CRUD 与 `validate_semantic_assets`（断链检测）；经 `api/metadata.py` 暴露，前端 `Admin.vue` 消费。

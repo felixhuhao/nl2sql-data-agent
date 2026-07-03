@@ -1,0 +1,134 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: 问
+        - generic [ref=e8]:
+          - heading "掌柜问数" [level=1] [ref=e9]
+          - paragraph [ref=e10]: NL2SQL Data Agent
+      - generic [ref=e11]:
+        - generic [ref=e12]:
+          - generic [ref=e13]: 数据源
+          - combobox "数据源" [ref=e14] [cursor=pointer]:
+            - option "DuckDB (本地)" [selected]
+          - button "刷新" [ref=e15] [cursor=pointer]
+          - generic [ref=e16]: 1 个数据源
+        - navigation "view switcher" [ref=e17]:
+          - button "问数" [ref=e18] [cursor=pointer]
+          - button "管理" [ref=e19] [cursor=pointer]
+        - generic [ref=e20]: Mock Agent Ready
+        - generic [ref=e21]:
+          - generic [ref=e22]: local
+          - button "退出" [ref=e23] [cursor=pointer]
+    - region "chat workspace" [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - generic [ref=e27]:
+            - generic [ref=e28]: 问题
+            - button "新对话" [ref=e29] [cursor=pointer]
+          - generic [ref=e30]:
+            - textbox "问题" [ref=e31]:
+              - /placeholder: 输入经营分析问题
+              - text: 按渠道统计最近30天销售额
+            - button "发送" [ref=e32] [cursor=pointer]
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - heading "步骤流" [level=2] [ref=e46]
+            - generic [ref=e47]:
+              - generic [ref=e48]: 选择数据源
+              - generic [ref=e49]: 意图检查
+              - generic [ref=e50]: 检索上下文
+              - generic [ref=e51]: 构建上下文
+              - generic [ref=e52]: 分析意图
+              - generic [ref=e53]: 生成 SQL
+              - generic [ref=e54]: SQL Guard
+              - generic [ref=e55]: 保留过滤
+              - generic [ref=e56]: 语义校验
+              - generic [ref=e57]: SQL 修复
+              - generic [ref=e58]: 执行查询
+              - generic [ref=e59]: 生成回答
+              - generic [ref=e60]: 推荐图表
+          - generic [ref=e61]:
+            - heading "查询信息" [level=2] [ref=e62]
+            - generic [ref=e63]:
+              - generic [ref=e64]:
+                - generic [ref=e65]: 数据源
+                - generic [ref=e66]: DuckDB (本地)
+              - generic [ref=e67]:
+                - generic [ref=e68]: 方言
+                - generic [ref=e69]: duckdb
+              - generic [ref=e70]:
+                - generic [ref=e71]: 行数
+                - generic [ref=e72]: "5"
+              - generic [ref=e73]:
+                - generic [ref=e74]: 耗时
+                - generic [ref=e75]: 20.9ms
+          - generic [ref=e77]:
+            - generic [ref=e78]:
+              - heading "SQL" [level=2] [ref=e79]
+              - button "复制" [ref=e80] [cursor=pointer]
+            - generic [ref=e81]: SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount FROM fact_orders o JOIN dim_channels c ON o.channel_key = c.channel_key JOIN dim_date d ON o.date_key = d.date_key WHERE d.date_value BETWEEN DATE '2025-12-02' AND DATE '2025-12-31' GROUP BY c.channel_name ORDER BY sales_amount DESC
+          - generic [ref=e82]:
+            - heading "回答" [level=2] [ref=e83]
+            - paragraph [ref=e84]: 查询返回 5 行，字段：channel_name, sales_amount。
+          - heading "图表" [level=2] [ref=e86]
+          - generic [ref=e90]:
+            - heading "结果" [level=2] [ref=e91]
+            - table [ref=e93]:
+              - rowgroup [ref=e94]:
+                - row "channel_name sales_amount" [ref=e95]:
+                  - columnheader "channel_name" [ref=e96]
+                  - columnheader "sales_amount" [ref=e97]
+              - rowgroup [ref=e98]:
+                - row "抖音 1400130.16" [ref=e99]:
+                  - cell "抖音" [ref=e100]
+                  - cell "1400130.16" [ref=e101]
+                - row "官网 1325824.8" [ref=e102]:
+                  - cell "官网" [ref=e103]
+                  - cell "1325824.8" [ref=e104]
+                - row "京东 1275466.9" [ref=e105]:
+                  - cell "京东" [ref=e106]
+                  - cell "1275466.9" [ref=e107]
+                - row "小程序 1168214.32" [ref=e108]:
+                  - cell "小程序" [ref=e109]
+                  - cell "1168214.32" [ref=e110]
+                - row "天猫 1069969.66" [ref=e111]:
+                  - cell "天猫" [ref=e112]
+                  - cell "1069969.66" [ref=e113]
+          - generic [ref=e114]:
+            - heading "解释信息" [level=2] [ref=e115]
+            - generic [ref=e116]:
+              - generic [ref=e117]:
+                - term [ref=e118]: 命中表
+                - definition [ref=e119]:
+                  - generic [ref=e120]: dim_channels
+                  - generic [ref=e121]: dim_date
+                  - generic [ref=e122]: fact_orders
+              - generic [ref=e123]:
+                - term [ref=e124]: 命中字段
+                - definition [ref=e125]:
+                  - generic [ref=e126]: dim_channels.channel_key
+                  - generic [ref=e127]: dim_channels.channel_name
+                  - generic [ref=e128]: dim_date.date_key
+                  - generic [ref=e129]: dim_date.date_value
+                  - generic [ref=e130]: fact_orders.channel_key
+                  - generic [ref=e131]: fact_orders.date_key
+                  - generic [ref=e132]: fact_orders.payment_amount
+                  - generic [ref=e133]: sales_amount
+              - generic [ref=e134]:
+                - term [ref=e135]: Join Path
+                - definition [ref=e136]:
+                  - generic [ref=e137]: fact_orders.channel_key -> dim_channels.channel_key
+                  - generic [ref=e138]: fact_orders.date_key -> dim_date.date_key
+              - generic [ref=e139]:
+                - term [ref=e140]: 时间解释
+                - definition [ref=e141]:
+                  - generic [ref=e142]: "{ \"matched\": true, \"dataset_current_date\": \"2025-12-31\", \"phrase\": \"最近30天\", \"start\": \"2025-12-02\", \"end\": \"2025-12-31\" }"
+              - generic [ref=e143]:
+                - term [ref=e144]: Guard 结果
+                - definition [ref=e145]:
+                  - generic [ref=e146]: passed
+              - generic [ref=e147]:
+                - term [ref=e148]: Guard 提示
+                - definition [ref=e149]:
+                  - generic [ref=e150]: LIMIT 500 was added automatically.

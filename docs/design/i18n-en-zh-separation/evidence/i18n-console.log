@@ -1,0 +1,5 @@
+Total messages: 3 (Errors: 1, Warnings: 0)
+
+[DEBUG] [vite] connecting... @ http://127.0.0.1:5174/@vite/client:732
+[DEBUG] [vite] connected. @ http://127.0.0.1:5174/@vite/client:826
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5174/favicon.ico:0

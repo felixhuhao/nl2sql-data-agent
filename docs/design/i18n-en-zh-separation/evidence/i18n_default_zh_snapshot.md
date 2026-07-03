@@ -1,0 +1,16 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: 问
+        - generic [ref=e8]
+      - generic [ref=e11]:
+        - generic [ref=e12]
+        - generic [ref=e15]
+        - navigation "view switcher" [ref=e20]
+        - generic [ref=e23]: Mock Agent Ready
+        - generic [ref=e24]
+    - region "chat workspace" [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]
+        - generic [ref=e37]

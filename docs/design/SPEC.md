@@ -1,5 +1,13 @@
 # Design Spec
 
+## I18n EN/ZH Separation
+
+- Locale resolution is output-presentation only: explicit chat request `locale` overrides `Accept-Language`; unsupported or missing locale falls back to `zh`.
+- Backend output strings use `backend/app/i18n/{zh,en}.json` through `t(key, locale, **params)`. Missing locale keys fall back to default `zh`; missing default keys return the raw key and log.
+- `AgentState.locale` must not affect schema context, SQL generation requests, prompts, NLU patterns, date rules, alias matching, or metadata/domain strings.
+- Frontend UI chrome uses `vue-i18n` from `frontend/src/i18n.ts`; the language switcher persists `nl2sql_locale` and sends both request `locale` and `Accept-Language`.
+- Default `zh` output preserves the retrieval closeout summary shape, including `查询返回 N 行，字段：...。`.
+
 ## Evaluation And Retrieval Closeout
 
 - Smoke eval cases can target one datasource with legacy `datasource: X` or multiple datasources with `datasources: [X, Y]`. Setting both keys is invalid; setting neither defaults to `duckdb_ecommerce`.

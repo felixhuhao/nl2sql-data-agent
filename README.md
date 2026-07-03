@@ -15,6 +15,7 @@ This repository currently represents the **V1 baseline**: a runnable and validat
 - **Multi-turn follow-up**: preserves dimensions, filters, metrics, and time windows across follow-up questions such as "只看华东", "换成订单数", and "改成最近90天".
 - **Repair loop**: bounded SQL repair for syntax, scope, fanout, and execution errors; repaired SQL must pass Guard again before execution.
 - **Automatic visualization**: line, bar, pie, dual-axis, and table fallback recommendations based on result shape and OLAP intent.
+- **EN/ZH output i18n**: presentation strings resolve through `zh`/`en` catalogs by locale (`Accept-Language` + request override; default `zh`); input NLU and business metadata stay bilingual and are not localized.
 - **Evaluation loop**: mock smoke eval, DeepSeek real eval, result equivalence checks, error attribution, chart assertions, and performance hint assertions.
 - **MCP tooling**: read-only schema, guarded query, EXPLAIN, and metric search tools that reuse the same backend safety path.
 
