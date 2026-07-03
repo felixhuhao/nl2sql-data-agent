@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design — Coverage Match-Strength Signal + Vector-ON Recalibration</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c6b7a; --line:#e2e6ea; --accent:#2d6cdf; --ok:#1c8a52; --warn:#b8860b; --bg:#fbfcfd; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.7rem; line-height:1.25; margin:0 0 4px; }
+  h2 { font-size: 1.2rem; margin:36px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size: 1.02rem; margin:22px 0 8px; }
+  code { background:#eef1f5; padding:1px 5px; border-radius:4px; font-size:.9em; }
+  pre { background:#0f1729; color:#d6e2ff; padding:16px; border-radius:8px; overflow:auto; font-size:.85rem; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  table { border-collapse: collapse; width:100%; margin:12px 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f0f4f8; }
+  .digest { background:#fff; border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .digest h2 { margin-top:0; border:none; padding:0; color:var(--accent); }
+  .pill { display:inline-block; font-size:.75rem; font-weight:600; padding:2px 9px; border-radius:999px; background:#eaf1fe; color:var(--accent); }
+  .pill.status { background:#fff4e0; color:var(--warn); }
+  .lbl { font-weight:700; }
+  ul { margin:8px 0; padding-left:22px; } li { margin:5px 0; }
+  .muted { color:var(--muted); } .rej { color:var(--warn); } .chosen { color:var(--ok); font-weight:700; }
+  footer { margin-top:48px; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Coverage Match-Strength Signal + Vector-ON Recalibration</h1>
+  <p><span class="pill">Lane: full (lightweight)</span> &nbsp; <span class="muted" style="font-size:.85rem">live status in roadmap.md</span></p>
+
+  <div class="digest">
+    <h2>Digest</h2>
+    <p style="background:#eef7f0;border-left:3px solid var(--ok);padding:10px 14px;border-radius:6px;margin-top:0"><span class="lbl">Bottom line — approve this if you agree that:</span> the over-firing under vector retrieval is fixed by emitting <strong>one scale-faithful <code>[0,1]</code> <code>coverage_match_strength</code></strong> from both retrieval paths that the scorer consumes — <strong>leaving the structural blend and control flow untouched</strong> — then <strong>re-calibrating the threshold with vector ON</strong> before default-on is re-enabled.</p>
+    <p><span class="lbl">Change:</span> Replace the scale-guessing <code>_match_strength</code> heuristic with an explicit path-independent strength signal from the retrieval layer, and re-run calibration in the real vector-active config.</p>
+    <p class="lbl">Decisions (decision — why — rejected):</p>
+    <ul>
+      <li><span class="chosen">(A) Explicit <code>coverage_match_strength</code> from the merge (option b)</span> — each path emits one <code>[0,1]</code> value meaning the same thing, so the threshold is comparable across rule/vector/hybrid. <span class="rej">Rejected:</span> (a) raw rule strength (vector-only hits read 0), (c) scale-detection in the scorer (fragile).</li>
+      <li><span class="chosen">(B) Don't touch the structural blend or gate</span> — the bug is the strength input's scale, not how signals combine; keeps design D1. <span class="rej">Rejected:</span> "structural=1.0 gates recovery" shortcut.</li>
+      <li><span class="chosen">(C) Recalibrate with vector ON, non-VQ phrasings</span> — the original 0/61 was rule-only, the one config that hides the bug. <span class="rej">Rejected:</span> reuse prior calibration.</li>
+      <li><span class="chosen">(D) Re-enable default-on only if it clears the vector-ON gate</span> — same recovery + zero-regression bar, measured where the app runs.</li>
+    </ul>
+    <p class="lbl">Risks / watch:</p>
+    <ul>
+      <li>Strength must be emitted on <strong>both</strong> retrieval paths or the conflation persists.</li>
+      <li>Back-compat: absent field must fall back, not crash.</li>
+      <li>Recalibration may shift threshold <em>and</em> weights, not just threshold.</li>
+    </ul>
+    <p class="lbl">Open questions:</p>
+    <ul><li>Normalization curve for the signal + recalibrated threshold/weights — pinned during calibration.</li></ul>
+    <p class="muted">Drill down: full design in <code>design.md</code> · tasks in <code>tasks.md</code>.</p>
+  </div>
+
+  <h2>1. Problem / context</h2>
+  <p>Default-on shipped calibrated at <code>0/61</code> — but rule-only (<code>--provider mock</code>, <code>VECTOR_ENABLED=disabled</code>). Under vector <code>auto</code>, <strong>56/75 non-closeout smoke cases fall back to full schema</strong> and <strong>44 have <code>structural_score=1.0</code> but <code>band=low</code></strong>: correct, structurally-complete queries dumped to full schema, discarding the ~65–75% context-reduction win.</p>
+  <p><strong>Root cause:</strong> <code>_match_strength</code> conflates scales — lexical (0–30, ÷30) vs hybrid/vector (~0–1, used as-is). A strong hybrid recall <code>~0.33</code> reads as weak → <code>0.5·0.33 + 0.5·1.0 = 0.665 &lt; 0.70</code> → low → expand → no gain → full-schema fallback. Threshold <code>0.70</code> was tuned on the lexical scale.</p>
+
+  <h2>2. Goals</h2>
+  <p><span class="lbl">In scope:</span> explicit <code>coverage_match_strength ∈ [0,1]</code> on both retrieval paths; scorer consumes it (legacy heuristic as absent-fallback); recalibration with vector ON incl. non-VQ phrasings; regression fixtures.</p>
+  <p><span class="lbl">Out of scope:</span> changing <code>structural_score</code>, the blend, expansion, fallback control flow, the empty invariant, rule/vector recall themselves, or adding LLM.</p>
+
+  <h2>3. Proposed approach</h2>
+  <h3>Signal contract</h3>
+  <p><code>retrieve_metadata_assets</code> returns top-level <code>coverage_match_strength ∈ [0,1]</code> on <strong>both</strong> paths: the hybrid merge derives it from its own <code>_vector_score</code>/lexical confidence; the rule-only path normalizes its lexical top — both to the same scale, so the number reflects match <em>quality</em>, not channel.</p>
+  <h3>Scorer change (minimal)</h3>
+  <p><code>score_coverage</code> uses <code>coverage_match_strength</code> when present, else the legacy heuristic. Everything else — blend, threshold, structural, expansion, fallback — unchanged.</p>
+  <h3>Recalibration protocol</h3>
+  <p>Sweep with <code>VECTOR_ENABLED=auto</code> on a corpus incl. non-VQ phrasings; re-derive threshold (+weights if needed); gate on recovery + 0 regression in the vector-active config; re-enable default-on only if it clears.</p>
+
+  <h2>4. Alternatives &amp; rationale</h2>
+  <h3>(A) Strength source</h3>
+  <table>
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr><td class="chosen">(b) Explicit signal from merge (chosen)</td><td>One [0,1] value across rule/vector/hybrid; handles vector-only hits.</td><td>Merge must define a normalized confidence (calibrated).</td></tr>
+    <tr><td>(a) Raw rule strength pre-normalization</td><td>Small; restores lexical scale.</td><td>Vector-only hits → 0 strength; under-counts semantic recall.</td></tr>
+    <tr><td>(c) Scale-detection in score_coverage</td><td>Least invasive.</td><td>Heuristic scale-guessing — the current bug in a new form.</td></tr>
+  </table>
+  <h3>(B) Combine logic — keep the blend</h3>
+  <p>Rejected "structural=1.0 gates recovery": contradicts D1 (a connected-but-weakly-matched recall must stay catchable). Fix the strength input, don't delete strength.</p>
+  <h3>(C) Recalibration config — vector ON</h3>
+  <p>Rejected reusing rule-only calibration — the exact config that hid the bug.</p>
+
+  <h2>5. Altitude — deferred to implementation</h2>
+  <ul>
+    <li>The normalization curve for <code>coverage_match_strength</code> (calibrated).</li>
+    <li>Recalibrated threshold/weight numbers.</li>
+    <li>Field name/placement; how the merge computes its confidence internally.</li>
+  </ul>
+
+  <h2>6. Open questions</h2>
+  <ul>
+    <li>Final threshold + weights on the faithful scale → calibration.</li>
+    <li>Whether rule-only and hybrid paths need slightly different normalization curves to be comparable → decided empirically.</li>
+  </ul>
+
+  <h2>7. Approval</h2>
+  <p>Maker: Claude · reviewer: Codex. Re-enabling default-on gated on §3 vector-ON calibration; default reverted to off meanwhile (operator). Live status in <code>roadmap.md</code>. Approval: <em>not-yet</em>.</p>
+
+  <footer>Files: <code>docs/design/coverage-strength-recalibration/{design.md, tasks.md, design.html}</code> · board: <code>docs/design/roadmap.md</code> · evidence: probe under session scratchpad; sibling <code>docs/design/retrieval-recall-expansion/</code>.</footer>
+</div>
+</body>
+</html>

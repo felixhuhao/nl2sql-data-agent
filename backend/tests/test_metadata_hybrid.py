@@ -47,6 +47,7 @@ def test_hybrid_merge_adds_vector_metric_and_sources(monkeypatch):
     assert result["retrieval_meta"]["vector_used"] is True
     assert result["retrieval_meta"]["index_status"] == "ready"
     assert result["retrieval_meta"]["sources"]["metric:sales_amount"] == ["vector:0.90"]
+    assert result["coverage_match_strength"] == 0.9
 
 
 def test_hybrid_merge_preserves_rule_hits_and_adds_vector_source(monkeypatch):
@@ -94,6 +95,7 @@ def test_hybrid_merge_preserves_rule_hits_and_adds_vector_source(monkeypatch):
 
     assert result["tables"][0]["table_name"] == "fact_orders"
     assert result["tables"][0]["source"] == "direct_match"
+    assert result["coverage_match_strength"] == 0.8
     assert result["retrieval_meta"]["sources"]["table:fact_orders"] == [
         "rule:table_name",
         "vector:0.80",
@@ -143,6 +145,46 @@ def test_hybrid_merge_skips_disallowed_metric_dependencies(monkeypatch):
         (column["table_name"], column["column_name"])
         for column in result["columns"]
     }
+
+
+def test_hybrid_merge_preserves_rule_coverage_strength_when_vector_score_is_lower(monkeypatch):
+    monkeypatch.setattr(hybrid, "search_values", lambda question, **kwargs: [])
+    monkeypatch.setattr(
+        hybrid,
+        "retrieve_vector_assets",
+        lambda question, **kwargs: VectorRetrievalResult(
+            vector_used=True,
+            index_status="ready",
+            hits={
+                "tables": [
+                    VectorSearchHit(
+                        asset_type="table",
+                        asset_id="fact_orders",
+                        text="订单",
+                        distance=0.7,
+                        score=0.3,
+                        metadata={"table_name": "fact_orders"},
+                    )
+                ]
+            },
+        ),
+    )
+    rule_result = {
+        **_empty_rule_result(),
+        "coverage_match_strength": 0.85,
+        "tables": [{"table_name": "fact_orders", "score": 25.5, "reasons": ["table_name"]}],
+    }
+
+    result = hybrid.hybrid_merge(
+        rule_result,
+        "订单",
+        table_limit=5,
+        column_limit=20,
+        metric_limit=5,
+        verified_query_limit=3,
+    )
+
+    assert result["coverage_match_strength"] == 0.85
 
 
 def test_hybrid_merge_uses_datasource_dialect_for_verified_query_dependencies(monkeypatch):

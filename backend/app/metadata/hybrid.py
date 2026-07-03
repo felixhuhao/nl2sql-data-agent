@@ -90,6 +90,15 @@ def hybrid_merge(
         datasource_dialect=datasource_dialect,
     )
 
+    merged["coverage_match_strength"] = _coverage_match_strength(
+        (
+            *table_matches.values(),
+            *column_matches.values(),
+            *metric_matches.values(),
+            *verified_query_matches.values(),
+        ),
+        rule_floor=float(rule_result.get("coverage_match_strength", 0.0) or 0.0),
+    )
     merged["tables"] = _rank_with_hybrid_score(table_matches.values(), table_limit, "table")
     merged["columns"] = _rank_with_hybrid_score(column_matches.values(), column_limit, "column")
     merged["metrics"] = _rank_with_hybrid_score(metric_matches.values(), metric_limit, "metric")
@@ -362,6 +371,20 @@ def _rank_with_hybrid_score(items, limit: int, asset_type: str) -> list[dict]:
         )
         ranked.append(item)
     return sorted(ranked, key=lambda item: (-item["score"], _sort_key(item)))[:limit]
+
+
+def _coverage_match_strength(items, *, rule_floor: float = 0.0) -> float:
+    strengths = [_clamp01(rule_floor)]
+    for item in items:
+        rule_score = float(item.get("score", 0.0) or 0.0)
+        vector_score = float(item.get("_vector_score", 0.0) or 0.0)
+        strengths.append(_clamp01(rule_score / MAX_RULE_SCORE))
+        strengths.append(_clamp01(vector_score))
+    return max(strengths, default=0.0)
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
 
 
 def _table_payload(hit: VectorSearchHit) -> dict:

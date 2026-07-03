@@ -408,6 +408,78 @@ cases:
       join_paths:
         - fact_order_items.product_key -> dim_products.product_key
 
+  - id: coverage_recalibration_channel_sales_non_vq
+    type: normal
+    question: 各渠道销售额
+    tags: [coverage_recalibration, non_vq, sales, channel]
+    provider: mock
+    mock_sql: >-
+      SELECT c.channel_name, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_channels c ON o.channel_key = c.channel_key
+      GROUP BY c.channel_name
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_channels]
+      required_columns:
+        - dim_channels.channel_name
+        - fact_orders.payment_amount
+      result_columns: [channel_name, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+      join_paths:
+        - fact_orders.channel_key -> dim_channels.channel_key
+
+  - id: coverage_recalibration_category_sales_non_vq
+    type: normal
+    question: 各品类销售额
+    tags: [coverage_recalibration, non_vq, sales, category]
+    provider: mock
+    mock_sql: >-
+      SELECT p.category, SUM(i.item_amount) AS sales_amount
+      FROM fact_order_items i
+      JOIN dim_products p ON i.product_key = p.product_key
+      GROUP BY p.category
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_order_items, dim_products]
+      required_columns:
+        - dim_products.category
+        - fact_order_items.item_amount
+      result_columns: [category, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+      join_paths:
+        - fact_order_items.product_key -> dim_products.product_key
+
+  - id: coverage_recalibration_gender_sales_non_vq
+    type: normal
+    question: 按性别统计销售额
+    tags: [coverage_recalibration, non_vq, sales, user]
+    provider: mock
+    mock_sql: >-
+      SELECT u.gender, SUM(o.payment_amount) AS sales_amount
+      FROM fact_orders o
+      JOIN dim_users u ON o.user_key = u.user_key
+      GROUP BY u.gender
+      ORDER BY sales_amount DESC
+    expected:
+      should_execute: true
+      matched_query_id: null
+      required_tables: [fact_orders, dim_users]
+      required_columns:
+        - dim_users.gender
+        - fact_orders.payment_amount
+      result_columns: [gender, sales_amount]
+      min_row_count: 1
+      chart_type: bar
+      join_paths:
+        - fact_orders.user_key -> dim_users.user_key
+
   - id: region_channel_cross
     type: normal
     question: 按地区和渠道交叉统计最近30天销售额

@@ -219,6 +219,11 @@ def _add_column(
 
 
 def _match_strength(retrieval_result: dict) -> float:
+    if "coverage_match_strength" in retrieval_result:
+        try:
+            return max(0.0, min(float(retrieval_result["coverage_match_strength"]), 1.0))
+        except (TypeError, ValueError):
+            pass
     scores = [
         float(item.get("score", 0.0) or 0.0)
         for key in ("tables", "columns", "metrics", "verified_queries")

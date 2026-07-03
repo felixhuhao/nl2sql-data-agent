@@ -155,6 +155,7 @@ def retrieve_metadata_assets(
             "metrics": _rank(metric_matches.values(), metric_limit),
             "verified_queries": _rank(verified_query_matches.values(), verified_query_limit),
         }
+        result["coverage_match_strength"] = _coverage_match_strength(result)
         if _should_use_vector(use_vector):
             result = hybrid_merge(
                 result,
@@ -510,6 +511,21 @@ def _add_match(
         matches[key]["reasons"].append(reason)
     if source and matches[key].get("source") not in PRIMARY_MATCH_SOURCES:
         matches[key]["source"] = source
+
+
+def _coverage_match_strength(retrieval_result: dict) -> float:
+    scores = [
+        float(item.get("score", 0.0) or 0.0)
+        for key in ("tables", "columns", "metrics", "verified_queries")
+        for item in retrieval_result.get(key, []) or []
+    ]
+    if not scores:
+        return 0.0
+    return _clamp01(max(scores) / 30.0)
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
 
 
 def _tables(

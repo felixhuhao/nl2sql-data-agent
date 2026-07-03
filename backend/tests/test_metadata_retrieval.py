@@ -42,6 +42,16 @@ def test_retrieve_assets_matches_channel_aliases(monkeypatch):
     assert ("dim_date", "date_value") in _column_keys(result)
 
 
+def test_retrieve_assets_emits_rule_coverage_match_strength(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+
+    result = retrieval.retrieve_metadata_assets("按渠道统计最近30天销售额", use_vector=False)
+
+    assert 0.0 <= result["coverage_match_strength"] <= 1.0
+    assert result["coverage_match_strength"] > 0.7
+
+
 def test_retrieve_assets_matches_sales_share_intent(monkeypatch):
     engine = _patch_retrieval_db(monkeypatch)
     _insert_demo_physical_metadata(engine)
@@ -285,6 +295,64 @@ def test_score_coverage_bands_healthy_disconnected_weak_and_empty(monkeypatch):
     assert weak_connected.band == "low"
     assert weak_connected.signals["join_connected"] is True
     assert empty.band == "low"
+
+
+def test_score_coverage_prefers_explicit_coverage_match_strength(monkeypatch):
+    engine = _patch_retrieval_db(monkeypatch)
+    _insert_demo_physical_metadata(engine)
+    monkeypatch.setattr(
+        retrieval_coverage,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "retrieval_coverage_threshold": 0.7,
+                "retrieval_coverage_strength_weight": 0.5,
+                "retrieval_coverage_structural_weight": 0.5,
+                "retrieval_fact_min_dim_edges": 2,
+            },
+        )(),
+    )
+
+    explicit = retrieval_coverage.score_coverage(
+        {
+            "coverage_match_strength": 0.9,
+            "tables": [
+                {"table_name": "fact_orders", "score": 0.33},
+                {"table_name": "dim_channels", "score": 0.15},
+            ],
+            "columns": [],
+            "metrics": [{"name": "sales_amount", "score": 0.2}],
+            "verified_queries": [],
+        }
+    )
+    legacy = retrieval_coverage.score_coverage(
+        {
+            "tables": [
+                {"table_name": "fact_orders", "score": 0.33},
+                {"table_name": "dim_channels", "score": 0.15},
+            ],
+            "columns": [],
+            "metrics": [{"name": "sales_amount", "score": 0.2}],
+            "verified_queries": [],
+        }
+    )
+    clamped = retrieval_coverage.score_coverage(
+        {
+            "coverage_match_strength": 2.0,
+            "tables": [{"table_name": "fact_orders", "score": 0.0}],
+            "columns": [],
+            "metrics": [],
+            "verified_queries": [],
+        }
+    )
+
+    assert explicit.match_strength == 0.9
+    assert explicit.band == "high"
+    assert legacy.match_strength == 0.33
+    assert legacy.band == "low"
+    assert clamped.match_strength == 1.0
 
 
 def test_expand_via_graph_skips_high_fanout_caps_and_scopes(monkeypatch):

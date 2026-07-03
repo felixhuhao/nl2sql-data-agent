@@ -218,7 +218,7 @@ def main() -> int:
     parser.add_argument(
         "--retrieval-calibration",
         action="store_true",
-        help="Sweep retrieval coverage thresholds and report recovery/regression tradeoffs.",
+        help="Sweep retrieval coverage thresholds with vector retrieval enabled and report recovery/regression tradeoffs.",
     )
     parser.add_argument(
         "--retrieval-thresholds",
@@ -351,7 +351,7 @@ def _run_retrieval_calibration(
                     resources_by_datasource[_case_datasource(case)],
                     provider,
                     provider_name=provider_name,
-                    use_vector=False,
+                    use_vector=True,
                     validate_coverage_expectations=False,
                     reference_threshold=reference_threshold,
                 )
