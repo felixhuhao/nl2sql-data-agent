@@ -40,5 +40,8 @@ Thumbs.db
 docs/keyword-matching-audit.md
 docs/prompt-reliability-audit.md
 
+# Local design-review evidence output. Already tracked evidence remains tracked.
+docs/design/**/evidence/
+
 evals/reports/*
 !evals/reports/deepseek_latest.md
