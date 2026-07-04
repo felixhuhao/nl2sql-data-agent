@@ -56,7 +56,7 @@ finalize_workflow
 
 ### build_context
 
-在 conversation-merged 召回集上计算 `RetrievalCoverage`（hybrid：match strength × structural joinability），再构建 focused schema context。两段式恢复（`RETRIEVAL_EXPANSION_ENABLED` / `RETRIEVAL_FALLBACK_MODE`，默认 off）：coverage 为 `low` 时先做确定性 graph expansion（`MetaRelationship` 1-hop 双向、fanout-gated、capped、受 analysis space 约束）并 re-score；仍 `low` 且 full schema 在 budget 内则回退 full schema，否则用扩展后的 focused context。空召回始终回退 full schema（历史不变量）。coverage 写入 `state.retrieval_coverage`（见 `docs/METADATA_SEMANTIC_LAYER.md`）。
+在 conversation-merged 召回集上计算 `RetrievalCoverage`（hybrid：match strength × structural joinability），再构建 focused schema context。两段式恢复（`RETRIEVAL_EXPANSION_ENABLED` / `RETRIEVAL_FALLBACK_MODE`，**默认 on**，经 vector-active 校准）：coverage 为 `low` 时先做确定性 graph expansion（`MetaRelationship` 1-hop 双向、fanout-gated、capped、受 analysis space 约束）并 re-score；仍 `low` 且 full schema 在 budget 内则回退 full schema，否则用扩展后的 focused context。空召回始终回退 full schema（历史不变量）。coverage 写入 `state.retrieval_coverage`（见 `docs/METADATA_SEMANTIC_LAYER.md`）。
 
 ### olap_detected
 

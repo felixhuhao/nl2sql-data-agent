@@ -97,13 +97,13 @@ question
 
 召回后计算 `RetrievalCoverage`（`backend/app/metadata/retrieval_coverage.py`）：hybrid 分数 = match strength × structural joinability，产出 `high`/`low` band。fact-role 由 `MetaRelationship` 拓扑推断（source of ≥`FACT_MIN_DIM_EDGES` many_to_one 边），不依赖表命名。
 
-两段式恢复（`RETRIEVAL_EXPANSION_ENABLED` / `RETRIEVAL_FALLBACK_MODE`，默认 off）：
+两段式恢复（`RETRIEVAL_EXPANSION_ENABLED` / `RETRIEVAL_FALLBACK_MODE`，**默认 on**，经 vector-active 校准）：
 
 - band 为 `low` 时，先做确定性 **graph expansion**（沿 `MetaRelationship` 1-hop、双向、跳过 high fanout、受 analysis space 约束并 capped），再 re-score。
 - 仍为 `low` 且 full schema 在 size budget 内时，回退到 full schema context；否则保留扩展后的 focused context。
 - **空召回是无条件不变量**：始终回退 full schema，与新 flag/budget 无关，保持历史行为。
 
-SSE/Eval 记录 `retrieval_coverage`（score、band、`expanded`、`fallback_used`、signals）。阈值/权重/budget 通过 eval 校准，flag 校准达标后才开启（见 `docs/design/retrieval-recall-expansion/` 与 `retrieval-expansion-closeout/`）。
+match strength 由 retrieval 层直接产出 `coverage_match_strength ∈ [0,1]`（rule-only 与 hybrid 两条路径同尺度），避免规则/向量分数尺度混淆导致的误触发。SSE/Eval 记录 `retrieval_coverage`（score、band、`expanded`、`fallback_used`、signals）。阈值/权重经 **vector-active** 校准：threshold `0.7`、strength/structural weight `0.5/0.5`，vector-on gate 0/66 high-conf 回归后默认开启（见 `docs/design/retrieval-recall-expansion/`、`retrieval-expansion-closeout/`、`coverage-strength-recalibration/`）。
 
 ## Focused Context
 

@@ -4,7 +4,7 @@ Implementer checklist (design altitude). Design: [design.md](design.md). Sibling
 
 ## 1. Incomplete-recall eval cases (pillar A)
 - [x] Add `expected.coverage` fields to the smoke case schema (pre-band, post-band, `expanded`, `fallback_used`).
-- [ ] Author `missing_dimension` cases (fact recalled, needed dim absent) → assert expansion recovers. **Blocked by current scorer behavior: fact-only metric intent scores structurally high, so this archetype does not produce a valid pre-low case without changing the approved algorithm.**
+- [x] `missing_dimension` archetype — **closed: not a live failure mode.** Diagnostic showed it does not reproduce — retrieval recalls the needed dimension via column names/descriptions/sample values even without aliases, so no valid pre-`low` case exists. Not debt; no cases needed.
 - [x] Author `missing_join_path` cases (two tables, no connecting edge) → assert dangling / fallback.
 - [x] Author `dangling_no_fact` cases (non-fact only, no metric intent) → assert fallback.
 - [x] Runner asserts the **path taken** (pre/post band, expanded, fallback_used), not just the result.
@@ -16,7 +16,7 @@ Implementer checklist (design altitude). Design: [design.md](design.md). Sibling
 - [x] Sweep the single threshold; for each: record recovery rate (incomplete-recall) · regression count (high-confidence, must be 0) · context-size delta.
 - [x] Bind zero-regression to the full existing corpus (51 DuckDB + CH high-confidence cases).
 - [x] Pick the threshold meeting recovery target with 0 regression; write chosen values back into `../retrieval-recall-expansion/design.md` open questions.
-- [ ] Enable flags (`RETRIEVAL_EXPANSION_ENABLED`, `RETRIEVAL_FALLBACK_MODE`) by default after vector/hybrid coverage recalibration; keep explicit opt-in documented meanwhile.
+- [x] Enable flags (`RETRIEVAL_EXPANSION_ENABLED`, `RETRIEVAL_FALLBACK_MODE`) by default — shipped default-on after vector-active recalibration; see `../coverage-strength-recalibration/`.
 
 ## 3. Datasource-partitioned harness (pillar C)
 - [x] Add plural `datasources: [...]` to the case schema; **legacy scalar `datasource: X` normalizes to `[X]`** (zero migration for existing DuckDB + 25 CH cases).

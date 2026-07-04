@@ -27,10 +27,10 @@ Implementer checklist (design altitude — tasks, not line-level code). Design: 
 
 ## 5. Eval + calibration
 - [x] Add structurally-incomplete-recall cases to `evals/smoke_cases.yaml` for missing join path and dangling recall.
-- [ ] Add `missing_dimension` cases once scorer behavior makes fact-only metric intent score pre-expansion `low`.
+- [x] `missing_dimension` cases — not needed; archetype determined non-reproducible (retrieval recalls dims via non-alias channels). Closed.
 - [x] Run eval to **calibrate** weights, threshold, `MAX_TABLES`, and the full-schema size budget.
 - [x] Verify high-confidence cases are unchanged (0/61 high-confidence regressions at threshold `0.7`).
-- [ ] Enable flags by default once calibration covers both rule-only and vector/hybrid retrieval without over-triggering fallback.
+- [x] Enable flags by default — shipped default-on after vector-active recalibration (`coverage_match_strength`, 0/66 high-conf regressions at threshold `0.7`); see `../coverage-strength-recalibration/`.
 
 ## 6. Tests
 - [x] Unit: `score_coverage` bands on strong-disconnected, weak-connected, empty, and healthy recalls.
