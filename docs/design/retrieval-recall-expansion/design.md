@@ -147,11 +147,11 @@ Initial rule-only closeout calibration at threshold `0.7` showed 0/61 high-confi
 - Exact function/dataclass names and whether `RetrievalCoverage` is a dataclass vs typed dict.
 - SSE payload field naming and where in the event schema coverage lands.
 - Line-level traversal code and the normalization formula for `match_strength`.
-- **Last tested values**: `w_strength=0.5`, `w_struct=0.5`, `RETRIEVAL_COVERAGE_THRESHOLD=0.7`, `RETRIEVAL_EXPANSION_MAX_TABLES=3`, full-schema size budget `120000`.
+- **Last tested values**: `w_strength=0.5`, `w_struct=0.5`, `RETRIEVAL_COVERAGE_THRESHOLD=0.7`, `RETRIEVAL_EXPANSION_MAX_TABLES=3`, full-schema size budget `120000`. Coverage-strength recalibration validated this threshold with vector retrieval active: recovery `1/1`, fallback paths `1/1`, high-confidence regressions `0/66`; threshold `0.8` regressed `2/66`.
 
 ## 6. Open questions
 
-- Vector/hybrid coverage scoring needs recalibration: hybrid scores are normalized before coverage scoring, which can over-trigger full-schema fallback on structurally complete recalls.
+- Vector/hybrid coverage scoring was recalibrated by emitting explicit retrieval-layer `coverage_match_strength` on the rule-only and hybrid paths. The validated scale keeps non-VQ metric-by-dimension recalls focused while preserving the low-confidence recovery/fallback path.
 - Whether `medium` fanout edges should count fractionally vs fully against the cap → default full; revisit only if calibration shows over-pruning.
 
 ## 7. Status

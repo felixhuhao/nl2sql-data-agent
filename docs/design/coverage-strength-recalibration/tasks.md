@@ -13,17 +13,17 @@ Implementer checklist (design altitude). Design: [design.md](design.md).
 
 ## 3. Vector-ON recalibration (pillar C)
 - [x] Add non-verified-query "metric by dimension" cases to the calibration corpus (e.g. `各渠道销售额`, `各品类销售额`, `按性别统计销售额`).
-- [ ] Run the calibration sweep with `VECTOR_ENABLED=auto`; record recovery · high-conf regressions · context-size delta per threshold.
-- [ ] Re-derive threshold (and weights if needed) on the faithful scale.
-- [ ] Gate: recovery target + 0 regression, both in vector-active config. Write chosen values into design.md open questions + `../retrieval-recall-expansion/design.md`.
-- [ ] Re-enable default-on **only if** the vector-ON gate passes; else keep opt-in and iterate.
+- [x] Run the calibration sweep with `VECTOR_ENABLED=auto`; record recovery · high-conf regressions · context-size delta per threshold.
+- [x] Re-derive threshold (and weights if needed) on the faithful scale: keep threshold `0.7`, strength weight `0.5`, structural weight `0.5`.
+- [x] Gate: recovery target + 0 regression, both in vector-active config. Write chosen values into design.md open questions + `../retrieval-recall-expansion/design.md`.
+- [x] Re-enable default-on **only if** the vector-ON gate passes; else keep opt-in and iterate.
 
 ## 4. Regression protection
 - [x] Add a test/fixture asserting a structurally-complete, hybrid-recalled query (non-VQ phrasing) scores `band=high` under vector-active retrieval.
 - [x] Add a test asserting both retrieval paths populate `coverage_match_strength` on the same scale for an equivalent recall.
-- [ ] Capture the "56/75 fallback under vector" observation as a guarded regression check (or documented eval baseline) so it can't silently return.
+- [x] Capture the "56/75 fallback under vector" observation as a guarded regression check (or documented eval baseline) so it can't silently return.
 
 ## 5. Tests
 - [x] Unit: `score_coverage` prefers `coverage_match_strength` when present; legacy fallback when absent; out-of-range clamped.
 - [x] Unit: vector-only hit yields non-zero strength (the (a)-option failure this avoids).
-- [x] Full backend suite green with the current default-off safety setting.
+- [x] Full backend suite green with the current default-on setting.

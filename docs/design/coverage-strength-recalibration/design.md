@@ -85,8 +85,8 @@ Rejected reusing the prior rule-only calibration — it's the exact config that 
 
 ## 6. Open questions
 
-- Final threshold + weights on the faithful scale → calibration execution.
-- Whether the rule-only and hybrid normalizations need slightly different curves to be truly comparable, or one shared curve suffices → decided empirically during calibration.
+- Final threshold + weights on the faithful scale → **resolved by validation**: keep threshold `0.7`, strength weight `0.5`, structural weight `0.5`. Vector-active calibration at `0.7` passed recovery `1/1`, fallback paths `1/1`, and high-confidence regressions `0/66`; `0.8` produced `2/66` regressions.
+- Whether the rule-only and hybrid normalizations need slightly different curves to be truly comparable, or one shared curve suffices → **one shared scale is sufficient for the current corpus**. The added non-VQ metric-by-dimension cases stay high-confidence with focused context.
 
 ## 7. Approval
 
