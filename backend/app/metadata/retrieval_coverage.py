@@ -15,9 +15,7 @@ from backend.app.metadata.models import (
     MetaRelationship,
     create_metadata_schema,
 )
-
-
-MAX_LEXICAL_SCORE = 30.0
+from backend.app.metadata.score_constants import MAX_LEXICAL_SCORE
 
 
 @dataclass

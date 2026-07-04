@@ -25,6 +25,7 @@ from backend.app.metadata.models import (
     MetaVerifiedQuery,
     create_metadata_schema,
 )
+from backend.app.metadata.score_constants import MAX_LEXICAL_SCORE
 from backend.app.metadata.vector.searcher import is_recallable_value
 
 
@@ -521,7 +522,7 @@ def _coverage_match_strength(retrieval_result: dict) -> float:
     ]
     if not scores:
         return 0.0
-    return _clamp01(max(scores) / 30.0)
+    return _clamp01(max(scores) / MAX_LEXICAL_SCORE)
 
 
 def _clamp01(value: float) -> float:

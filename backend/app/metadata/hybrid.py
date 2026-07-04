@@ -16,12 +16,13 @@ from backend.app.metadata.vector.searcher import (
     search_values,
 )
 from backend.app.metadata.vector.store import VectorSearchHit
+from backend.app.metadata.score_constants import MAX_LEXICAL_SCORE
 
 
 RULE_WEIGHT = 0.3
 VECTOR_WEIGHT = 0.6
 PRIORITY_WEIGHT = 0.1
-MAX_RULE_SCORE = 30.0
+MAX_RULE_SCORE = MAX_LEXICAL_SCORE
 QUALIFIED_COLUMN_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
 
 
